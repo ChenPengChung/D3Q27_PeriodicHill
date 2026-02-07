@@ -3,15 +3,8 @@
   "tasks": [
     {
       "label": "SSH to cfdlab",
-      "type": "process",
-      "command": "C:\\Program Files\\PuTTY\\plink.exe",
-      "args": [
-        "-ssh",
-        "-pw", "1256",
-        "chenpengchung@${input:masterServer}",
-        "-t",
-        "ssh -t cfdlab-ib${input:nodeNumber} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
-      ],
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\.vscode\\ssh-connect.ps1' -ServerCombo '${input:serverCombo}'",
       "presentation": {
         "reveal": "always",
         "panel": "new",
@@ -23,16 +16,20 @@
       "problemMatcher": []
     },
     {
+      "label": "Reconnect",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\.vscode\\ssh-connect.ps1' -ServerCombo '${input:serverCombo}'",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "Switch Node",
-      "type": "process",
-      "command": "C:\\Program Files\\PuTTY\\plink.exe",
-      "args": [
-        "-ssh",
-        "-pw", "1256",
-        "chenpengchung@${input:masterServer}",
-        "-t",
-        "ssh -t cfdlab-ib${input:nodeNumber} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
-      ],
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\.vscode\\ssh-connect.ps1' -ServerCombo '${input:serverCombo}'",
       "presentation": {
         "reveal": "always",
         "panel": "dedicated",
@@ -41,15 +38,15 @@
       "problemMatcher": []
     },
     {
-      "label": "Reconnect from Local",
+      "label": "SSH to cfdlab (.87)",
       "type": "process",
       "command": "C:\\Program Files\\PuTTY\\plink.exe",
       "args": [
         "-ssh",
         "-pw", "1256",
-        "chenpengchung@${input:masterServer}",
+        "chenpengchung@140.114.58.87",
         "-t",
-        "ssh -t cfdlab-ib${input:nodeNumber} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+        "ssh -t cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
       ],
       "presentation": {
         "reveal": "always",
@@ -59,15 +56,105 @@
       "problemMatcher": []
     },
     {
-      "label": "Compile + Run",
+      "label": "SSH to cfdlab (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "chenpengchung@140.114.58.154",
+        "-t",
+        "ssh -t cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Switch Node (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "chenpengchung@140.114.58.87",
+        "-t",
+        "ssh -t cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Switch Node (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "chenpengchung@140.114.58.154",
+        "-t",
+        "ssh -t cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Reconnect (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "chenpengchung@140.114.58.87",
+        "-t",
+        "ssh -t cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Reconnect (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "chenpengchung@140.114.58.154",
+        "-t",
+        "ssh -t cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Compile + Run (.87)",
       "type": "process",
       "command": "C:\\Program Files\\PuTTY\\plink.exe",
       "args": [
         "-ssh",
         "-pw", "1256",
         "-batch",
-        "chenpengchung@${input:masterServer}",
-        "ssh cfdlab-ib${input:nodeNumber} 'cd /home/chenpengchung/D3Q27_PeriodicHill && nvcc main.cu -arch=sm_60 -O3 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out && nohup mpirun -np ${input:gpuCount} ./a.out > log$(date +%Y%m%d) 2>&1 &'"
+        "chenpengchung@140.114.58.87",
+        "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill && nvcc main.cu -arch=sm_60 -O3 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out && nohup mpirun -np ${input:gpuCount} ./a.out > log$(date +%Y%m%d) 2>&1 &'"
       ],
       "group": {
         "kind": "build",
@@ -80,15 +167,15 @@
       "problemMatcher": []
     },
     {
-      "label": "Check Running Jobs",
+      "label": "Compile + Run (.154)",
       "type": "process",
       "command": "C:\\Program Files\\PuTTY\\plink.exe",
       "args": [
         "-ssh",
         "-pw", "1256",
         "-batch",
-        "chenpengchung@${input:masterServer}",
-        "ssh cfdlab-ib${input:nodeNumber} 'ps aux | grep a.out | grep -v grep'"
+        "chenpengchung@140.114.58.154",
+        "ssh cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill && nvcc main.cu -arch=sm_60 -O3 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out && nohup mpirun -np ${input:gpuCount} ./a.out > log$(date +%Y%m%d) 2>&1 &'"
       ],
       "presentation": {
         "reveal": "always",
@@ -97,15 +184,66 @@
       "problemMatcher": []
     },
     {
-      "label": "Kill Running Job",
+      "label": "Check Running Jobs (.87)",
       "type": "process",
       "command": "C:\\Program Files\\PuTTY\\plink.exe",
       "args": [
         "-ssh",
         "-pw", "1256",
         "-batch",
-        "chenpengchung@${input:masterServer}",
-        "ssh cfdlab-ib${input:nodeNumber} 'pkill -f a.out || pkill mpirun'"
+        "chenpengchung@140.114.58.87",
+        "ssh cfdlab-ib${input:nodeFor87} 'ps aux | grep a.out | grep -v grep'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Check Running Jobs (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "-batch",
+        "chenpengchung@140.114.58.154",
+        "ssh cfdlab-ib${input:nodeFor154} 'ps aux | grep a.out | grep -v grep'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Kill Running Job (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "-batch",
+        "chenpengchung@140.114.58.87",
+        "ssh cfdlab-ib${input:nodeFor87} 'pkill -f a.out || pkill mpirun'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Kill Running Job (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "-batch",
+        "chenpengchung@140.114.58.154",
+        "ssh cfdlab-ib${input:nodeFor154} 'pkill -f a.out || pkill mpirun'"
       ],
       "presentation": {
         "reveal": "always",
@@ -138,30 +276,44 @@
   ],
   "inputs": [
     {
-      "id": "masterServer",
+      "id": "serverCombo",
       "type": "pickString",
-      "description": "選擇母機 (決定可連的子機)",
+      "description": "選擇連線目標 (母機 → 子機)",
       "options": [
-        {"label": ".87 → ib2,3,5,6", "value": "140.114.58.87"},
-        {"label": ".154 → ib1,4,7,9", "value": "140.114.58.154"}
+        {"label": ".87 → ib2", "value": "87:2"},
+        {"label": ".87 → ib3", "value": "87:3"},
+        {"label": ".87 → ib5", "value": "87:5"},
+        {"label": ".87 → ib6", "value": "87:6"},
+        {"label": ".154 → ib1", "value": "154:1"},
+        {"label": ".154 → ib4", "value": "154:4"},
+        {"label": ".154 → ib7", "value": "154:7"},
+        {"label": ".154 → ib9", "value": "154:9"}
       ],
-      "default": "140.114.58.87"
+      "default": "87:3"
     },
     {
-      "id": "nodeNumber",
+      "id": "nodeFor87",
       "type": "pickString",
-      "description": "選擇子機 (.87→2,3,5,6 / .154→1,4,7,9)",
+      "description": "選擇子機 (via .87)",
       "options": [
-        {"label": "ib1 (.154專用)", "value": "1"},
-        {"label": "ib2 (.87專用)", "value": "2"},
-        {"label": "ib3 (.87專用)", "value": "3"},
-        {"label": "ib4 (.154專用)", "value": "4"},
-        {"label": "ib5 (.87專用)", "value": "5"},
-        {"label": "ib6 (.87專用)", "value": "6"},
-        {"label": "ib7 (.154專用)", "value": "7"},
-        {"label": "ib9 (.154專用)", "value": "9"}
+        {"label": "ib2", "value": "2"},
+        {"label": "ib3", "value": "3"},
+        {"label": "ib5", "value": "5"},
+        {"label": "ib6", "value": "6"}
       ],
       "default": "3"
+    },
+    {
+      "id": "nodeFor154",
+      "type": "pickString",
+      "description": "選擇子機 (via .154)",
+      "options": [
+        {"label": "ib1", "value": "1"},
+        {"label": "ib4", "value": "4"},
+        {"label": "ib7", "value": "7"},
+        {"label": "ib9", "value": "9"}
+      ],
+      "default": "4"
     },
     {
       "id": "gpuCount",
