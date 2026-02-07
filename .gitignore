@@ -1,0 +1,18 @@
+# Ignore result and backup folders
+result/
+backup/
+statistics/
+
+# Ignore data files
+*.dat
+*.DAT
+
+# Ignore compiled files
+a.out
+*.o
+*.exe
+
+# Ignore temporary files
+*~
+*.tmp
+*.swp
