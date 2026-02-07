@@ -159,14 +159,42 @@ function Show-CompareResults {
 
 # Command handlers
 switch ($Command) {
-    "check" {
-        Write-Color "[CHECK] Comparing local vs remote..." "Magenta"
+    # ===== Git-like Commands =====
+    
+    # git diff - 比較本地與遠端差異
+    { $_ -in "diff", "check" } {
+        Write-Color "[DIFF] Comparing local vs remote..." "Magenta"
         foreach ($server in $Config.Servers) {
             $results = Compare-Files -Server $server
             Show-CompareResults -Results $results -ServerName $server.Name
         }
     }
     
+    # git status - 顯示同步狀態
+    "status" {
+        Write-Color "[STATUS] Sync overview" "Magenta"
+        
+        $localFiles = Get-LocalFiles
+        Write-Color "`nLocal files: $($localFiles.Count)" "White"
+        
+        foreach ($server in $Config.Servers) {
+            $results = Compare-Files -Server $server
+            $needsPush = $results.New.Count + $results.Modified.Count
+            $needsDelete = $results.Deleted.Count
+            if ($needsPush -eq 0 -and $needsDelete -eq 0) {
+                $status = "[OK] Synced"
+            }
+            elseif ($needsPush -gt 0) {
+                $status = "[!] Needs push"
+            }
+            else {
+                $status = "[!] Remote has extra files"
+            }
+            Write-Color "$($server.Name): $status (push: $needsPush, remote-only: $needsDelete)" "White"
+        }
+    }
+    
+    # git add - 顯示待推送的變更
     "add" {
         Write-Color "[ADD] Showing pending changes..." "Magenta"
         $allChanges = @()
@@ -283,28 +311,143 @@ switch ($Command) {
         & $PSCommandPath pull .154
     }
     
-    "status" {
-        Write-Color "[STATUS] Sync overview" "Magenta"
-        
-        $localFiles = Get-LocalFiles
-        Write-Color "`nLocal files: $($localFiles.Count)" "White"
-        
+    # git fetch - 只檢查遠端狀態（不下載）
+    "fetch" {
+        Write-Color "[FETCH] Fetching remote status..." "Magenta"
         foreach ($server in $Config.Servers) {
             $results = Compare-Files -Server $server
-            $needsPush = $results.New.Count + $results.Modified.Count
-            if ($needsPush -eq 0) {
-                $status = "[OK] Synced"
-            }
-            else {
-                $status = "[!] Needs push"
-            }
-            Write-Color "$($server.Name): $status (pending: $needsPush)" "White"
+            $remoteCount = $results.Same.Count + $results.Modified.Count + $results.Deleted.Count
+            Write-Color "`n$($server.Name) ($($server.Host)):" "Cyan"
+            Write-Color "  Remote files: $remoteCount" "White"
+            Write-Color "  Same: $($results.Same.Count) | Modified: $($results.Modified.Count) | Remote-only: $($results.Deleted.Count)" "Gray"
         }
     }
     
+    # git log - 查看遠端 log 檔案
+    "log" {
+        Write-Color "[LOG] Fetching remote log files..." "Magenta"
+        
+        $targetServer = $null
+        if ($Arguments -and $Arguments.Count -gt 0) {
+            $serverArg = $Arguments[0]
+            foreach ($s in $Config.Servers) {
+                if ($s.Name -eq $serverArg -or $s.Name -eq ".$serverArg" -or $serverArg -like "*$($s.Name)*") {
+                    $targetServer = $s
+                    break
+                }
+            }
+        }
+        if (-not $targetServer) { $targetServer = $Config.Servers[0] }
+        
+        Write-Color "`nLog files on $($targetServer.Name):" "Cyan"
+        $cmd = "ls -lth $($Config.RemotePath)/log* 2>/dev/null | head -10"
+        $result = & $Config.PlinkPath -ssh -pw $targetServer.Password -batch "$($targetServer.User)@$($targetServer.Host)" $cmd 2>$null
+        if ($result) {
+            foreach ($line in $result) { Write-Host "  $line" }
+        }
+        else {
+            Write-Color "  No log files found" "Yellow"
+        }
+        
+        # 顯示最新 log 的最後幾行
+        Write-Color "`nLatest log tail:" "Cyan"
+        $cmd = "tail -20 `$(ls -t $($Config.RemotePath)/log* 2>/dev/null | head -1) 2>/dev/null"
+        $result = & $Config.PlinkPath -ssh -pw $targetServer.Password -batch "$($targetServer.User)@$($targetServer.Host)" $cmd 2>$null
+        if ($result) {
+            foreach ($line in $result) { Write-Host "  $line" -ForegroundColor Gray }
+        }
+    }
+    
+    # git reset --hard - 重置遠端（刪除遠端多餘檔案）
+    { $_ -in "reset", "delete" } {
+        Write-Color "[RESET] Removing files from remote that don't exist locally..." "Magenta"
+        
+        foreach ($server in $Config.Servers) {
+            Write-Color "`nChecking $($server.Name) ($($server.Host))..." "Cyan"
+            
+            $results = Compare-Files -Server $server -Silent
+            $toDelete = $results.Deleted
+            
+            if ($toDelete.Count -eq 0) {
+                Write-Color "  No files to delete on $($server.Name)" "Green"
+                continue
+            }
+            
+            Write-Color "  Files to delete on $($server.Name):" "Yellow"
+            foreach ($f in $toDelete) {
+                Write-Color "    - $f" "Red"
+            }
+            
+            $confirm = Read-Host "`n  Delete these $($toDelete.Count) files from $($server.Name)? (y/n)"
+            if ($confirm -eq "y" -or $confirm -eq "Y") {
+                $deleteCount = 0
+                foreach ($f in $toDelete) {
+                    $remotePath = "$($Config.RemotePath)/$f"
+                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "rm -f '$remotePath'" 2>$null
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Color "    [DELETED] $f" "Red"
+                        $deleteCount++
+                    }
+                    else {
+                        Write-Color "    [FAILED] $f" "Yellow"
+                    }
+                }
+                Write-Color "`n  Deleted $deleteCount files from $($server.Name)" "Cyan"
+            }
+            else {
+                Write-Color "  Skipped deletion on $($server.Name)" "Yellow"
+            }
+        }
+    }
+    
+    # git clone - 從遠端完整複製到本地
+    "clone" {
+        Write-Color "[CLONE] Full download from remote to local..." "Magenta"
+        
+        $targetServer = $null
+        if ($Arguments -and $Arguments.Count -gt 0) {
+            $serverArg = $Arguments[0]
+            foreach ($s in $Config.Servers) {
+                if ($s.Name -eq $serverArg -or $s.Name -eq ".$serverArg" -or $serverArg -like "*$($s.Name)*") {
+                    $targetServer = $s
+                    break
+                }
+            }
+        }
+        if (-not $targetServer) { $targetServer = $Config.Servers[0] }
+        
+        Write-Color "`nCloning from $($targetServer.Name) ($($targetServer.Host))..." "Cyan"
+        Write-Color "This will overwrite local files with remote versions!" "Yellow"
+        $confirm = Read-Host "Continue? (y/n)"
+        
+        if ($confirm -eq "y" -or $confirm -eq "Y") {
+            $remoteFiles = Get-RemoteFiles -Server $targetServer
+            $cloneCount = 0
+            
+            foreach ($f in $remoteFiles) {
+                $remotePath = "$($Config.RemotePath)/$($f.Path)"
+                $localPath = Join-Path $Config.LocalPath $f.Path.Replace("/", "\")
+                $localDir = Split-Path $localPath -Parent
+                
+                if (-not (Test-Path $localDir)) { 
+                    New-Item -ItemType Directory -Path $localDir -Force | Out-Null 
+                }
+                
+                $null = & $Config.PscpPath -pw $targetServer.Password -q "$($targetServer.User)@$($targetServer.Host):$remotePath" $localPath 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Color "  [OK] $($f.Path)" "Green"
+                    $cloneCount++
+                }
+            }
+            Write-Color "`nCloned $cloneCount files from $($targetServer.Name)" "Cyan"
+        }
+    }
+    
+    # ===== Extra Commands (beyond Git) =====
+    
     "sync" {
-        Write-Color "[SYNC] Interactive sync (check + push)" "Magenta"
-        & $PSCommandPath check
+        Write-Color "[SYNC] Interactive sync (diff + push)" "Magenta"
+        & $PSCommandPath diff
         Write-Host ""
         $confirm = Read-Host "Proceed with push? (y/n)"
         if ($confirm -eq "y" -or $confirm -eq "Y") {
@@ -411,34 +554,55 @@ switch ($Command) {
         }
     }
     
+    "fullsync" {
+        Write-Color "[FULLSYNC] Push + Reset (make remote match local exactly)" "Magenta"
+        & $PSCommandPath push
+        Write-Host ""
+        & $PSCommandPath reset
+    }
+    
     default {
         Write-Host ""
-        Write-Host "MobaXterm Sync Commands" -ForegroundColor Cyan
-        Write-Host "=======================" -ForegroundColor Cyan
+        Write-Host "MobaXterm Sync Commands (Git-like)" -ForegroundColor Cyan
+        Write-Host "===================================" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "Usage: mobaxterm <command>" -ForegroundColor White
         Write-Host ""
-        Write-Host "Commands:" -ForegroundColor Yellow
-        Write-Host "  check     - Compare local vs remote (.87 + .154)"
-        Write-Host "  add .     - Show files pending sync"
-        Write-Host "  push      - Upload to .87 and .154"
-        Write-Host "  pull      - Download from .87 (default)"
-        Write-Host "  pull .154 - Download from .154"
-        Write-Host "  pull87    - Shorthand for pull .87"
-        Write-Host "  pull154   - Shorthand for pull .154"
-        Write-Host "  status    - Show sync status overview"
-        Write-Host "  sync      - Interactive check + push"
-        Write-Host "  issynced  - Quick check: .87 synced? .154 synced?"
-        Write-Host "  watch     - Auto-sync: monitor files and push on change"
-        Write-Host "  autopush  - Push only if there are changes"
+        Write-Host "Git-like Commands:" -ForegroundColor Yellow
+        Write-Host "  status      - Show sync status (like git status)"
+        Write-Host "  add         - Show pending changes (like git add)"
+        Write-Host "  diff        - Compare local vs remote (like git diff)"
+        Write-Host "  push        - Upload to .87 and .154 (like git push)"
+        Write-Host "  pull        - Download from remote (like git pull)"
+        Write-Host "  pull .87    - Pull from .87 specifically"
+        Write-Host "  pull .154   - Pull from .154 specifically"
+        Write-Host "  fetch       - Check remote status without download (like git fetch)"
+        Write-Host "  log         - View remote log files (like git log)"
+        Write-Host "  log .154    - View logs from .154"
+        Write-Host "  reset       - Delete remote-only files (like git reset --hard)"
+        Write-Host "  clone       - Full download from remote (like git clone)"
+        Write-Host "  clone .154  - Clone from .154"
+        Write-Host ""
+        Write-Host "Extra Commands:" -ForegroundColor Yellow
+        Write-Host "  sync        - Interactive: diff -> confirm -> push"
+        Write-Host "  fullsync    - Push + Reset (make remote = local exactly)"
+        Write-Host "  issynced    - Quick one-line status check"
+        Write-Host "  watch       - Auto-sync on file change (Ctrl+C to stop)"
+        Write-Host "  autopush    - Push only if changes detected"
+        Write-Host ""
+        Write-Host "Aliases:" -ForegroundColor Yellow
+        Write-Host "  check       - Same as diff"
+        Write-Host "  delete      - Same as reset"
+        Write-Host "  pull87      - Same as pull .87"
+        Write-Host "  pull154     - Same as pull .154"
         Write-Host ""
         Write-Host "Examples:" -ForegroundColor Yellow
-        Write-Host "  mobaxterm check       # Compare with both servers"
-        Write-Host "  mobaxterm push        # Upload to .87 and .154"
-        Write-Host "  mobaxterm pull .154   # Download from .154"
-        Write-Host "  mobaxterm issynced    # Quick status check"
-        Write-Host "  mobaxterm watch       # Start auto-sync (Ctrl+C to stop)"
-        Write-Host "  mobaxterm autopush    # Push if changed"
+        Write-Host "  mobaxterm status       # Check sync state"
+        Write-Host "  mobaxterm diff         # View differences"
+        Write-Host "  mobaxterm push         # Upload changes"
+        Write-Host "  mobaxterm pull .154    # Download from .154"
+        Write-Host "  mobaxterm log          # View remote logs"
+        Write-Host "  mobaxterm watch        # Start auto-sync"
         Write-Host ""
     }
 }
