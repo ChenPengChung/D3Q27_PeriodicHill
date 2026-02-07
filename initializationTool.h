@@ -23,6 +23,7 @@ double GetNonuniParameter() {
             a_temp[1] = a_mid;
         }
     } while ( fabs( dx - minSize ) > 1e-14 );
+    
 
     /*if( myid == 0 ){
         printf("a = %lf\n", a_mid);

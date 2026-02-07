@@ -1,0 +1,174 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "SSH to cfdlab",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "chenpengchung@${input:masterServer}",
+        "-t",
+        "ssh -t cfdlab-ib${input:nodeNumber} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Switch Node",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "chenpengchung@${input:masterServer}",
+        "-t",
+        "ssh -t cfdlab-ib${input:nodeNumber} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Reconnect from Local",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "chenpengchung@${input:masterServer}",
+        "-t",
+        "ssh -t cfdlab-ib${input:nodeNumber} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Compile + Run",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "-batch",
+        "chenpengchung@${input:masterServer}",
+        "ssh cfdlab-ib${input:nodeNumber} 'cd /home/chenpengchung/D3Q27_PeriodicHill && nvcc main.cu -arch=sm_60 -O3 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out && nohup mpirun -np ${input:gpuCount} ./a.out > log$(date +%Y%m%d) 2>&1 &'"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Check Running Jobs",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "-batch",
+        "chenpengchung@${input:masterServer}",
+        "ssh cfdlab-ib${input:nodeNumber} 'ps aux | grep a.out | grep -v grep'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Kill Running Job",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh",
+        "-pw", "1256",
+        "-batch",
+        "chenpengchung@${input:masterServer}",
+        "ssh cfdlab-ib${input:nodeNumber} 'pkill -f a.out || pkill mpirun'"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Auto Sync (Watch)",
+      "type": "shell",
+      "command": "& 'c:\\Users\\88697.CHENPENGCHUNG12\\Desktop\\GitHub-PeriodicHill\\D3Q27_PeriodicHill\\.vscode\\mobaxterm.ps1' watch",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": false
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Quick Sync (Push if changed)",
+      "type": "shell",
+      "command": "& 'c:\\Users\\88697.CHENPENGCHUNG12\\Desktop\\GitHub-PeriodicHill\\D3Q27_PeriodicHill\\.vscode\\mobaxterm.ps1' autopush",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "masterServer",
+      "type": "pickString",
+      "description": "選擇母機 (決定可連的子機)",
+      "options": [
+        {"label": ".87 → ib2,3,5,6", "value": "140.114.58.87"},
+        {"label": ".154 → ib1,4,7,9", "value": "140.114.58.154"}
+      ],
+      "default": "140.114.58.87"
+    },
+    {
+      "id": "nodeNumber",
+      "type": "pickString",
+      "description": "選擇子機 (.87→2,3,5,6 / .154→1,4,7,9)",
+      "options": [
+        {"label": "ib1 (.154專用)", "value": "1"},
+        {"label": "ib2 (.87專用)", "value": "2"},
+        {"label": "ib3 (.87專用)", "value": "3"},
+        {"label": "ib4 (.154專用)", "value": "4"},
+        {"label": "ib5 (.87專用)", "value": "5"},
+        {"label": "ib6 (.87專用)", "value": "6"},
+        {"label": "ib7 (.154專用)", "value": "7"},
+        {"label": "ib9 (.154專用)", "value": "9"}
+      ],
+      "default": "3"
+    },
+    {
+      "id": "gpuCount",
+      "type": "pickString",
+      "description": "選擇要使用幾顆 GPU",
+      "options": ["4", "8"],
+      "default": "4"
+    }
+  ]
+}

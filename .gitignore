@@ -1,18 +1,42 @@
-# Ignore result and backup folders
+# ========================================
+# GitHub 同步設定 (只上傳程式碼)
+# ========================================
+
+# 忽略結果和備份資料夾
 result/
 backup/
 statistics/
 
-# Ignore data files
+# 忽略數據檔案
 *.dat
 *.DAT
 
-# Ignore compiled files
+# 忽略編譯產物
 a.out
 *.o
 *.exe
 
-# Ignore temporary files
+# 忽略日誌檔案
+log*
+
+# 忽略暫存檔案
 *~
 *.tmp
 *.swp
+
+# 忽略 IDE 快取 (但保留 .vscode 設定)
+.vs/
+
+# 忽略壓縮檔
+*.rar
+*.zip
+
+# ========================================
+# 保留項目 (會上傳到 GitHub)
+# ========================================
+# - 所有 .cu, .h, .c 程式碼
+# - initial_D3Q19/*.c 程式碼
+# - .vscode/ 設定
+# - .gitignore
+# - *.md 文件
+# ========================================
