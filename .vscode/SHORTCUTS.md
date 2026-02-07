@@ -11,11 +11,11 @@
 | `git status` | `mobaxterm status` | 顯示同步狀態總覽 |
 | `git add` | `mobaxterm add` | 顯示待推送的變更 |
 | `git diff` | `mobaxterm diff` | 比較本地與遠端差異 |
-| `git push` | `mobaxterm push` | 推送到 .87 和 .154 |
+| `git push` | `mobaxterm push` | **完整推送**：上傳 + 刪除遠端多餘檔案 |
 | `git pull` | `mobaxterm pull` | 從遠端拉取（預設 .87） |
 | `git fetch` | `mobaxterm fetch` | 只檢查遠端狀態（不下載） |
 | `git log` | `mobaxterm log` | 查看遠端 log 檔案 |
-| `git reset --hard` | `mobaxterm reset` | 刪除遠端多餘檔案 |
+| `git reset --hard` | `mobaxterm reset` | 只刪除遠端多餘檔案（不上傳） |
 | `git clone` | `mobaxterm clone` | 從遠端完整複製到本地 |
 
 ### Pull/Clone 指定伺服器
@@ -103,7 +103,7 @@ mobaxterm watch      # 啟動自動監控（編輯後自動推送）
 命令內容：
 ```bash
 cd /home/chenpengchung/D3Q27_PeriodicHill && \
-nvcc main.cu -arch=sm_60 -I/home/chenpengchung/openmpi-3.0.3/include \
+nvcc main.cu -arch=sm_35 -I/home/chenpengchung/openmpi-3.0.3/include \
 -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out && \
 nohup mpirun -np 4 ./a.out > log$(date +%Y%m%d) 2>&1 &
 ```

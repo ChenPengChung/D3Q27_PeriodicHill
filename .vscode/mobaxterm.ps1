@@ -220,19 +220,35 @@ switch ($Command) {
     }
     
     "push" {
-        Write-Color "[PUSH] Uploading ALL files to remote servers..." "Magenta"
+        Write-Color "[PUSH] Syncing changes to remote servers..." "Magenta"
         
         $localFiles = Get-LocalFiles
-        # 同步所有檔案（已經過 Get-LocalFiles 過濾排除項目）
-        $syncFiles = $localFiles
+        $localHash = @{}
+        foreach ($f in $localFiles) { $localHash[$f.Path] = $f }
         
         foreach ($server in $Config.Servers) {
             Write-Color "`nPushing to $($server.Name) ($($server.Host))..." "Cyan"
             
+            # 比較差異
+            $results = Compare-Files -Server $server -Silent
+            $toUpload = @()
+            $toUpload += $results.New
+            $toUpload += $results.Modified
+            $toDelete = $results.Deleted
+            
+            if ($toUpload.Count -eq 0 -and $toDelete.Count -eq 0) {
+                Write-Color "  [OK] Already synced, nothing to push" "Green"
+                continue
+            }
+            
+            # 上傳新增/修改的檔案
             $successCount = 0
             $failCount = 0
             
-            foreach ($file in $syncFiles) {
+            foreach ($path in $toUpload) {
+                $file = $localHash[$path]
+                if (-not $file) { continue }
+                
                 $localPath = $file.FullPath
                 $remoteDest = "$($server.User)@$($server.Host):$($Config.RemotePath)/$($file.Path)"
                 
@@ -241,7 +257,7 @@ switch ($Command) {
                 
                 $null = & $Config.PscpPath -pw $server.Password -q $localPath $remoteDest 2>&1
                 if ($LASTEXITCODE -eq 0) {
-                    Write-Color "  [OK] $($file.Path)" "Green"
+                    Write-Color "  [UPLOAD] $($file.Path)" "Green"
                     $successCount++
                 }
                 else {
@@ -250,14 +266,29 @@ switch ($Command) {
                 }
             }
             
-            Write-Color "`n$($server.Name): Success=$successCount | Failed=$failCount" "Cyan"
+            # 刪除遠端多餘檔案
+            $deleteCount = 0
+            foreach ($f in $toDelete) {
+                $remotePath = "$($Config.RemotePath)/$f"
+                & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "rm -f '$remotePath'" 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Color "  [DELETE] $f" "Red"
+                    $deleteCount++
+                }
+            }
+            
+            Write-Color "`n$($server.Name): Uploaded=$successCount | Deleted=$deleteCount | Failed=$failCount" "Cyan"
+            
+            # 清理遠端空資料夾（排除 .git）
+            $cleanupCmd = "find $($Config.RemotePath) -type d -empty ! -path '*/.git/*' -delete 2>/dev/null"
+            & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $cleanupCmd 2>$null
         }
         
         Write-Color "`nPush completed!" "Green"
     }
     
     "pull" {
-        Write-Color "[PULL] Downloading from remote..." "Magenta"
+        Write-Color "[PULL] Downloading changes from remote..." "Magenta"
         
         # Allow selecting server: mobaxterm pull .154 or mobaxterm pull .87
         $targetServer = $null
@@ -271,21 +302,30 @@ switch ($Command) {
             }
         }
         if (-not $targetServer) {
-            # Default to .87
             $targetServer = $Config.Servers[0]
         }
         
         Write-Color "`nPulling from $($targetServer.Name) ($($targetServer.Host))..." "Cyan"
         
-        $extPattern = "-name '*.cu' -o -name '*.h' -o -name '*.c' -o -name '*.json' -o -name '*.md'"
-        $cmd = "find $($Config.RemotePath) $extPattern 2>/dev/null | grep -v result | grep -v backup | grep -v initial_D3Q19"
-        $remoteList = & $Config.PlinkPath -ssh -pw $targetServer.Password -batch "$($targetServer.User)@$($targetServer.Host)" $cmd 2>$null
+        # 比較差異
+        $results = Compare-Files -Server $targetServer -Silent
         
-        $pullCount = 0
-        foreach ($remotePath in $remoteList) {
-            if ($remotePath) {
-                $relativePath = $remotePath.Replace($Config.RemotePath + "/", "").Replace("/", "\")
-                $localPath = Join-Path $Config.LocalPath $relativePath
+        # 要下載的：遠端有但本地沒有(Deleted) + 遠端修改過(Modified)
+        $toDownload = @()
+        $toDownload += $results.Deleted
+        $toDownload += $results.Modified
+        
+        # 要刪除的：本地有但遠端沒有(New)
+        $toDelete = $results.New
+        
+        if ($toDownload.Count -eq 0 -and $toDelete.Count -eq 0) {
+            Write-Color "  [OK] Already synced, nothing to pull" "Green"
+        }
+        else {
+            $pullCount = 0
+            foreach ($relativePath in $toDownload) {
+                $remotePath = "$($Config.RemotePath)/$relativePath"
+                $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", "\"))
                 $localDir = Split-Path $localPath -Parent
                 
                 if (-not (Test-Path $localDir)) { 
@@ -294,13 +334,23 @@ switch ($Command) {
                 
                 $null = & $Config.PscpPath -pw $targetServer.Password -q "$($targetServer.User)@$($targetServer.Host):$remotePath" $localPath 2>&1
                 if ($LASTEXITCODE -eq 0) {
-                    Write-Color "  [OK] $relativePath" "Green"
+                    Write-Color "  [DOWNLOAD] $relativePath" "Green"
                     $pullCount++
                 }
             }
+            
+            $deleteCount = 0
+            foreach ($f in $toDelete) {
+                $localPath = Join-Path $Config.LocalPath ($f.Replace("/", "\"))
+                if (Test-Path $localPath) {
+                    Remove-Item $localPath -Force
+                    Write-Color "  [DELETE] $f" "Red"
+                    $deleteCount++
+                }
+            }
+            
+            Write-Color "`n$($targetServer.Name): Downloaded=$pullCount | Deleted=$deleteCount" "Cyan"
         }
-        
-        Write-Color "`nPulled $pullCount files from $($targetServer.Name)" "Cyan"
     }
     
     "pull87" {
@@ -572,20 +622,19 @@ switch ($Command) {
         Write-Host "  status      - Show sync status (like git status)"
         Write-Host "  add         - Show pending changes (like git add)"
         Write-Host "  diff        - Compare local vs remote (like git diff)"
-        Write-Host "  push        - Upload to .87 and .154 (like git push)"
+        Write-Host "  push        - Full sync: upload + delete remote-only (like git push)"
         Write-Host "  pull        - Download from remote (like git pull)"
         Write-Host "  pull .87    - Pull from .87 specifically"
         Write-Host "  pull .154   - Pull from .154 specifically"
         Write-Host "  fetch       - Check remote status without download (like git fetch)"
         Write-Host "  log         - View remote log files (like git log)"
         Write-Host "  log .154    - View logs from .154"
-        Write-Host "  reset       - Delete remote-only files (like git reset --hard)"
+        Write-Host "  reset       - Delete remote-only files only (no upload)"
         Write-Host "  clone       - Full download from remote (like git clone)"
         Write-Host "  clone .154  - Clone from .154"
         Write-Host ""
         Write-Host "Extra Commands:" -ForegroundColor Yellow
         Write-Host "  sync        - Interactive: diff -> confirm -> push"
-        Write-Host "  fullsync    - Push + Reset (make remote = local exactly)"
         Write-Host "  issynced    - Quick one-line status check"
         Write-Host "  watch       - Auto-sync on file change (Ctrl+C to stop)"
         Write-Host "  autopush    - Push only if changes detected"

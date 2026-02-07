@@ -388,6 +388,7 @@ void OutputMiddlePlane()
 	}
 	fclose( middle );
  } 
+ 
 int main (int argc, char *argv[])
 {
     int i , j , k , n, myid;

@@ -1,4 +1,4 @@
-su - root#include <time.h>
+#include <time.h>
 #include <math.h>
 #include <cuda.h>
 #include <stdio.h>
