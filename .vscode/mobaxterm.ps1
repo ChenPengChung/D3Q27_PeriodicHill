@@ -1284,6 +1284,129 @@ switch ($Command) {
         }
     }
     
+    "vtkrename" {
+        # VTK file auto-renamer: monitor and rename VTK files to use zero-padding
+        $pidFile = Join-Path $Config.LocalPath ".vscode\vtk-renamer.pid"
+        $logFile = Join-Path $Config.LocalPath ".vscode\vtk-renamer.log"
+        $renamerScript = Join-Path $Config.LocalPath ".vscode\vtk-renamer.ps1"
+        $subCommand = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "" }
+        
+        switch ($subCommand) {
+            "stop" {
+                if (Test-Path $pidFile) {
+                    $processId = Get-Content $pidFile -ErrorAction SilentlyContinue
+                    if ($processId -match '^\d+$') {
+                        $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+                        if ($proc) {
+                            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+                            Write-Color "[VTK-RENAMER] Stopped process $processId" "Yellow"
+                        }
+                    }
+                    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+                    Write-Color "[VTK-RENAMER] VTK renamer stopped" "Green"
+                }
+                else {
+                    Write-Color "[VTK-RENAMER] No active renamer process" "Yellow"
+                }
+            }
+            
+            "status" {
+                Write-Color "`n=== VTK Renamer Status ===" "Cyan"
+                if (Test-Path $pidFile) {
+                    $processId = Get-Content $pidFile -ErrorAction SilentlyContinue
+                    if ($processId -match '^\d+$') {
+                        $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+                        if ($proc) {
+                            Write-Color "[RUNNING] PID: $processId" "Green"
+                            if (Test-Path $logFile) {
+                                Write-Color "`nRecent Activity (last 15 lines):" "Yellow"
+                                Get-Content $logFile -Tail 15 | ForEach-Object { Write-Host "  $_" }
+                            }
+                        }
+                        else {
+                            Write-Color "[STOPPED] No active process" "Yellow"
+                            Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                }
+                else {
+                    Write-Color "[STOPPED] VTK renamer is not running" "Yellow"
+                }
+                Write-Host ""
+            }
+            
+            "log" {
+                if (Test-Path $logFile) {
+                    Write-Color "=== VTK Renamer Log ===" "Cyan"
+                    Get-Content $logFile -Tail 50 | ForEach-Object { Write-Host $_ }
+                }
+                else {
+                    Write-Color "No log file found" "Yellow"
+                }
+            }
+            
+            "clear" {
+                if (Test-Path $logFile) {
+                    Remove-Item $logFile -Force
+                    Write-Color "[VTK-RENAMER] Log cleared" "Green"
+                }
+            }
+            
+            default {
+                # Start VTK renamer
+                if (Test-Path $pidFile) {
+                    $processId = Get-Content $pidFile -ErrorAction SilentlyContinue
+                    if ($processId -match '^\d+$') {
+                        $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+                        if ($proc) {
+                            Write-Color "[VTK-RENAMER] Already running (PID: $processId). Use 'mobaxterm vtkrename stop' first." "Yellow"
+                            return
+                        }
+                    }
+                }
+                
+                $checkInterval = 5
+                if ($Arguments.Count -gt 0 -and $Arguments[0] -match '^\d+$') {
+                    $checkInterval = [int]$Arguments[0]
+                }
+                
+                Write-Color "[VTK-RENAMER] Starting VTK file auto-renamer..." "Magenta"
+                Write-Color "  Watch Path: $($Config.LocalPath)\result" "White"
+                Write-Color "  Check Interval: ${checkInterval}s" "White"
+                Write-Color "  Log: $logFile" "Gray"
+                Write-Color "`nThis will rename:" "Yellow"
+                Write-Color "  velocity_merged_1001.vtk → velocity_merged_001001.vtk" "Cyan"
+                Write-Color "`nCommands:" "Yellow"
+                Write-Color "  mobaxterm vtkrename status  - Check status" "Gray"
+                Write-Color "  mobaxterm vtkrename log     - View log" "Gray"
+                Write-Color "  mobaxterm vtkrename stop    - Stop renamer" "Gray"
+                Write-Host ""
+                
+                # Clear old log
+                if (Test-Path $logFile) {
+                    Remove-Item $logFile -Force -ErrorAction SilentlyContinue
+                }
+                
+                # Start renamer process
+                $proc = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+                    "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
+                    "-File", "`"$renamerScript`"",
+                    "-WatchPath", "`"$($Config.LocalPath)`"",
+                    "-CheckInterval", $checkInterval
+                ) -PassThru
+                
+                Start-Sleep -Milliseconds 500
+                
+                # Save PID
+                $proc.Id | Out-File $pidFile -Force
+                Write-Color "[STARTED] VTK renamer (PID: $($proc.Id))" "Green"
+                
+                Write-Color "`n[VTK-RENAMER] Background monitoring started!" "Green"
+                Write-Color "Use 'mobaxterm vtkrename status' to check progress" "Cyan"
+            }
+        }
+    }
+    
     default {
         Write-Host ""
         Write-Host "MobaXterm Sync Commands (Git-like)" -ForegroundColor Cyan
@@ -1325,6 +1448,13 @@ switch ($Command) {
         Write-Host "  reset       - Delete remote-only files (no upload)"
         Write-Host "  sync        - Interactive: diff -> confirm -> push"
         Write-Host "  issynced    - Quick one-line status check"
+        Write-Host ""
+        Write-Host "VTK File Management:" -ForegroundColor Yellow
+        Write-Host "  vtkrename         - Auto-rename VTK files to zero-padded format"
+        Write-Host "  vtkrename status  - Check renamer status"
+        Write-Host "  vtkrename log     - View rename log"
+        Write-Host "  vtkrename stop    - Stop auto-renamer"
+        Write-Host "  (Renames: velocity_merged_1001.vtk -> velocity_merged_001001.vtk)" -ForegroundColor Gray
         Write-Host ""
         Write-Host "Background Commands:" -ForegroundColor Yellow
         Write-Host "  watchpull/watchfetch/watchpush [.87|.154]  - Start monitoring"
