@@ -10,7 +10,15 @@ param(
 )
 
 $servers = $ServersJson | ConvertFrom-Json
-$excludePatterns = @(".git/*", ".vscode/*", "a.out", "*.o", "*.exe")
+# 排除規則：程式碼輸出檔案不上傳（避免覆蓋遠端正在寫入的檔案）
+$excludePatterns = @(
+    ".git/*", ".vscode/*",           # 系統資料夾
+    "a.out", "*.o", "*.exe",         # 編譯產物
+    "*.dat", "*.DAT",                # 輸出資料檔
+    "log*",                          # log 檔案
+    "*.plt",                         # 繪圖檔案
+    "result/*", "backup/*", "statistics/*"  # 輸出資料夾
+)
 $lastHashes = @{}
 
 # Helper function to append log with proper encoding (UTF-8 without BOM)
