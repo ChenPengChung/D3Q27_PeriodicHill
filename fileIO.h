@@ -330,7 +330,9 @@ void fileIO_velocity_vtk_merged(int step) {
     
     // 全域 y 層數
     const int nyGlobal = NY6 - 6;
-    const int globalPoints = nxLocal * nyGlobal * nzLocal;
+    const int globalPoints = nxLocal * nyGlobal * nzLocal;  // VTK 輸出用
+    // MPI_Gather 需要的緩衝區大小 = localPoints * nProcs
+    const int gatherPoints = localPoints * nProcs;
     
     // 準備本地速度資料 (去除 ghost cells, 只取內部)
     double *u_local = (double*)malloc(localPoints * sizeof(double));
@@ -363,10 +365,10 @@ void fileIO_velocity_vtk_merged(int step) {
     double *z_global = NULL;
     
     if( myid == 0 ) {
-        u_global = (double*)malloc(globalPoints * sizeof(double));
-        v_global = (double*)malloc(globalPoints * sizeof(double));
-        w_global = (double*)malloc(globalPoints * sizeof(double));
-        z_global = (double*)malloc(nyGlobal * nzLocal * sizeof(double));
+        u_global = (double*)malloc(gatherPoints * sizeof(double));
+        v_global = (double*)malloc(gatherPoints * sizeof(double));
+        w_global = (double*)malloc(gatherPoints * sizeof(double));
+        z_global = (double*)malloc(zLocalSize * nProcs * sizeof(double));
     }
     
     // 所有 rank 一起呼叫 MPI_Gather
