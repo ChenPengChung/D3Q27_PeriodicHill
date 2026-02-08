@@ -159,8 +159,8 @@ int main(int argc, char *argv[])
         InitialUsingDftFunc();
     } else if ( INIT == 1 ) {
         printf("Initializing by backup data...\n");
-        InitialUsingBkpData();
-        if( TBINIT && TBSWITCH ) InitialTBUsingBkpData();
+        result_readbin_velocityandf();
+        if( TBINIT && TBSWITCH ) statistics_readbin_stress();
     }
 
     SendDataToGPU();
@@ -264,11 +264,10 @@ int main(int argc, char *argv[])
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
     SendDataToCPU( ft );
-    fileIO_velocity();
-    fileIO_PDF();
+    result_writebin_velocityandf();
     //Output3Dvelocity();
     if( TBSWITCH ) {
-        Launch_OutputTB();
+        statistics_writebin_stress();
     }
     
     /* for( step = 0 ; step < loop ; step++ ){
