@@ -30,8 +30,8 @@ while ($true) {
         $cmd = "find $RemotePath -maxdepth 1 -type f \( -name '*.dat' -o -name 'log*' -o -name '*.plt' \) 2>/dev/null"
         $result = & $PlinkPath -ssh -pw $ServerPass -batch "$ServerUser@$ServerHost" $cmd 2>$null
         
-        # Also get files in result/statistics directories
-        $resultCmd = "find $RemotePath/result $RemotePath/statistics -type f \( -name '*.dat' -o -name '*.plt' -o -name 'log*' \) 2>/dev/null"
+        # Also get files in result/statistics directories (include .bin and .vtk)
+        $resultCmd = "find $RemotePath/result $RemotePath/statistics -type f \( -name '*.dat' -o -name '*.plt' -o -name '*.bin' -o -name '*.vtk' -o -name 'log*' \) 2>/dev/null"
         $resultFiles = & $PlinkPath -ssh -pw $ServerPass -batch "$ServerUser@$ServerHost" $resultCmd 2>$null
         
         $allFiles = @()
