@@ -2,8 +2,18 @@
 # GitHub 上傳設定 (保留所有程式碼檔案)
 # ========================================
 
-# 排除模擬結果目錄
-result/
+# 排除模擬結果目錄中的大檔案，但保留腳本和媒體檔案
+result/*.vtk
+result/*.bin
+result/*.dat
+result/*.DAT
+result/*.raw
+result/*.pvd
+result/*.vti
+result/*.vtu
+result/*.vtp
+result/*.pvtu
+result/*.pvtp
 backup/
 statistics/
 
@@ -39,4 +49,7 @@ a.out
 # - 會上傳: .vscode/ 目錄（包括所有設定檔、日誌）
 # - 會上傳: .gitignore
 # - 會上傳: *.md 文件
+# - 會上傳: result/*.py  Python 腳本
+# - 會上傳: result/*.png *.jpg *.gif *.mp4 圖片影片
+# - 不上傳: result/*.vtk *.bin *.dat 等大型資料檔
 # ========================================
