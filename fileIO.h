@@ -57,7 +57,7 @@ void result_writebin(double* arr_h, const char *fname, const int myid){
     string path = oss.str();
 
     // 用 C++ ofstream 開啟二進制檔案
-    ofstream file(path, ios::binary);
+    ofstream file(path.c_str(), ios::binary);
     if (!file) {
         cout << "Output data error, exit..." << endl;
         CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
@@ -73,7 +73,7 @@ void result_readbin(double *arr_h, const char *folder, const char *fname, const 
     oss << "./" << folder << "/" << fname << "_" << myid << ".bin";
     string path = oss.str();
 
-    ifstream file(path, ios::binary);
+    ifstream file(path.c_str(), ios::binary);
     if (!file) {
         cout << "Read data error: " << path << ", exit...\n";
         CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
@@ -88,7 +88,7 @@ void result_writebin_velocityandf() {
     // 輸出 Paraview VTK (最終結果，分 GPU 子域輸出)
     ostringstream oss;
     oss << "./result/velocity_" << myid << "_Final.vtk";
-    ofstream out(oss.str());
+    ofstream out(oss.str().c_str());
     // VTK Header
     out << "# vtk DataFile Version 3.0\n";
     out << "LBM Velocity Field\n";
@@ -146,7 +146,7 @@ void result_readbin_velocityandf()
 {
     PreCheckDir();
 
-    string result = "result";
+    const char* result = "result";
 
     ifstream fp_gg("./result/0_force.dat");
     fp_gg >> Force_h[0];
@@ -194,7 +194,7 @@ void statistics_writebin(double *arr_d, const char *fname, const int myid){
     oss << "./statistics/" << fname << "/" << fname << "_" << myid << ".bin";
     
     // C++ ofstream 寫入二進制
-    ofstream file(oss.str(), ios::binary);
+    ofstream file(oss.str().c_str(), ios::binary);
     for( int k = 3; k < NZ6-3;  k++ ){
     for( int j = 3; j < NYD6-3; j++ ){
     for( int i = 3; i < NX6-3;  i++ ){
@@ -214,7 +214,7 @@ void statistics_readbin(double * arr_d, const char *fname, const int myid){
     oss << "./statistics/" << fname << "/" << fname << "_" << myid << ".bin";
     
     // C++ ifstream 讀取二進制
-    ifstream file(oss.str(), ios::binary);
+    ifstream file(oss.str().c_str(), ios::binary);
     for( int k = 3; k < NZ6-3;  k++ ){
     for( int j = 3; j < NYD6-3; j++ ){
     for( int i = 3; i < NX6-3;  i++ ){
@@ -268,9 +268,9 @@ void statistics_writebin_stress(){
 	statistics_writebin(WWU, "WWU", myid);
 	statistics_writebin(WWV, "WWV", myid);
 	statistics_writebin(WWW, "WWW", myid);//9.
-	statistics_writebin(OMEGA_X, "OMEGA_X", myid);
-	statistics_writebin(OMEGA_Y, "OMEGA_Y", myid);
-	statistics_writebin(OMEGA_Z, "OMEGA_Z", myid);//3.
+	//statistics_writebin(OMEGA_X, "OMEGA_X", myid);
+	//statistics_writebin(OMEGA_Y, "OMEGA_Y", myid);
+	//statistics_writebin(OMEGA_Z, "OMEGA_Z", myid);//3.
 }
 //4.statistics系列主函數2.
 void statistics_readbin_stress() {
@@ -311,9 +311,9 @@ void statistics_readbin_stress() {
 	statistics_readbin(WWU, "WWU", myid);
 	statistics_readbin(WWV, "WWV", myid);
 	statistics_readbin(WWW, "WWW", myid);
-	statistics_readbin(OMEGA_X, "OMEGA_X", myid);
-	statistics_readbin(OMEGA_Y, "OMEGA_Y", myid);
-	statistics_readbin(OMEGA_Z, "OMEGA_Z", myid);
+	//statistics_readbin(OMEGA_X, "OMEGA_X", myid);
+	//statistics_readbin(OMEGA_Y, "OMEGA_Y", myid);
+	//statistics_readbin(OMEGA_Z, "OMEGA_Z", myid);
 	CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }
 /*第四段:逐步輸出可視化VTK檔案*/
@@ -386,7 +386,7 @@ void fileIO_velocity_vtk_merged(int step) {
         
         ostringstream oss;
         oss << "./result/velocity_merged_" << step << ".vtk";
-        ofstream out(oss.str());
+        ofstream out(oss.str().c_str());
         
         out << "# vtk DataFile Version 3.0\n";
         out << "LBM Velocity Field (merged) step=" << step << "\n";
