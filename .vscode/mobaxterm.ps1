@@ -26,11 +26,11 @@ $script:Config = @{
     )
     PscpPath = "C:\Program Files\PuTTY\pscp.exe"
     PlinkPath = "C:\Program Files\PuTTY\plink.exe"
-    # 遠端同步：只排除 .git 和編譯產物，其他全部同步
-    ExcludePatterns = @(".git/*", "a.out", "*.o", "*.exe")
-    # 同步所有檔案類型
+    # ?垢?郊嚗???.git??vscode ?楊霅舐??
+    ExcludePatterns = @(".git/*", ".vscode/*", "a.out", "*.o", "*.exe")
+    # ?郊???獢???
     SyncExtensions = @("*")
-    SyncAll = $true  # 同步所有檔案到遠端工作區
+    SyncAll = $true  # ?郊???獢?垢撌乩??
 }
 
 function Write-Color {
@@ -65,8 +65,8 @@ function Get-LocalFiles {
 function Get-RemoteFiles {
     param([hashtable]$Server)
     
-    # 只排除 .git 目錄，其他全部同步
-    $excludeGrep = "grep -v '/.git/'"
+    # ? .git ??.vscode ?桅?
+    $excludeGrep = "grep -v '/.git/' | grep -v '/.vscode/'"
     $cmd = "find $($Config.RemotePath) -type f -exec md5sum {} \; 2>/dev/null | $excludeGrep"
     $result = & $Config.PlinkPath -ssh -pw $Server.Password -batch "$($Server.User)@$($Server.Host)" $cmd 2>$null
     
@@ -161,7 +161,7 @@ function Show-CompareResults {
 switch ($Command) {
     # ===== Git-like Commands =====
     
-    # git diff - 比較本地與遠端差異
+    # git diff - 瘥??砍??蝡臬榆??
     { $_ -in "diff", "check" } {
         Write-Color "[DIFF] Comparing local vs remote..." "Magenta"
         foreach ($server in $Config.Servers) {
@@ -170,7 +170,7 @@ switch ($Command) {
         }
     }
     
-    # git status - 顯示同步狀態
+    # git status - 憿舐內?郊???
     "status" {
         Write-Color "[STATUS] Sync overview" "Magenta"
         
@@ -194,7 +194,7 @@ switch ($Command) {
         }
     }
     
-    # git add - 顯示待推送的變更
+    # git add - 憿舐內敺??霈
     "add" {
         Write-Color "[ADD] Showing pending changes..." "Magenta"
         $allChanges = @()
@@ -229,7 +229,7 @@ switch ($Command) {
         foreach ($server in $Config.Servers) {
             Write-Color "`nPushing to $($server.Name) ($($server.Host))..." "Cyan"
             
-            # 比較差異
+            # 瘥?撌桃
             $results = Compare-Files -Server $server -Silent
             $toUpload = @()
             $toUpload += $results.New
@@ -241,7 +241,7 @@ switch ($Command) {
                 continue
             }
             
-            # 上傳新增/修改的檔案
+            # 銝?啣?/靽格??獢?
             $successCount = 0
             $failCount = 0
             
@@ -266,7 +266,7 @@ switch ($Command) {
                 }
             }
             
-            # 刪除遠端多餘檔案
+            # ?芷?垢憭?瑼?
             $deleteCount = 0
             foreach ($f in $toDelete) {
                 $remotePath = "$($Config.RemotePath)/$f"
@@ -279,7 +279,7 @@ switch ($Command) {
             
             Write-Color "`n$($server.Name): Uploaded=$successCount | Deleted=$deleteCount | Failed=$failCount" "Cyan"
             
-            # 清理遠端空資料夾（排除 .git）
+            # 皜??垢蝛箄??冗嚗???.git嚗?
             $cleanupCmd = "find $($Config.RemotePath) -type d -empty ! -path '*/.git/*' -delete 2>/dev/null"
             & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $cleanupCmd 2>$null
         }
@@ -307,15 +307,15 @@ switch ($Command) {
         
         Write-Color "`nPulling from $($targetServer.Name) ($($targetServer.Host))..." "Cyan"
         
-        # 比較差異
+        # 瘥?撌桃
         $results = Compare-Files -Server $targetServer -Silent
         
-        # 要下載的：遠端有但本地沒有(Deleted) + 遠端修改過(Modified)
+        # 閬?頛?嚗?蝡舀?雿?唳???Deleted) + ?垢靽格??Modified)
         $toDownload = @()
         $toDownload += $results.Deleted
         $toDownload += $results.Modified
         
-        # 要刪除的：本地有但遠端沒有(New)
+        # 閬?斤?嚗?唳?雿?蝡舀???New)
         $toDelete = $results.New
         
         if ($toDownload.Count -eq 0 -and $toDelete.Count -eq 0) {
@@ -361,7 +361,7 @@ switch ($Command) {
         & $PSCommandPath pull .154
     }
     
-    # git fetch - 只檢查遠端狀態（不下載）
+    # git fetch - ?芣炎?仿?蝡舐???銝?頛?
     "fetch" {
         Write-Color "[FETCH] Fetching remote status..." "Magenta"
         foreach ($server in $Config.Servers) {
@@ -373,7 +373,7 @@ switch ($Command) {
         }
     }
     
-    # git log - 查看遠端 log 檔案
+    # git log - ?亦??垢 log 瑼?
     "log" {
         Write-Color "[LOG] Fetching remote log files..." "Magenta"
         
@@ -399,7 +399,7 @@ switch ($Command) {
             Write-Color "  No log files found" "Yellow"
         }
         
-        # 顯示最新 log 的最後幾行
+        # 憿舐內???log ??敺嗾銵?
         Write-Color "`nLatest log tail:" "Cyan"
         $cmd = "tail -20 `$(ls -t $($Config.RemotePath)/log* 2>/dev/null | head -1) 2>/dev/null"
         $result = & $Config.PlinkPath -ssh -pw $targetServer.Password -batch "$($targetServer.User)@$($targetServer.Host)" $cmd 2>$null
@@ -408,7 +408,7 @@ switch ($Command) {
         }
     }
     
-    # git reset --hard - 重置遠端（刪除遠端多餘檔案）
+    # git reset --hard - ?蔭?垢嚗?日?蝡臬?擗?獢?
     { $_ -in "reset", "delete" } {
         Write-Color "[RESET] Removing files from remote that don't exist locally..." "Magenta"
         
@@ -450,7 +450,7 @@ switch ($Command) {
         }
     }
     
-    # git clone - 從遠端完整複製到本地
+    # git clone - 敺?蝡臬??渲?鋆賢?砍
     "clone" {
         Write-Color "[CLONE] Full download from remote to local..." "Magenta"
         
@@ -604,11 +604,396 @@ switch ($Command) {
         }
     }
     
+    "watchpush" {
+        # Background auto-upload: monitor local files and upload changes (persistent process)
+        $pidFile = Join-Path $Config.LocalPath ".vscode\watchpush.pid"
+        $logFile = Join-Path $Config.LocalPath ".vscode\watchpush.log"
+        $daemonScript = Join-Path $Config.LocalPath ".vscode\watchpush-daemon.ps1"
+        $subCommand = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "" }
+        
+        switch ($subCommand) {
+            "stop" {
+                if (Test-Path $pidFile) {
+                    $pids = Get-Content $pidFile -ErrorAction SilentlyContinue
+                    foreach ($p in $pids) {
+                        if ($p -match '^\d+$') {
+                            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                            if ($proc) {
+                                Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
+                                Write-Color "[WATCHPUSH] Stopped process $p" "Yellow"
+                            }
+                        }
+                    }
+                    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+                    Write-Color "[WATCHPUSH] Auto-upload stopped" "Green"
+                }
+                else {
+                    Write-Color "[WATCHPUSH] No active watchpush process" "Yellow"
+                }
+            }
+            
+            "status" {
+                Write-Color "`n=== WatchPush Status ===" "Cyan"
+                if (Test-Path $pidFile) {
+                    $pids = Get-Content $pidFile -ErrorAction SilentlyContinue
+                    $active = @()
+                    foreach ($p in $pids) {
+                        if ($p -match '^\d+$') {
+                            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                            if ($proc) { $active += $p }
+                        }
+                    }
+                    if ($active.Count -gt 0) {
+                        Write-Color "[RUNNING] PIDs: $($active -join ', ')" "Green"
+                        if (Test-Path $logFile) {
+                            Write-Color "`nRecent Activity (last 15 lines):" "Yellow"
+                            Get-Content $logFile -Tail 15 | ForEach-Object { Write-Host "  $_" }
+                        }
+                    }
+                    else {
+                        Write-Color "[STOPPED] No active process" "Yellow"
+                        Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+                    }
+                }
+                else {
+                    Write-Color "[STOPPED] WatchPush is not running" "Yellow"
+                }
+                Write-Host ""
+            }
+            
+            "log" {
+                if (Test-Path $logFile) {
+                    Write-Color "=== WatchPush Log ===" "Cyan"
+                    Get-Content $logFile -Tail 50 | ForEach-Object { Write-Host $_ }
+                }
+                else {
+                    Write-Color "No log file found" "Yellow"
+                }
+            }
+            
+            "clear" {
+                if (Test-Path $logFile) {
+                    Remove-Item $logFile -Force
+                    Write-Color "[WATCHPUSH] Log cleared" "Green"
+                }
+            }
+            
+            default {
+                # Check if already running
+                if (Test-Path $pidFile) {
+                    $pids = Get-Content $pidFile -ErrorAction SilentlyContinue
+                    foreach ($p in $pids) {
+                        if ($p -match '^\d+$') {
+                            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                            if ($proc) {
+                                Write-Color "[WATCHPUSH] Already running (PID: $p). Use 'mobaxterm watchpush stop' first." "Yellow"
+                                return
+                            }
+                        }
+                    }
+                }
+                
+                $interval = 10  # Check interval in seconds
+                if ($Arguments.Count -gt 0 -and $Arguments[0] -match '^\d+$') {
+                    $interval = [int]$Arguments[0]
+                }
+                
+                Write-Color "[WATCHPUSH] Starting background auto-upload (persistent)..." "Magenta"
+                Write-Color "  Interval: ${interval}s" "White"
+                Write-Color "  Targets: .87, .154" "White"
+                Write-Color "  Log: $logFile" "Gray"
+                Write-Color "`nCommands:" "Yellow"
+                Write-Color "  mobaxterm watchpush status  - Check status & recent uploads" "Gray"
+                Write-Color "  mobaxterm watchpush log     - View full log" "Gray"
+                Write-Color "  mobaxterm watchpush stop    - Stop monitoring" "Gray"
+                Write-Color "  mobaxterm syncstatus        - Combined push/pull status" "Gray"
+                Write-Host ""
+                
+                # Clear old log (use UTF-8 without BOM)
+                $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+                [System.IO.File]::WriteAllText($logFile, "", $utf8NoBom)
+                
+                # Prepare servers JSON
+                $serversJson = $Config.Servers | ConvertTo-Json -Compress
+                
+                # Start independent PowerShell process
+                $proc = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+                    "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
+                    "-File", "`"$daemonScript`"",
+                    "-LocalPath", "`"$($Config.LocalPath)`"",
+                    "-RemotePath", "`"$($Config.RemotePath)`"",
+                    "-ServersJson", "'$serversJson'",
+                    "-PlinkPath", "`"$($Config.PlinkPath)`"",
+                    "-PscpPath", "`"$($Config.PscpPath)`"",
+                    "-LogPath", "`"$logFile`"",
+                    "-Interval", $interval
+                ) -PassThru
+                
+                # Save process ID
+                Start-Sleep -Milliseconds 500
+                $proc.Id | Out-File $pidFile -Force
+                Write-Color "[STARTED] Background process (PID: $($proc.Id))" "Green"
+                
+                Write-Color "`n[WATCHPUSH] Background auto-upload started!" "Green"
+                Write-Color "Use 'mobaxterm watchpush status' to check progress" "Cyan"
+            }
+        }
+    }
+    
+    "syncstatus" {
+        # Combined status for both watchpush and watchpull
+        $pushPidFile = Join-Path $Config.LocalPath ".vscode\watchpush.pid"
+        $pullPidFile = Join-Path $Config.LocalPath ".vscode\watchpull.pid"
+        $pushLogFile = Join-Path $Config.LocalPath ".vscode\watchpush.log"
+        $pullLogFile = Join-Path $Config.LocalPath ".vscode\watchpull.log"
+        
+        Write-Color "`n========== Sync Monitor Status ==========" "Cyan"
+        
+        # WatchPush status
+        Write-Color "`n[UPLOAD] WatchPush:" "Yellow"
+        if (Test-Path $pushPidFile) {
+            $pids = Get-Content $pushPidFile -ErrorAction SilentlyContinue
+            $active = @()
+            foreach ($p in $pids) {
+                if ($p -match '^\d+$') {
+                    $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                    if ($proc) { $active += $p }
+                }
+            }
+            if ($active.Count -gt 0) {
+                Write-Color "  Status: RUNNING (PID: $($active -join ', '))" "Green"
+                if (Test-Path $pushLogFile) {
+                    $lastLine = Get-Content $pushLogFile -Tail 1
+                    if ($lastLine) { Write-Color "  Last: $lastLine" "Gray" }
+                }
+            }
+            else {
+                Write-Color "  Status: STOPPED" "Yellow"
+                Remove-Item $pushPidFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+        else {
+            Write-Color "  Status: OFF" "Gray"
+        }
+        
+        # WatchPull status
+        Write-Color "`n[DOWNLOAD] WatchPull:" "Yellow"
+        if (Test-Path $pullPidFile) {
+            $pids = Get-Content $pullPidFile -ErrorAction SilentlyContinue
+            $active = @()
+            foreach ($p in $pids) {
+                if ($p -match '^\d+$') {
+                    $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                    if ($proc) { $active += $p }
+                }
+            }
+            if ($active.Count -gt 0) {
+                Write-Color "  Status: RUNNING (PID: $($active -join ', '))" "Green"
+                if (Test-Path $pullLogFile) {
+                    $lastLine = Get-Content $pullLogFile -Tail 1
+                    if ($lastLine) { Write-Color "  Last: $lastLine" "Gray" }
+                }
+            }
+            else {
+                Write-Color "  Status: STOPPED" "Yellow"
+                Remove-Item $pullPidFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+        else {
+            Write-Color "  Status: OFF" "Gray"
+        }
+        
+        Write-Color "`n=========================================" "Cyan"
+        Write-Color "Commands:" "Yellow"
+        Write-Color "  mobaxterm watchpush       - Start auto-upload" "Gray"
+        Write-Color "  mobaxterm watchpush stop  - Stop auto-upload" "Gray"
+        Write-Color "  mobaxterm watchpull       - Start auto-download" "Gray"
+        Write-Color "  mobaxterm watchpull stop  - Stop auto-download" "Gray"
+        Write-Host ""
+    }
+    
     "fullsync" {
         Write-Color "[FULLSYNC] Push + Reset (make remote match local exactly)" "Magenta"
         & $PSCommandPath push
         Write-Host ""
         & $PSCommandPath reset
+    }
+    
+    "watchpull" {
+        # Auto-download: monitor remote servers and download new files (persistent process)
+        $pidFile = Join-Path $Config.LocalPath ".vscode\watchpull.pid"
+        $logFile = Join-Path $Config.LocalPath ".vscode\watchpull.log"
+        $daemonScript = Join-Path $Config.LocalPath ".vscode\watchpull-daemon.ps1"
+        $subCommand = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "" }
+        
+        switch ($subCommand) {
+            "stop" {
+                if (Test-Path $pidFile) {
+                    $pids = Get-Content $pidFile -ErrorAction SilentlyContinue
+                    foreach ($p in $pids) {
+                        if ($p -match '^\d+$') {
+                            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                            if ($proc) {
+                                Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
+                                Write-Color "[WATCHPULL] Stopped process $p" "Yellow"
+                            }
+                        }
+                    }
+                    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+                    Write-Color "[WATCHPULL] Auto-download stopped" "Green"
+                }
+                else {
+                    Write-Color "[WATCHPULL] No active watchpull process" "Yellow"
+                }
+            }
+            
+            "status" {
+                Write-Color "`n=== WatchPull Status ===" "Cyan"
+                if (Test-Path $pidFile) {
+                    $pids = Get-Content $pidFile -ErrorAction SilentlyContinue
+                    $active = @()
+                    foreach ($p in $pids) {
+                        if ($p -match '^\d+$') {
+                            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                            if ($proc) { $active += $p }
+                        }
+                    }
+                    if ($active.Count -gt 0) {
+                        Write-Color "[RUNNING] PIDs: $($active -join ', ')" "Green"
+                        if (Test-Path $logFile) {
+                            Write-Color "`nRecent Activity (last 20 lines):" "Yellow"
+                            Get-Content $logFile -Tail 20 | ForEach-Object { Write-Host "  $_" }
+                        }
+                    }
+                    else {
+                        Write-Color "[STOPPED] No active process" "Yellow"
+                        Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+                    }
+                }
+                else {
+                    Write-Color "[STOPPED] WatchPull is not running" "Yellow"
+                }
+                Write-Host ""
+            }
+            
+            "log" {
+                if (Test-Path $logFile) {
+                    Write-Color "=== WatchPull Log ===" "Cyan"
+                    Get-Content $logFile -Tail 50 | ForEach-Object { Write-Host $_ }
+                }
+                else {
+                    Write-Color "No log file found" "Yellow"
+                }
+            }
+            
+            "clear" {
+                if (Test-Path $logFile) {
+                    Remove-Item $logFile -Force
+                    Write-Color "[WATCHPULL] Log cleared" "Green"
+                }
+            }
+            
+            default {
+                # Start watchpull for specified server or both
+                $targetServers = @()
+                if ($subCommand -eq ".87" -or $subCommand -eq "87") {
+                    $targetServers = @($Config.Servers | Where-Object { $_.Name -eq ".87" })
+                }
+                elseif ($subCommand -eq ".154" -or $subCommand -eq "154") {
+                    $targetServers = @($Config.Servers | Where-Object { $_.Name -eq ".154" })
+                }
+                else {
+                    $targetServers = $Config.Servers
+                }
+                
+                # Check if already running
+                if (Test-Path $pidFile) {
+                    $pids = Get-Content $pidFile -ErrorAction SilentlyContinue
+                    foreach ($p in $pids) {
+                        if ($p -match '^\d+$') {
+                            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                            if ($proc) {
+                                Write-Color "[WATCHPULL] Already running (PID: $p). Use 'mobaxterm watchpull stop' first." "Yellow"
+                                return
+                            }
+                        }
+                    }
+                }
+                
+                $interval = 30  # Check interval in seconds
+                if ($Arguments.Count -gt 1 -and $Arguments[1] -match '^\d+$') {
+                    $interval = [int]$Arguments[1]
+                }
+                
+                Write-Color "[WATCHPULL] Starting auto-download monitor (persistent)..." "Magenta"
+                Write-Color "  Servers: $($targetServers.Name -join ', ')" "White"
+                Write-Color "  Interval: ${interval}s" "White"
+                Write-Color "  Log: $logFile" "Gray"
+                Write-Color "`nCommands:" "Yellow"
+                Write-Color "  mobaxterm watchpull status  - Check status & recent downloads" "Gray"
+                Write-Color "  mobaxterm watchpull log     - View full log" "Gray"
+                Write-Color "  mobaxterm watchpull stop    - Stop monitoring" "Gray"
+                Write-Host ""
+                
+                # Clear old log (use UTF-8 without BOM)
+                $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+                [System.IO.File]::WriteAllText($logFile, "", $utf8NoBom)
+                
+                # Start independent process for each server
+                $processPids = @()
+                foreach ($server in $targetServers) {
+                    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+                        "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
+                        "-File", "`"$daemonScript`"",
+                        "-LocalPath", "`"$($Config.LocalPath)`"",
+                        "-RemotePath", "`"$($Config.RemotePath)`"",
+                        "-ServerName", "`"$($server.Name)`"",
+                        "-ServerHost", "`"$($server.Host)`"",
+                        "-ServerUser", "`"$($server.User)`"",
+                        "-ServerPass", "`"$($server.Password)`"",
+                        "-PlinkPath", "`"$($Config.PlinkPath)`"",
+                        "-PscpPath", "`"$($Config.PscpPath)`"",
+                        "-LogPath", "`"$logFile`"",
+                        "-Interval", $interval
+                    ) -PassThru
+                    
+                    Start-Sleep -Milliseconds 500
+                    $processPids += $proc.Id
+                    Write-Color "[STARTED] $($server.Name) monitoring (PID: $($proc.Id))" "Green"
+                }
+                
+                # Save process IDs
+                $processPids | Out-File $pidFile -Force
+                
+                Write-Color "`n[WATCHPULL] Background monitoring started!" "Green"
+                Write-Color "Use 'mobaxterm watchpull status' to check progress" "Cyan"
+            }
+        }
+    }
+    
+    "autopull" {
+        # Quick auto-pull: check and pull if needed (no interaction)
+        $targetServer = $Config.Servers[0]  # Default to .87
+        if ($Arguments.Count -gt 0) {
+            $arg = $Arguments[0]
+            if ($arg -eq ".154" -or $arg -eq "154") {
+                $targetServer = $Config.Servers | Where-Object { $_.Name -eq ".154" }
+            }
+            elseif ($arg -eq ".87" -or $arg -eq "87") {
+                $targetServer = $Config.Servers | Where-Object { $_.Name -eq ".87" }
+            }
+        }
+        
+        $results = Compare-Files -Server $targetServer -Silent
+        $needsPull = $results.Deleted.Count + $results.Modified.Count
+        
+        if ($needsPull -gt 0) {
+            Write-Color "[AUTOPULL] $needsPull files to download from $($targetServer.Name)" "Cyan"
+            & $PSCommandPath pull $targetServer.Name
+        }
+        else {
+            Write-Color "[AUTOPULL] $($targetServer.Name) - No new files" "Green"
+        }
     }
     
     default {
@@ -636,8 +1021,26 @@ switch ($Command) {
         Write-Host "Extra Commands:" -ForegroundColor Yellow
         Write-Host "  sync        - Interactive: diff -> confirm -> push"
         Write-Host "  issynced    - Quick one-line status check"
-        Write-Host "  watch       - Auto-sync on file change (Ctrl+C to stop)"
+        Write-Host "  watch       - Auto-push on file change (Ctrl+C to stop)"
         Write-Host "  autopush    - Push only if changes detected"
+        Write-Host "  autopull    - Pull if remote has new files"
+        Write-Host ""
+        Write-Host "Background Auto-Sync:" -ForegroundColor Yellow
+        Write-Host "  syncstatus        - Combined upload/download status"
+        Write-Host ""
+        Write-Host "  [Upload]"
+        Write-Host "  watchpush         - Start background auto-upload"
+        Write-Host "  watchpush status  - Check upload status"
+        Write-Host "  watchpush log     - View upload log"
+        Write-Host "  watchpush stop    - Stop auto-upload"
+        Write-Host ""
+        Write-Host "  [Download]"
+        Write-Host "  watchpull         - Start auto-download (both servers)"
+        Write-Host "  watchpull .87     - Monitor .87 only"
+        Write-Host "  watchpull .154    - Monitor .154 only"
+        Write-Host "  watchpull status  - Check download status"
+        Write-Host "  watchpull log     - View download log"
+        Write-Host "  watchpull stop    - Stop auto-download"
         Write-Host ""
         Write-Host "Aliases:" -ForegroundColor Yellow
         Write-Host "  check       - Same as diff"
@@ -651,7 +1054,11 @@ switch ($Command) {
         Write-Host "  mobaxterm push         # Upload changes"
         Write-Host "  mobaxterm pull .154    # Download from .154"
         Write-Host "  mobaxterm log          # View remote logs"
-        Write-Host "  mobaxterm watch        # Start auto-sync"
+        Write-Host "  mobaxterm watch        # Auto-push (foreground, Ctrl+C stop)"
+        Write-Host "  mobaxterm watchpush    # Auto-upload (background)"
+        Write-Host "  mobaxterm watchpull    # Auto-download (background)"
+        Write-Host "  mobaxterm syncstatus   # Check all background sync status"
         Write-Host ""
     }
 }
+

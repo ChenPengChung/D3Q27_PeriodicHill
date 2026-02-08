@@ -37,8 +37,50 @@
 | `mobaxterm sync` | 互動式同步 | diff → 確認 → push |
 | `mobaxterm fullsync` | 完整同步 | push + reset（讓遠端完全等於本地） |
 | `mobaxterm issynced` | 快速確認 | 一行顯示：`.87: [OK] \| .154: [OK]` |
-| `mobaxterm watch` | **自動同步** | 監控檔案，自動推送 (Ctrl+C 停止) |
+| `mobaxterm watch` | **自動推送** | 監控本地檔案，變更後自動推送 (Ctrl+C 停止) |
 | `mobaxterm autopush` | 有變更才推送 | 無變更時不執行 |
+| `mobaxterm autopull` | 有變更才拉取 | 指定伺服器：`autopull .154` |
+
+### 背景自動上傳 (watchpush)
+
+| 命令 | 功能 | 說明 |
+|------|------|------|
+| `mobaxterm watchpush` | **啟動背景上傳** | 監控本地檔案，自動上傳到兩台伺服器 |
+| `mobaxterm watchpush 5` | 自訂間隔 | 每 5 秒檢查一次（預設 10 秒） |
+| `mobaxterm watchpush status` | 檢查上傳狀態 | 顯示是否執行中 + 最近上傳記錄 |
+| `mobaxterm watchpush log` | 查看上傳日誌 | 完整上傳歷史 |
+| `mobaxterm watchpush stop` | 停止上傳 | 關閉背景程序 |
+| `mobaxterm watchpush clear` | 清除日誌 | 刪除舊日誌檔 |
+
+**watchpush 技術細節：**
+- 監控間隔：10 秒（可自訂）
+- 上傳檔案：所有程式碼檔案（依 .gitignore 排除）
+- 比對方式：MD5 hash（只上傳內容有變更的檔案）
+- 日誌位置：`.vscode/watchpush.log`
+
+### 背景自動下載 (watchpull)
+
+| 命令 | 功能 | 說明 |
+|------|------|------|
+| `mobaxterm watchpull` | **啟動背景下載** | 監控兩台伺服器，自動下載新檔案 |
+| `mobaxterm watchpull .87` | 只監控 .87 | 背景執行 |
+| `mobaxterm watchpull .154` | 只監控 .154 | 背景執行 |
+| `mobaxterm watchpull status` | 檢查下載狀態 | 顯示是否執行中 + 最近下載記錄 |
+| `mobaxterm watchpull log` | 查看下載日誌 | 完整下載歷史 |
+| `mobaxterm watchpull stop` | 停止下載 | 關閉背景程序 |
+| `mobaxterm watchpull clear` | 清除日誌 | 刪除舊日誌檔 |
+
+**watchpull 技術細節：**
+- 監控間隔：30 秒
+- 下載檔案類型：`*.dat`, `log*`, `*.plt`
+- 比對方式：MD5 hash（只下載內容有變更的檔案）
+- 日誌位置：`.vscode/watchpull.log`
+
+### 合併狀態監控
+
+| 命令 | 功能 |
+|------|------|
+| `mobaxterm syncstatus` | **一次查看上傳+下載狀態** |
 
 ### 別名對照
 
@@ -85,8 +127,22 @@ mobaxterm fullsync   # push + reset（完整同步）
 ### 自動同步模式
 
 ```powershell
-mobaxterm watch      # 啟動自動監控（編輯後自動推送）
-# Ctrl+C 停止
+# 前景自動推送（需保持終端開啟）
+mobaxterm watch      # Ctrl+C 停止
+
+# 背景自動上傳（檔案變更後自動上傳）
+mobaxterm watchpush         # 啟動
+mobaxterm watchpush status  # 查看狀態
+mobaxterm watchpush stop    # 停止
+
+# 背景自動下載（遠端生成檔案後自動下載）
+mobaxterm watchpull         # 啟動（監控兩台）
+mobaxterm watchpull .87     # 只監控 .87
+mobaxterm watchpull status  # 查看狀態
+mobaxterm watchpull stop    # 停止
+
+# 合併狀態（同時查看上傳+下載）
+mobaxterm syncstatus
 ```
 
 ---
@@ -127,8 +183,17 @@ nohup mpirun -np 4 ./a.out > log$(date +%Y%m%d) 2>&1 &
 | Compile + Run | 編譯並執行程式 | Ctrl+Shift+B |
 | Check Running Jobs | 檢查執行中的作業 | 手動執行 |
 | Kill Running Job | 終止執行中的作業 | 手動執行 |
-| **Auto Sync (Watch)** | 自動監控同步 | 手動執行 |
+| **Auto Sync (Watch)** | 自動推送（前景） | 手動執行 |
 | Quick Sync | 有變更才推送 | 手動執行 |
+| **Sync Status** | 查看上傳+下載狀態 | 手動執行 |
+| **Auto Upload (Start)** | 啟動背景上傳 | 手動執行 |
+| Auto Upload (Status) | 檢查上傳狀態 | 手動執行 |
+| Auto Upload (Stop) | 停止背景上傳 | 手動執行 |
+| **Auto Download (Start)** | 啟動背景下載 | 手動執行 |
+| Auto Download (.87 only) | 只監控 .87 | 手動執行 |
+| Auto Download (.154 only) | 只監控 .154 | 手動執行 |
+| Auto Download (Status) | 檢查下載狀態 | 手動執行 |
+| Auto Download (Stop) | 停止背景下載 | 手動執行 |
 
 ---
 
@@ -151,4 +216,18 @@ nohup mpirun -np 4 ./a.out > log$(date +%Y%m%d) 2>&1 &
 - **密碼**: `1256`
 
 ---
-*最後更新: 2026-02-07*
+
+## 同步排除項目
+
+以下檔案/資料夾**不會**被 push/pull 同步：
+
+| 排除項 | 原因 |
+|--------|------|
+| `.git/*` | Git 版本控制（各機獨立） |
+| `.vscode/*` | VS Code 設定（本地專用） |
+| `a.out` | 編譯產物 |
+| `*.o` | 目標檔 |
+| `*.exe` | Windows 執行檔 |
+
+---
+*最後更新: 2026-02-08*

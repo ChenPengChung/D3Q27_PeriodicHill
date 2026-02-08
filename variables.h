@@ -11,7 +11,7 @@
 #define     NY      128
 #define     NZ      64
 
-#define     jp      8
+#define     jp      4
 
 #define     NX6    (NX+7)
 #define     NYD6   (NY/jp+7)
@@ -39,7 +39,6 @@
 //#define     Umax        18.4824
 
 #define     Re          150
-
 
 //steps to end simulation
 #define     loop      500000

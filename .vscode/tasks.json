@@ -274,6 +274,96 @@
       "problemMatcher": []
     },
     {
+      "label": "Auto Download (Start)",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\.vscode\\mobaxterm.ps1' watchpull",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Auto Download (.87 only)",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\.vscode\\mobaxterm.ps1' watchpull .87",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Auto Download (.154 only)",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\.vscode\\mobaxterm.ps1' watchpull .154",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Auto Download (Status)",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\.vscode\\mobaxterm.ps1' watchpull status",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Auto Download (Stop)",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\.vscode\\mobaxterm.ps1' watchpull stop",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Auto Upload (Start)",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\.vscode\\mobaxterm.ps1' watchpush",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Auto Upload (Status)",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\.vscode\\mobaxterm.ps1' watchpush status",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Auto Upload (Stop)",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\.vscode\\mobaxterm.ps1' watchpush stop",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Sync Status (Upload + Download)",
+      "type": "shell",
+      "command": "& '${workspaceFolder}\\.vscode\\mobaxterm.ps1' syncstatus",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "Build main.exe (MinGW)",
       "type": "shell",
       "command": "C:/Strawberry/c/bin/g++.exe",
