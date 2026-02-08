@@ -388,6 +388,13 @@ void fileIO_velocity_vtk_merged(int step) {
         oss << "./result/velocity_merged_" << step << ".vtk";
         ofstream out(oss.str().c_str());
         
+        if( !out.is_open() ) {
+            cerr << "ERROR: Cannot open VTK file: " << oss.str() << endl;
+            free(u_global); free(v_global); free(w_global); free(z_global);
+            free(u_local); free(v_local); free(w_local); free(z_local);
+            return;
+        }
+        
         out << "# vtk DataFile Version 3.0\n";
         out << "LBM Velocity Field (merged) step=" << step << "\n";
         out << "ASCII\n";
