@@ -90,33 +90,50 @@ step_numbers = [int(re.search(r'velocity_merged_(\d+)', os.path.basename(f)).gro
 first_step = step_numbers[0]
 step_interval = step_numbers[1] - step_numbers[0] if len(step_numbers) > 1 else 1000
 
-# 用 PythonAnnotation 即時顯示當前 step
-annotation = PythonAnnotation(Input=reader)
-annotation.Expression = "'Step = %d' % ({} + int(t_index) * {})".format(first_step, step_interval)
-annotation.ArrayAssociation = 'Point Data'
+# 用 AnnotateTimeFilter 顯示 Step (Scale/Shift 轉換)
+annotation = AnnotateTimeFilter(Input=reader)
+annotation.Scale = step_interval    # 每幀乘以 step 間隔
+annotation.Shift = first_step       # 加上第一個 step 值
+annotation.Format = 'Step = {time:.0f}'   # ParaView 5.13 格式
 
 annDisplay = Show(annotation, renderView)
-annDisplay.FontSize = 48
+annDisplay.FontSize = 24                   # 較小字體避免重疊
 annDisplay.Bold = 1
-annDisplay.Color = [0.0, 0.0, 0.0]       # 黑色文字
-annDisplay.FontFamily = 'Times'           # Times New Roman
-annDisplay.WindowLocation = 'Upper Center' # 主體上方中央
+annDisplay.Color = [0.0, 0.0, 0.0]         # 黑色文字
+annDisplay.FontFamily = 'Times'            # Times New Roman
+annDisplay.WindowLocation = 'Upper Right Corner'  # 右上角避免重疊
+
+# --- 添加流線 (顯示 hill 底部渦流) ---
+# 種子線: 從 (4.5, 0, 0) 到 (4.5, 9, 1.0)
+seedLine = Line()
+seedLine.Point1 = [4.5, 0.0, 0.0]
+seedLine.Point2 = [4.5, 9.0, 1.0]
+seedLine.Resolution = 15  # 15 條流線
+
+# ParaView 5.13.3: 用 SeedSource 參數而非 SeedType 屬性
+streamTracer = StreamTracerWithCustomSource(Input=reader, SeedSource=seedLine)
+streamTracer.Vectors = ['POINTS', 'velocity']
+streamTracer.MaximumStreamlineLength = 20.0
+streamTracer.IntegrationDirection = 'BOTH'
+
+streamDisplay = Show(streamTracer, renderView)
+streamDisplay.Representation = 'Surface'
+streamDisplay.LineWidth = 2.0
+streamDisplay.DiffuseColor = [0.0, 0.0, 0.0]  # 黑色流線
+ColorBy(streamDisplay, None)  # 不著色，純黑色
 
 print("  Step range: {} ~ {} (interval={})".format(
     step_numbers[0], step_numbers[-1], step_interval))
 
-# --- 3D 視角設定 ---
-renderView.ResetCamera()
-
-# 使用實測的攝影機參數
+# --- 3D 視角設定 (實測參數) ---
 renderView.CameraPosition = [18.0019, -8.2673, 2.3630]
 renderView.CameraFocalPoint = [2.25, 4.5, 1.518]
 renderView.CameraViewUp = [-0.03047, 0.02853, 0.99913]
 
-# 先 Reset Camera Closest 再稍微拉遠，主體與邊框留一點間距
-renderView.ResetCamera(True)
-camera = renderView.GetActiveCamera()
-camera.Dolly(1.05)  # >1 拉近，主體更大
+# 放大主體
+camera = GetActiveCamera()
+camera.Dolly(1.25)
+Render()
 
 # 跳到最後一幀抓色彩範圍 (避免 Step 1 速度太小看不到顏色)
 animationScene.GoToLast()
@@ -132,6 +149,14 @@ colorBar = GetScalarBar(velocityLUT, renderView)
 colorBar.Title = 'Velocity Magnitude'
 colorBar.ComponentTitle = ''
 colorBar.Visibility = 1
+colorBar.TitleFontSize = 18
+colorBar.LabelFontSize = 16
+colorBar.TitleColor = [0.0, 0.0, 0.0]  # 黑色標題
+colorBar.LabelColor = [0.0, 0.0, 0.0]  # 黑色標籤
+colorBar.ScalarBarLength = 0.4         # 色條長度
+
+# 確保色條顯示在畫面上
+display.SetScalarBarVisibility(renderView, True)
 
 # 設定影片解析度
 renderView.ViewSize = [1920, 1080]
