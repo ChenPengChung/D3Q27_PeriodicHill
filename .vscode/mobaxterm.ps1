@@ -766,6 +766,7 @@ switch ($Command) {
                 Write-Color "  mobaxterm watchpush status  - Check status & recent uploads" "Gray"
                 Write-Color "  mobaxterm watchpush log     - View full log" "Gray"
                 Write-Color "  mobaxterm watchpush stop    - Stop monitoring" "Gray"
+                Write-Color "  mobaxterm bgstatus          - All background processes (push/pull/fetch/vtkrename)" "Gray"
                 Write-Color "  mobaxterm syncstatus        - Combined push/pull status" "Gray"
                 Write-Host ""
                 
@@ -798,6 +799,64 @@ switch ($Command) {
                 Write-Color "Use 'mobaxterm watchpush status' to check progress" "Cyan"
             }
         }
+    }
+    
+    "bgstatus" {
+        # All background processes status (watchpush, watchpull, watchfetch, vtkrename)
+        $services = @(
+            @{ Name = "WatchPush"; Label = "[UPLOAD] WatchPush"; PidFile = ".vscode\watchpush.pid"; LogFile = ".vscode\watchpush.log"; Color = "Yellow" },
+            @{ Name = "WatchPull"; Label = "[DOWNLOAD] WatchPull"; PidFile = ".vscode\watchpull.pid"; LogFile = ".vscode\watchpull.log"; Color = "Yellow" },
+            @{ Name = "WatchFetch"; Label = "[SYNC+DELETE] WatchFetch"; PidFile = ".vscode\watchfetch.pid"; LogFile = ".vscode\watchfetch.log"; Color = "Red" },
+            @{ Name = "VTKRenamer"; Label = "[VTK-RENAME] Auto-Renamer"; PidFile = ".vscode\vtk-renamer.pid"; LogFile = ".vscode\vtk-renamer.log"; Color = "Cyan" }
+        )
+        
+        Write-Color "`n========== All Background Processes ==========" "Cyan"
+        
+        foreach ($svc in $services) {
+            $pidFile = Join-Path $Config.LocalPath $svc.PidFile
+            $logFile = Join-Path $Config.LocalPath $svc.LogFile
+            
+            Write-Color "`n$($svc.Label):" $svc.Color
+            
+            if (Test-Path $pidFile) {
+                $pids = Get-Content $pidFile -ErrorAction SilentlyContinue
+                $active = @()
+                foreach ($p in $pids) {
+                    if ($p -match '^\d+$') {
+                        $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                        if ($proc) { $active += $p }
+                    }
+                }
+                if ($active.Count -gt 0) {
+                    Write-Color "  Status: RUNNING (PID: $($active -join ', '))" "Green"
+                    if (Test-Path $logFile) {
+                        $lastLines = Get-Content $logFile -Tail 2 -ErrorAction SilentlyContinue
+                        if ($lastLines) {
+                            foreach ($line in $lastLines) {
+                                if ($line) { Write-Color "  $line" "Gray" }
+                            }
+                        }
+                    }
+                }
+                else {
+                    Write-Color "  Status: STOPPED" "Yellow"
+                    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+                }
+            }
+            else {
+                Write-Color "  Status: OFF" "Gray"
+            }
+        }
+        
+        Write-Color "`n=============================================" "Cyan"
+        Write-Color "Commands:" "Yellow"
+        Write-Color "  mobaxterm watchpush         - Start auto-upload" "Gray"
+        Write-Color "  mobaxterm watchpull         - Start auto-download" "Gray"
+        Write-Color "  mobaxterm watchfetch .87    - Start auto-sync with delete" "Gray"
+        Write-Color "  mobaxterm vtkrename         - Start VTK renamer" "Gray"
+        Write-Color "  mobaxterm <service> stop    - Stop service" "Gray"
+        Write-Color "  mobaxterm <service> status  - Detailed status" "Gray"
+        Write-Host ""
     }
     
     "syncstatus" {
@@ -1441,7 +1500,8 @@ switch ($Command) {
         Write-Host "  status      - Show sync status"
         Write-Host "  diff        - Compare local vs remote"
         Write-Host "  log         - View remote log files"
-        Write-Host "  syncstatus  - Check all background sync status"
+        Write-Host "  bgstatus    - Check ALL background processes (push/pull/fetch/vtkrename)"
+        Write-Host "  syncstatus  - Check sync background status (push/pull only)"
         Write-Host ""
         Write-Host "Other Commands:" -ForegroundColor Yellow
         Write-Host "  clone       - Full download from remote"

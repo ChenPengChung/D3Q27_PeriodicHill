@@ -198,7 +198,8 @@ velocity_merged_123456.vtk  → 保持不變（已是 6 位數）
 
 | 命令 | 功能 |
 |------|------|
-| `mobaxterm syncstatus` | **一次查看上傳+下載狀態** |
+| `mobaxterm bgstatus` | **一次查看所有背景程序** (watchpush/watchpull/watchfetch/vtkrename) |
+| `mobaxterm syncstatus` | 查看上傳+下載狀態 (watchpush/watchpull) |
 
 ### 別名對照
 
@@ -259,8 +260,11 @@ mobaxterm watchpull .87     # 只監控 .87
 mobaxterm watchpull status  # 查看狀態
 mobaxterm watchpull stop    # 停止
 
-# 合併狀態（同時查看上傳+下載）
-mobaxterm syncstatus
+# 所有背景程序狀態（全功能）
+mobaxterm bgstatus          # 查看所有背景服務（push/pull/fetch/vtkrename）
+
+# 合併狀態（僅上傳+下載）
+mobaxterm syncstatus        # 僅查看 watchpush + watchpull
 ```
 
 ---
