@@ -208,6 +208,12 @@ int main(int argc, char *argv[])
 			Launch_Monitor( accu_num );
 		}
 
+        // 每1000步輸出合併 VTK 追蹤流場 (所有GPU合併為單一檔案)
+        if ( step % 1000 == 0 ) {
+            SendDataToCPU( ft );
+            fileIO_velocity_vtk_merged( step );
+        }
+
         cudaDeviceSynchronize();
         cudaMemcpy(Force_h, Force_d, sizeof(double), cudaMemcpyDeviceToHost);   
         //Global Mass Conservation Modify

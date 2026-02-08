@@ -1,276 +1,287 @@
 #ifndef FILEIO_FILE
 #define FILEIO_FILE
 
-#include <unistd.h>
+#include <unistd.h>//用到access
 #include <sys/types.h>
-#include <sys/stat.h>
+#include <sys/stat.h>//用mkdir
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <iostream>
-
+#include <iomanip>  // setprecision, fixed
+using namespace std ; 
 
 void wirte_ASCII_of_str(char * str, FILE *file);
-//function: check whether a file exist
-//input: 	file relative path. ex: "./backup/u0.bkp"
-//return: 	if exsit return 1; else return 0
+
+
 bool FileExist(const char *fileName) {
-    std::ifstream file(fileName);
-    return file.good();
+    //function: 確認檔案是否存在
+    //input: 	file relative path. ex: "./backup/u0.bkp"
+    //return: 	如果存在回傳1，如果不存在回傳0
+    fstream file;
+    file.open(fileName);
+    return file.good(); //檔案開啟成功
 }
 
-//function: check whether a dir exist or not, if not, creat it
-//input:	dir name. ex: "result"
-void ExistOrCreateDir(const char *dir) {
-	std::string path(dir);
+void ExistOrCreateDir(const char* doc) {
+    //步驟一:創立資料夾 
+	std::string path(doc);// path 是 C++ string 物件
 	path = "./" + path;
-	if (access(path.c_str(), F_OK) != 0) {
-		if (mkdir(path.c_str(), S_IRWXU) == 0)
-			std::cout << "folder " << path << " not exist, created"<< std::endl;
+    //檢查資料夾是否存在 
+	if (access(path.c_str(), F_OK) != 0) { //c++字串傳成對應的字元陣列 
+        //不存在，用mkdir() 創建 
+        if (mkdir(path.c_str(), S_IRWXU) == 0)
+			std::cout << "folder " << path << " not exist, created"<< std::endl;// S_IRWXU = 擁有者可讀寫執行 
 	}
 }
 
-//check whether the folder "result", "backup", "statistics"
-//exist or not. if not, create them
 void PreCheckDir() {
-	ExistOrCreateDir("result");
-	ExistOrCreateDir("backup");
-	//ExistOrCreateDir("./backup/0");
-	//ExistOrCreateDir("./backup/1");
+    //預先建立資料夾
+	ExistOrCreateDir("result");//程式碼初始狀態使用
+    //湍流統計//35 個統計量子資料夾
 	ExistOrCreateDir("statistics");
-	//ExistOrCreateDir("./statistics/monitor");
     if ( TBSWITCH ) {
 		const int num_files = 35;
-		std::string name[num_files] = {"U","V","W","P","UU","UV","UW","VV","VW","WW","PU","PV","PW","KT","DUDX2","DUDY2","DUDZ2","DVDX2","DVDY2","DVDZ2","DWDX2","DWDY2","DWDZ2","UUU","UUV","UUW","VVU","VVV","VVW","WWU","WWV","WWW","OMEGA_X","OMEGA_Y","OMEGA_Z"};
+		std::string name[num_files] = {
+        "U","V","W","P",//4
+        "UU","UV","UW","VV","VW","WW",//6
+        "PU","PV","PW",//3
+        "KT",//1
+        "DUDX2","DUDY2","DUDZ2","DVDX2","DVDY2","DVDZ2","DWDX2","DWDY2","DWDZ2", //9
+        "UUU","UUV","UUW","VVU","VVV","VVW","WWU","WWV","WWW",//9
+        "OMEGA_X","OMEGA_Y","OMEGA_Z"};//3
 		for( int i = 0; i < num_files; i++ ) {
 			std::string fname = "./statistics/" + name[i];
 			ExistOrCreateDir(fname.c_str());
 		}
 	}
+    /*////////////////////////////////////////////*/
 }
 
-void OutputData(
-    double *arr_h,
-    const char *fname,      const int myid  )
-{
-    char path[100];
-    sprintf( path, "./result/%s_%d.bin", fname, myid );
 
-    FILE *data;
-    if((data = fopen(path, "wb")) == NULL) {
-        printf("Output data error, exit...\n");
+
+
+void OutputData( double* arr_h, const char *fname, const int myid ){
+    // 組合檔案路徑
+    ostringstream oss;
+    oss << "./result/" << fname << "_" << myid << ".bin";
+    string path = oss.str();
+
+    // 用 C++ ofstream 開啟二進制檔案
+    ofstream file(path, ios::binary);
+    if (!file) {
+        cout << "Output data error, exit..." << endl;
         CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
     }
 
-    fwrite( arr_h, sizeof(double), NX6*NZ6*NYD6, data );
-    fclose( data );
+    // 寫入資料
+    file.write(reinterpret_cast<char*>(arr_h), sizeof(double) * NX6 * NZ6 * NYD6);
+    file.close();
 }
 
-void fileIO_velocity() {
-    FILE *outptr1;
-    char result[50];
 
-    sprintf( result, "%dx%dx%d velocity_%d.dat",(int)NX6, (int)NYD6, (int)NZ6, myid );
-    outptr1 = fopen( result, "w" );
-    fprintf( outptr1, "VARIABLES = \"X\", \"Y\", \"Z\", \"U\", \"V\", \"W\"\n" );
-    fprintf( outptr1, "ZONE T = \"velocity\", F = POINT\n" );
-    fprintf( outptr1, "I = %d, J = %d, K = %d\n", NX6-6, NYD6-6, NZ6-6 );
 
+
+// 合併所有 GPU 結果，輸出單一 VTK 檔案 (Paraview)
+void fileIO_velocity_vtk_merged(int step) {
+    // 每個 GPU 內部有效區域的 y 層數 (不含 ghost)
+    const int nyLocal = NYD6 - 6;  // 去除上下各3層ghost
+    const int nxLocal = NX6 - 6;
+    const int nzLocal = NZ6 - 6;
+    
+    // 每個 GPU 發送的點數
+    const int localPoints = nxLocal * nyLocal * nzLocal;
+    const int zLocalSize = nyLocal * nzLocal;
+    
+    // 全域 y 層數
+    const int nyGlobal = NY6 - 6;
+    const int globalPoints = nxLocal * nyGlobal * nzLocal;
+    
+    // 準備本地速度資料 (去除 ghost cells, 只取內部)
+    double *u_local = (double*)malloc(localPoints * sizeof(double));
+    double *v_local = (double*)malloc(localPoints * sizeof(double));
+    double *w_local = (double*)malloc(localPoints * sizeof(double));
+    double *z_local = (double*)malloc(zLocalSize * sizeof(double));
+    
+    int idx = 0;
     for( int k = 3; k < NZ6-3; k++ ){
     for( int j = 3; j < NYD6-3; j++ ){
     for( int i = 3; i < NX6-3; i++ ){
         int index = j*NZ6*NX6 + k*NX6 + i;
-        fprintf( outptr1, "%.4lf\t %.4lf\t %.4lf\t ",x_h[i], y_h[j], z_h[j*NZ6+k] );
-        fprintf( outptr1, "%.15lf\t %.15lf\t %.15lf\n", u_h_p[index], v_h_p[index], w_h_p[index] );
+        u_local[idx] = u_h_p[index];
+        v_local[idx] = v_h_p[index];
+        w_local[idx] = w_h_p[index];
+        idx++;
     }}}
+    
+    // 準備本地 z 座標
+    int zidx = 0;
+    for( int j = 3; j < NYD6-3; j++ ){
+    for( int k = 3; k < NZ6-3; k++ ){
+        z_local[zidx++] = z_h[j*NZ6 + k];
+    }}
+    
+    // rank 0 分配接收緩衝區
+    double *u_global = NULL;
+    double *v_global = NULL;
+    double *w_global = NULL;
+    double *z_global = NULL;
+    
+    if( myid == 0 ) {
+        u_global = (double*)malloc(globalPoints * sizeof(double));
+        v_global = (double*)malloc(globalPoints * sizeof(double));
+        w_global = (double*)malloc(globalPoints * sizeof(double));
+        z_global = (double*)malloc(nyGlobal * nzLocal * sizeof(double));
+    }
+    
+    // 所有 rank 一起呼叫 MPI_Gather
+    MPI_Gather(u_local, localPoints, MPI_DOUBLE, u_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Gather(v_local, localPoints, MPI_DOUBLE, v_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Gather(w_local, localPoints, MPI_DOUBLE, w_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Gather(z_local, zLocalSize, MPI_DOUBLE, z_global, zLocalSize, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    
+    // rank 0 輸出合併的 VTK
+    if( myid == 0 ) {
+        // 計算全域 y 座標 (uniform grid)
+        double dy = LY / (double)(NY6 - 7);
+        double *y_global_arr = (double*)malloc(NY6 * sizeof(double));
+        for( int j = 0; j < NY6; j++ ) {
+            y_global_arr[j] = dy * (double)(j - 3);
+        }
+        
+        ostringstream oss;
+        oss << "./result/velocity_merged_" << step << ".vtk";
+        ofstream out(oss.str());
+        
+        out << "# vtk DataFile Version 3.0\n";
+        out << "LBM Velocity Field (merged) step=" << step << "\n";
+        out << "ASCII\n";
+        out << "DATASET STRUCTURED_GRID\n";
+        out << "DIMENSIONS " << nxLocal << " " << nyGlobal << " " << nzLocal << "\n";
+        
+        // 輸出座標點
+        out << "POINTS " << globalPoints << " double\n";
+        out << fixed << setprecision(6);
+        for( int k = 0; k < nzLocal; k++ ){
+        for( int jg = 0; jg < nyGlobal; jg++ ){
+        for( int i = 0; i < nxLocal; i++ ){
+            int gpu_id = jg / nyLocal;
+            if( gpu_id >= jp ) gpu_id = jp - 1;
+            int j_local = jg % nyLocal;
+            
+            // z 座標在 gather 後的位置
+            int z_gpu_offset = gpu_id * zLocalSize;
+            int z_local_idx = j_local * nzLocal + k;
+            double z_val = z_global[z_gpu_offset + z_local_idx];
+            
+            out << x_h[i+3] << " " << y_global_arr[jg+3] << " " << z_val << "\n";
+        }}}
+        
+        // 輸出速度向量
+        out << "\nPOINT_DATA " << globalPoints << "\n";
+        out << "VECTORS velocity double\n";
+        out << setprecision(15);
+        
+        for( int k = 0; k < nzLocal; k++ ){
+        for( int jg = 0; jg < nyGlobal; jg++ ){
+        for( int i = 0; i < nxLocal; i++ ){
+            int gpu_id = jg / nyLocal;
+            if( gpu_id >= jp ) gpu_id = jp - 1;
+            int j_local = jg % nyLocal;
+            
+            int gpu_offset = gpu_id * localPoints;
+            int local_idx = k * nyLocal * nxLocal + j_local * nxLocal + i;
+            int global_idx = gpu_offset + local_idx;
+            
+            out << u_global[global_idx] << " " << v_global[global_idx] << " " << w_global[global_idx] << "\n";
+        }}}
+        
+        out.close();
+        cout << "Merged VTK output: velocity_merged_" << step << ".vtk\n";
+        
+        free(u_global);
+        free(v_global);
+        free(w_global);
+        free(z_global);
+        free(y_global_arr);
+    }
+    
+    free(u_local);
+    free(v_local);
+    free(w_local);
+    free(z_local);
+    
+    CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
+}
 
-    fclose( outptr1 );
 
-    FILE *outptr2;
-    sprintf( result, "%dx%d Parameter_%d.dat",(int)NYD6, (int)NZ6, myid );
-    outptr2 = fopen( result, "w" );
-    fprintf( outptr2, "VARIABLES = \"Y\", \"Z\", \"BFLF3\", \"BFLF4\", \"BFLF15\", \"BFLF16\", \"Q3\", \"Q4\", \"Q15\", \"Q16\"\n" );
-    fprintf( outptr2, "ZONE T = \"parameter\", F = POINT\n" );
-    fprintf( outptr2, "J = %d, K = %d\n", NYD6-6, NZ6-6 );
 
+void fileIO_velocity() {
+   ///////////////////////////////////////////////////////////////////////////////
+    //輸出paraview (最終結果)//分ㄎGPU子域輸出
+    ostringstream oss;
+    oss << "./result/velocity_" << myid << "_Final.vtk";
+    ofstream out(oss.str());
+    // VTK Header
+    out << "# vtk DataFile Version 3.0\n";
+    out << "LBM Velocity Field\n";
+    out << "ASCII\n";
+    out << "DATASET STRUCTURED_GRID\n";
+    out << "DIMENSIONS " << NX6-6 << " " << NYD6-6 << " " << NZ6-6 << "\n";
+
+    // 座標點
+    int nPoints = (NX6-6) * (NYD6-6) * (NZ6-6);
+    out << "POINTS " << nPoints << " double\n";
+    out << fixed << setprecision(6);
     for( int k = 3; k < NZ6-3; k++ ){
     for( int j = 3; j < NYD6-3; j++ ){
-        //int index = j*NZ6*NX6 + k*NX6 + i;
-        int f3 = 0, f4 = 0, f15 = 0, f16 = 0;
-        double q3 = 0.0, q4 = 0.0, q15 = 0.0, q16 = 0.0;
-        if( k == 3 || k == 4 ){
-            f3 = BFLReqF3_h[(k-3)*NYD6+j];
-            f4 = BFLReqF4_h[(k-3)*NYD6+j];
-            f15 = BFLReqF15_h[(k-3)*NYD6+j];
-            f16 = BFLReqF16_h[(k-3)*NYD6+j];
-            q3 = Q3_h[(k-3)*NYD6+j];
-            q4 = Q4_h[(k-3)*NYD6+j];
-            q15 = Q15_h[(k-3)*NYD6+j];;
-            q16 = Q16_h[(k-3)*NYD6+j];;
-        }
-        fprintf( outptr2, "%.4lf\t %.4lf\t ",y_h[j], z_h[j*NZ6+k] );
-        fprintf( outptr2, "%d\t %d\t %d\t %d\t %lf\t %lf\t %lf\t %lf\n", f3, f4, f15, f16, q3, q4, q15, q16 );
-    }}
+    for( int i = 3; i < NX6-3; i++ ){
+        out << x_h[i] << " " << y_h[j] << " " << z_h[j*NZ6+k] << "\n";
+    }}}
 
-    fclose( outptr2 );
+    // 速度向量
+    out << "\nPOINT_DATA " << nPoints << "\n";
+    out << "VECTORS velocity double\n";
+    out << setprecision(15);
+    for( int k = 3; k < NZ6-3; k++ ){
+    for( int j = 3; j < NYD6-3; j++ ){
+    for( int i = 3; i < NX6-3; i++ ){
+        int index = j*NZ6*NX6 + k*NX6 + i;
+        out << u_h_p[index] << " " << v_h_p[index] << " " << w_h_p[index] << "\n";
+    }}}
 
+    out.close();
+    ////////////////////////////////////////////////////////////////////////////
 
-    /* FILE *fout1,*fout2,*fout3,*fout4,*fout5,*fout6,*fout7,*fout8,*fout9;
-
-    fout1 = fopen("velocity_y=0.DAT","w+t");		
-	fprintf( fout1, "VARIABLES=\"z\",\"uavg\",\"vavg\",\"wavg\"\n" );
-	fprintf( fout1, "ZONE T=\"y=0\", F=POINT\n", Re );
-	fprintf( fout1, "K=%d\n",NZ6-6 );	
-	for ( int k = 3 ; k < NZ6-3 ; k++ ){
-		int j = 0; 
-		int idx = 0.0/9.0*NY6*NX6*NZ6  + k*NX6 + NX6/2.0;	
-
-		fprintf( fout1, "%.5f %.15f %.15f %.15f \n", 
-		z_h[j*NZ6+k], (u_h_p[idx]/Uref),(v_h_p[idx]/Uref),4*(w_h_p[idx]/Uref));
-        
-	}
-	fclose(fout1);
-
-    fout2 = fopen("velocity_y=1.DAT","w+t");		
-	fprintf( fout2, "VARIABLES=\"z\",\"uavg\",\"vavg\",\"wavg\"\n" );
-	fprintf( fout2, "ZONE T=\"y=1\", F=POINT\n", Re );
-	fprintf( fout2, "K=%d\n",NZ6-6 );	
-	for ( int k = 3 ; k < NZ6-3 ; k++ ){
-
-		int j = 1.0/9.0*NY6 ;
-		int idx = 1.0/9.0*NY6*NX6*NZ6  + k*NX6 + NX6/2.0;	
-
-		fprintf( fout2, "%.5f %.15f %.15f %.15f \n", 
-		z_h[j*NZ6+k], (u_h_p[idx]/Uref),(v_h_p[idx]/Uref),4*(w_h_p[idx]/Uref));
-        
-	}
-	fclose(fout2);
-
-    fout3 = fopen("velocity_y=2.DAT","w+t");		
-	fprintf( fout3, "VARIABLES=\"z\",\"uavg\",\"vavg\",\"wavg\"\n" );
-	fprintf( fout3, "ZONE T=\"y=2\", F=POINT\n", Re );
-	fprintf( fout3, "K=%d\n",NZ6-6 );	
-	for ( int k = 3 ; k < NZ6-3 ; k++ ){
-
-		int j = 2.0/9.0*NY6 ;
-		int idx = 2.0/9.0*NY6*NX6*NZ6  + k*NX6 + NX6/2.0;	
-
-		fprintf( fout3, "%.5f %.15f %.15f %.15f \n", 
-		z_h[j*NZ6+k], (u_h_p[idx]/Uref),(v_h_p[idx]/Uref),4*(w_h_p[idx]/Uref));
-        
-	}
-	fclose(fout3);
-
-    fout4 = fopen("velocity_y=3.DAT","w+t");		
-	fprintf( fout4, "VARIABLES=\"z\",\"uavg\",\"vavg\",\"wavg\"\n" );
-	fprintf( fout4, "ZONE T=\"y=3\", F=POINT\n", Re );
-	fprintf( fout4, "K=%d\n",NZ6-6 );	
-	for ( int k = 3 ; k < NZ6-3 ; k++ ){
-    
-		int j = 3.0/9.0*NY6 ;
-		int idx = 3.0/9.0*NY6*NX6*NZ6  + k*NX6 + NX6/2.0;	
-
-		fprintf( fout4, "%.5f %.15f %.15f %.15f \n", 
-		z_h[j*NZ6+k], (u_h_p[idx]/Uref),(v_h_p[idx]/Uref),4*(w_h_p[idx]/Uref));
-        
-	}
-	fclose(fout4);
-
-    fout5 = fopen("velocity_y=4.DAT","w+t");		
-	fprintf( fout5, "VARIABLES=\"z\",\"uavg\",\"vavg\",\"wavg\"\n" );
-	fprintf( fout5, "ZONE T=\"y=4\", F=POINT\n", Re );
-	fprintf( fout5, "K=%d\n",NZ6-6 );	
-	for ( int k = 3 ; k < NZ6-3 ; k++ ){
-
-		int j = 4.0/9.0*NY6 ;
-		int idx = 4.0/9.0*NY6*NX6*NZ6  + k*NX6 + NX6/2.0;	
-
-		fprintf( fout5, "%.5f %.15f %.15f %.15f \n", 
-		z_h[j*NZ6+k], (u_h_p[idx]/Uref),(v_h_p[idx]/Uref),4*(w_h_p[idx]/Uref));
-        
-	}
-	fclose(fout5);
-
-    fout6 = fopen("velocity_y=5.DAT","w+t");		
-	fprintf( fout6, "VARIABLES=\"z\",\"uavg\",\"vavg\",\"wavg\"\n" );
-	fprintf( fout6, "ZONE T=\"y=5\", F=POINT\n", Re );
-	fprintf( fout6, "K=%d\n",NZ6-6 );	
-	for ( int k = 3 ; k < NZ6-3 ; k++ ){
-
-		int j = 5.0/9.0*NY6 ;
-		int idx = 5.0/9.0*NY6*NX6*NZ6  + k*NX6 + NX6/2.0;	
-
-		fprintf( fout6, "%.5f %.15f %.15f %.15f \n", 
-		z_h[j*NZ6+k], (u_h_p[idx]/Uref),(v_h_p[idx]/Uref),4*(w_h_p[idx]/Uref));
-        
-	}
-	fclose(fout6);
-
-    fout7 = fopen("velocity_y=6.DAT","w+t");		
-	fprintf( fout7, "VARIABLES=\"z\",\"uavg\",\"vavg\",\"wavg\"\n" );
-	fprintf( fout7, "ZONE T=\"y=6\", F=POINT\n", Re );
-	fprintf( fout7, "K=%d\n",NZ6-6 );	
-	for ( int k = 3 ; k < NZ6-3 ; k++ ){
-
-		int j = 6.0/9.0*NY6 ;
-		int idx = 6.0/9.0*NY6*NX6*NZ6  + k*NX6 + NX6/2.0;	
-		fprintf( fout7, "%.5f %.15f %.15f %.15f \n", 
-		z_h[j*NZ6+k], (u_h_p[idx]/Uref),(v_h_p[idx]/Uref),4*(w_h_p[idx]/Uref));
-        
-	}
-	fclose(fout7);
-
-    fout8 = fopen("velocity_y=7.DAT","w+t");		
-	fprintf( fout8, "VARIABLES=\"z\",\"uavg\",\"vavg\",\"wavg\"\n" );
-	fprintf( fout8, "ZONE T=\"y=7\", F=POINT\n", Re );
-	fprintf( fout8, "K=%d\n",NZ6-6 );	
-	for ( int k = 3 ; k < NZ6-3 ; k++ ){
-
-		int j = 7.0/9.0*NY6 ;
-		int idx = 7.0/9.0*NY6*NX6*NZ6  + k*NX6 + NX6/2.0;	
-		fprintf( fout8, "%.5f %.15f %.15f %.15f \n", 
-		z_h[j*NZ6+k], (u_h_p[idx]/Uref),(v_h_p[idx]/Uref),4*(w_h_p[idx]/Uref));
-        
-	}
-	fclose(fout8);
-
-    fout9 = fopen("velocity_y=8.DAT","w+t");		
-	fprintf( fout9, "VARIABLES=\"z\",\"uavg\",\"vavg\",\"wavg\"\n" );
-	fprintf( fout9, "ZONE T=\"y=8\", F=POINT\n", Re );
-	fprintf( fout9, "K=%d\n",NZ6-6 );	
-	for ( int k = 3 ; k < NZ6-3 ; k++ ){
-
-		int j = 8.0/9.0*NY6 ;
-		int idx = 8.0/9.0*NY6*NX6*NZ6  + k*NX6 + NX6/2.0;	
-		fprintf( fout9, "%.5f %.15f %.15f %.15f \n", 
-		z_h[j*NZ6+k], (u_h_p[idx]/Uref),(v_h_p[idx]/Uref),4*(w_h_p[idx]/Uref));
-        
-	}
-	fclose(fout9); */
-    /* if( myid == 0 ){
-        for( int k = 3; k < NZ6-3; k++ ){
-            int i = NX6/2, j = NYD6/2;
-            int index = j*NZ6*NX6 + k*NX6 + i;
-            double v_exact = Force/2.0/niu*z_h[j*NZ6+k]*(LZ-z_h[j*NZ6+k]);
-
-            printf("%lf\t %lf\t %lf\n", z_h[j*NZ6+k], v_exact, v_h_p[index]);
-        }
-    } */
-
-    printf("\n----------- Start Output, myid = %d ----------\n", myid);
-
+    cout << "\n----------- Start Output, myid = " << myid << " ----------\n";
+    // 輸出力
     if( myid == 0 ) {
-        FILE *fp_gg;
-        fp_gg = fopen("./result/0_force.dat","w");
-        fprintf( fp_gg, "%.15lf", Force_h[0] );
-        fclose( fp_gg );
+        ofstream fp_gg("./result/0_force.dat");
+        fp_gg << fixed << setprecision(15) << Force_h[0];
+        fp_gg.close();
     }
-
     OutputData(rho_h_p, "rho", myid);
     OutputData(u_h_p,   "u",   myid);
     OutputData(v_h_p,   "v",   myid);
     OutputData(w_h_p,   "w",   myid);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void fileIO_PDF()
 {
@@ -295,22 +306,25 @@ void fileIO_PDF()
     OutputData(fh_p[18], "f18", myid);
 }
 
+
 void ReadData(
     double *arr_h,
     const char *folder,     const char *fname,      const int myid  )
 {
-    char path[100];
-    sprintf( path, "./%s/%s_%d.bin", folder, fname, myid );
+    ostringstream oss;
+    oss << "./" << folder << "/" << fname << "_" << myid << ".bin";
+    string path = oss.str();
 
-    FILE *data;
-    if((data = fopen(path, "rb")) == NULL) {
-        printf("Read data error, exit...\n");
+    ifstream file(path, ios::binary);
+    if (!file) {
+        cout << "Read data error: " << path << ", exit...\n";
         CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
     }
 
-    fread( arr_h, sizeof(double), NX6*NZ6*NYD6, data );
-    fclose( data );
+    file.read(reinterpret_cast<char*>(arr_h), sizeof(double) * NX6 * NZ6 * NYD6);
+    file.close();
 }
+
 
 void InitialUsingBkpData()
 {
@@ -352,7 +366,6 @@ void InitialUsingBkpData()
     ReadData(fh_p[17], result, "f17", myid);
     ReadData(fh_p[18], result, "f18", myid);
 }
-
 void OutputTBData(
     double *arr_d,
     const char *fname,      const int myid  )
@@ -380,7 +393,6 @@ void OutputTBData(
     fclose( fp );
     free( arr_h );
 }
-
 void Launch_OutputTB()
 {
     if( myid == 0 ) {
@@ -427,7 +439,6 @@ void Launch_OutputTB()
 	//OutputTBData(OMEGA_Y, "OMEGA_Y", myid);
 	//OutputTBData(OMEGA_Z, "OMEGA_Z", myid);
 }
-
 void ReadTBData(
     double * arr_d,
     const char *fname,      const int myid  )
@@ -452,7 +463,6 @@ void ReadTBData(
     free( arr_h );
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }
-
 void InitialTBUsingBkpData() {
 
     FILE *fp_accu;
@@ -498,7 +508,6 @@ void InitialTBUsingBkpData() {
 
 	CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }
-
 void Output3Dvelocity(){
 
     char filename_E2[300];
@@ -656,7 +665,6 @@ void Output3Dvelocity(){
     fclose(fpE3);
 
 }
-
 void wirte_ASCII_of_str(char * str, FILE * file)
 {
     int value = 0;
@@ -673,4 +681,10 @@ void wirte_ASCII_of_str(char * str, FILE * file)
 
     fwrite(&value, sizeof(int), 1, file);
 }
+
+
+
+
+
+
 #endif
