@@ -387,7 +387,7 @@ void fileIO_velocity_vtk_merged(int step) {
         }
         
         ostringstream oss;
-        oss << "./result/velocity_merged_" << step << ".vtk";
+        oss << "./result/velocity_merged_" << setfill('0') << setw(6) << step << ".vtk";
         ofstream out(oss.str().c_str());
         
         if( !out.is_open() ) {
@@ -441,7 +441,7 @@ void fileIO_velocity_vtk_merged(int step) {
         }}}
         
         out.close();
-        cout << "Merged VTK output: velocity_merged_" << step << ".vtk\n";
+        cout << "Merged VTK output: velocity_merged_" << setfill('0') << setw(6) << step << ".vtk\n";
         
         free(u_global);
         free(v_global);
