@@ -288,68 +288,32 @@ switch ($Command) {
     }
     
     "pull" {
-        Write-Color "[PULL] Downloading changes from remote..." "Magenta"
-        
-        # Allow selecting server: mobaxterm pull .154 or mobaxterm pull .87
+        Write-Color "[PULL] Downloading from remote (no delete)..." "Magenta"
         $targetServer = $null
         if ($Arguments -and $Arguments.Count -gt 0) {
             $serverArg = $Arguments[0]
             foreach ($s in $Config.Servers) {
                 if ($s.Name -eq $serverArg -or $s.Name -eq ".$serverArg" -or $serverArg -like "*$($s.Name)*") {
-                    $targetServer = $s
-                    break
+                    $targetServer = $s; break
                 }
             }
         }
-        if (-not $targetServer) {
-            $targetServer = $Config.Servers[0]
-        }
-        
-        Write-Color "`nPulling from $($targetServer.Name) ($($targetServer.Host))..." "Cyan"
-        
-        # 瘥?撌桃
+        if (-not $targetServer) { $targetServer = $Config.Servers[0] }
+        Write-Color "`nPulling from $($targetServer.Name)..." "Cyan"
         $results = Compare-Files -Server $targetServer -Silent
-        
-        # 閬?頛?嚗?蝡舀?雿?唳???Deleted) + ?垢靽格??Modified)
-        $toDownload = @()
-        $toDownload += $results.Deleted
-        $toDownload += $results.Modified
-        
-        # 閬?斤?嚗?唳?雿?蝡舀???New)
-        $toDelete = $results.New
-        
-        if ($toDownload.Count -eq 0 -and $toDelete.Count -eq 0) {
-            Write-Color "  [OK] Already synced, nothing to pull" "Green"
-        }
+        $toDownload = @(); $toDownload += $results.Deleted; $toDownload += $results.Modified
+        if ($toDownload.Count -eq 0) { Write-Color "  [OK] Nothing to pull" "Green" }
         else {
             $pullCount = 0
             foreach ($relativePath in $toDownload) {
                 $remotePath = "$($Config.RemotePath)/$relativePath"
                 $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", "\"))
                 $localDir = Split-Path $localPath -Parent
-                
-                if (-not (Test-Path $localDir)) { 
-                    New-Item -ItemType Directory -Path $localDir -Force | Out-Null 
-                }
-                
+                if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Path $localDir -Force | Out-Null }
                 $null = & $Config.PscpPath -pw $targetServer.Password -q "$($targetServer.User)@$($targetServer.Host):$remotePath" $localPath 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Color "  [DOWNLOAD] $relativePath" "Green"
-                    $pullCount++
-                }
+                if ($LASTEXITCODE -eq 0) { Write-Color "  [DOWNLOAD] $relativePath" "Green"; $pullCount++ }
             }
-            
-            $deleteCount = 0
-            foreach ($f in $toDelete) {
-                $localPath = Join-Path $Config.LocalPath ($f.Replace("/", "\"))
-                if (Test-Path $localPath) {
-                    Remove-Item $localPath -Force
-                    Write-Color "  [DELETE] $f" "Red"
-                    $deleteCount++
-                }
-            }
-            
-            Write-Color "`n$($targetServer.Name): Downloaded=$pullCount | Deleted=$deleteCount" "Cyan"
+            Write-Color "`nDownloaded=$pullCount" "Cyan"
         }
     }
     
@@ -361,18 +325,114 @@ switch ($Command) {
         & $PSCommandPath pull .154
     }
     
-    # git fetch - ?芣炎?仿?蝡舐???銝?頛?
+    # git fetch - 敺?蝡臭?頛蒂?芷?砍憭??辣嚗ync local to remote嚗?
     "fetch" {
-        Write-Color "[FETCH] Fetching remote status..." "Magenta"
-        foreach ($server in $Config.Servers) {
-            $results = Compare-Files -Server $server
-            $remoteCount = $results.Same.Count + $results.Modified.Count + $results.Deleted.Count
-            Write-Color "`n$($server.Name) ($($server.Host)):" "Cyan"
-            Write-Color "  Remote files: $remoteCount" "White"
-            Write-Color "  Same: $($results.Same.Count) | Modified: $($results.Modified.Count) | Remote-only: $($results.Deleted.Count)" "Gray"
+
+        $targetServer = $null
+
+        if ($Arguments -and $Arguments.Count -gt 0) {
+
+            $serverArg = $Arguments[0]
+
+            $targetServer = $Config.Servers | Where-Object { $_.Name -eq $serverArg -or $_.Host -like "*$serverArg*" } | Select-Object -First 1
+
         }
+
+        if (-not $targetServer) { $targetServer = $Config.Servers[0] }
+
+        
+
+        Write-Color "[FETCH] Syncing from remote (with delete)..." "Magenta"
+
+        Write-Color "Server: $($targetServer.Name) ($($targetServer.Host))" "Cyan"
+
+        
+
+        $results = Compare-Files -Server $targetServer
+
+        $toDownload = @($results.Deleted) + @($results.Modified) | Where-Object { $_ }
+
+        $toDelete = @($results.New) | Where-Object { $_ }
+
+        
+
+        # Download files from remote
+
+        if ($toDownload.Count -gt 0) {
+
+            Write-Color "Downloading $($toDownload.Count) file(s)..." "Yellow"
+
+            foreach ($file in $toDownload) {
+
+                $remotePath = "$($targetServer.User)@$($targetServer.Host):$($targetServer.RemotePath)/$file"
+
+                $localPath = Join-Path $Config.LocalPath $file
+
+                $localDir = Split-Path $localPath -Parent
+
+                if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Path $localDir -Force | Out-Null }
+
+                & $Config.PSCPPath -pw $targetServer.Password -r $remotePath $localPath 2>$null
+
+                Write-Color "  Downloaded: $file" "Green"
+
+            }
+
+        }
+
+        
+
+        # Delete local files not on remote
+
+        if ($toDelete.Count -gt 0) {
+
+            Write-Color "Deleting $($toDelete.Count) local file(s) not on remote..." "Red"
+
+            foreach ($file in $toDelete) {
+
+                $localPath = Join-Path $Config.LocalPath $file
+
+                if (Test-Path $localPath) {
+
+                    Remove-Item $localPath -Force
+
+                    Write-Color "  Deleted: $file" "Red"
+
+                }
+
+            }
+
+        }
+
+        
+
+        if ($toDownload.Count -eq 0 -and $toDelete.Count -eq 0) {
+
+            Write-Color "Local is in sync with remote." "Green"
+
+        } else {
+
+            Write-Color "Fetch complete: $($toDownload.Count) downloaded, $($toDelete.Count) deleted" "Green"
+
+        }
+
     }
+
     
+
+    "fetch87" {
+
+        & $PSCommandPath fetch 87
+
+    }
+
+    
+
+    "fetch154" {
+
+        & $PSCommandPath fetch 154
+
+    }
     # git log - ?亦??垢 log 瑼?
     "log" {
         Write-Color "[LOG] Fetching remote log files..." "Magenta"
@@ -971,8 +1031,158 @@ switch ($Command) {
         }
     }
     
+    "watchfetch" {
+        # Auto-download with delete: monitor remote and sync local to match (persistent process)
+        $pidFile = Join-Path $Config.LocalPath ".vscode\watchfetch.pid"
+        $logFile = Join-Path $Config.LocalPath ".vscode\watchfetch.log"
+        $daemonScript = Join-Path $Config.LocalPath ".vscode\watchfetch-daemon.ps1"
+        $subCommand = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "" }
+        
+        switch ($subCommand) {
+            "stop" {
+                if (Test-Path $pidFile) {
+                    $pids = Get-Content $pidFile -ErrorAction SilentlyContinue
+                    foreach ($p in $pids) {
+                        if ($p -match '^\d+$') {
+                            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                            if ($proc) {
+                                Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
+                                Write-Color "[WATCHFETCH] Stopped process $p" "Yellow"
+                            }
+                        }
+                    }
+                    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+                    Write-Color "[WATCHFETCH] Auto-fetch stopped" "Green"
+                }
+                else {
+                    Write-Color "[WATCHFETCH] No active watchfetch process" "Yellow"
+                }
+            }
+            
+            "status" {
+                Write-Color "`n=== WatchFetch Status (WITH DELETE) ===" "Cyan"
+                if (Test-Path $pidFile) {
+                    $pids = Get-Content $pidFile -ErrorAction SilentlyContinue
+                    $active = @()
+                    foreach ($p in $pids) {
+                        if ($p -match '^\d+$') {
+                            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                            if ($proc) { $active += $p }
+                        }
+                    }
+                    if ($active.Count -gt 0) {
+                        Write-Color "[RUNNING] PIDs: $($active -join ', ')" "Green"
+                        if (Test-Path $logFile) {
+                            Write-Color "`nRecent Activity (last 20 lines):" "Yellow"
+                            Get-Content $logFile -Tail 20 | ForEach-Object { Write-Host "  $_" }
+                        }
+                    }
+                    else {
+                        Write-Color "[STOPPED] No active process" "Yellow"
+                        Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+                    }
+                }
+                else {
+                    Write-Color "[STOPPED] WatchFetch is not running" "Yellow"
+                }
+                Write-Host ""
+            }
+            
+            "log" {
+                if (Test-Path $logFile) {
+                    Write-Color "=== WatchFetch Log ===" "Cyan"
+                    Get-Content $logFile -Tail 50 | ForEach-Object { Write-Host $_ }
+                }
+                else {
+                    Write-Color "No log file found" "Yellow"
+                }
+            }
+            
+            "clear" {
+                if (Test-Path $logFile) {
+                    Remove-Item $logFile -Force
+                    Write-Color "[WATCHFETCH] Log cleared" "Green"
+                }
+            }
+            
+            default {
+                # Start watchfetch for specified server
+                $targetServer = $null
+                if ($subCommand -eq ".87" -or $subCommand -eq "87") {
+                    $targetServer = $Config.Servers | Where-Object { $_.Name -eq ".87" } | Select-Object -First 1
+                }
+                elseif ($subCommand -eq ".154" -or $subCommand -eq "154") {
+                    $targetServer = $Config.Servers | Where-Object { $_.Name -eq ".154" } | Select-Object -First 1
+                }
+                else {
+                    $targetServer = $Config.Servers[0]  # Default to first server
+                }
+                
+                # Check if already running
+                if (Test-Path $pidFile) {
+                    $pids = Get-Content $pidFile -ErrorAction SilentlyContinue
+                    foreach ($p in $pids) {
+                        if ($p -match '^\d+$') {
+                            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                            if ($proc) {
+                                Write-Color "[WATCHFETCH] Already running (PID: $p). Use 'mobaxterm watchfetch stop' first." "Yellow"
+                                return
+                            }
+                        }
+                    }
+                }
+                
+                $interval = 30
+                if ($Arguments.Count -gt 1 -and $Arguments[1] -match '^\d+$') {
+                    $interval = [int]$Arguments[1]
+                }
+                
+                Write-Color "[WATCHFETCH] Starting auto-fetch monitor WITH DELETE (persistent)..." "Magenta"
+                Write-Color "  Server: $($targetServer.Name)" "White"
+                Write-Color "  Interval: ${interval}s" "White"
+                Write-Color "  Mode: Download + Delete local files not on remote" "Red"
+                Write-Color "  Log: $logFile" "Gray"
+                Write-Color "`nCommands:" "Yellow"
+                Write-Color "  mobaxterm watchfetch status  - Check status" "Gray"
+                Write-Color "  mobaxterm watchfetch log     - View log" "Gray"
+                Write-Color "  mobaxterm watchfetch stop    - Stop monitoring" "Gray"
+                Write-Host ""
+                
+                # Clear old log
+                $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+                [System.IO.File]::WriteAllText($logFile, "", $utf8NoBom)
+                
+                # Start daemon process
+                $proc = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+                    "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
+                    "-File", "`"$daemonScript`"",
+                    "-LocalPath", "`"$($Config.LocalPath)`"",
+                    "-RemotePath", "`"$($Config.RemotePath)`"",
+                    "-ServerName", "`"$($targetServer.Name)`"",
+                    "-ServerHost", "`"$($targetServer.Host)`"",
+                    "-ServerUser", "`"$($targetServer.User)`"",
+                    "-ServerPass", "`"$($targetServer.Password)`"",
+                    "-PlinkPath", "`"$($Config.PlinkPath)`"",
+                    "-PscpPath", "`"$($Config.PscpPath)`"",
+                    "-LogPath", "`"$logFile`"",
+                    "-Interval", $interval
+                ) -PassThru
+                
+                Start-Sleep -Milliseconds 500
+                
+                # Save PID
+                $proc.Id | Out-File $pidFile -Force
+                Write-Color "[STARTED] $($targetServer.Name) fetch monitoring (PID: $($proc.Id))" "Green"
+                
+                Write-Color "`n[WATCHFETCH] Background monitoring started!" "Green"
+                Write-Color "WARNING: Local files not on remote will be DELETED!" "Red"
+                Write-Color "Use 'mobaxterm watchfetch status' to check progress" "Cyan"
+            }
+        }
+    }
+    
     "autopull" {
-        # Quick auto-pull: check and pull if needed (no interaction)
+        # Quick auto-pull: check and pull if needed (download only, no local delete)
         $targetServer = $Config.Servers[0]  # Default to .87
         if ($Arguments.Count -gt 0) {
             $arg = $Arguments[0]
@@ -985,14 +1195,92 @@ switch ($Command) {
         }
         
         $results = Compare-Files -Server $targetServer -Silent
-        $needsPull = $results.Deleted.Count + $results.Modified.Count
+        # 只下載遠端有的檔案，不刪除本地檔案
+        $toDownload = @()
+        $toDownload += $results.Deleted   # 遠端有本地沒有
+        $toDownload += $results.Modified  # 遠端有更新
         
-        if ($needsPull -gt 0) {
-            Write-Color "[AUTOPULL] $needsPull files to download from $($targetServer.Name)" "Cyan"
-            & $PSCommandPath pull $targetServer.Name
+        if ($toDownload.Count -gt 0) {
+            Write-Color "[AUTOPULL] $($toDownload.Count) files to download from $($targetServer.Name)" "Cyan"
+            $pullCount = 0
+            foreach ($relativePath in $toDownload) {
+                $remotePath = "$($Config.RemotePath)/$relativePath"
+                $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", "\"))
+                $localDir = Split-Path $localPath -Parent
+                
+                if (-not (Test-Path $localDir)) { 
+                    New-Item -ItemType Directory -Path $localDir -Force | Out-Null 
+                }
+                
+                $null = & $Config.PscpPath -pw $targetServer.Password -q "$($targetServer.User)@$($targetServer.Host):$remotePath" $localPath 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Color "  [DOWNLOAD] $relativePath" "Green"
+                    $pullCount++
+                }
+            }
+            Write-Color "[AUTOPULL] Downloaded $pullCount files" "Cyan"
         }
         else {
             Write-Color "[AUTOPULL] $($targetServer.Name) - No new files" "Green"
+        }
+    }
+    
+    "autofetch" {
+        # Quick auto-fetch: download + delete local files not on remote (sync local to remote)
+        $targetServer = $Config.Servers[0]  # Default to .87
+        if ($Arguments.Count -gt 0) {
+            $arg = $Arguments[0]
+            if ($arg -eq ".154" -or $arg -eq "154") {
+                $targetServer = $Config.Servers | Where-Object { $_.Name -eq ".154" }
+            }
+            elseif ($arg -eq ".87" -or $arg -eq "87") {
+                $targetServer = $Config.Servers | Where-Object { $_.Name -eq ".87" }
+            }
+        }
+        
+        $results = Compare-Files -Server $targetServer -Silent
+        $toDownload = @($results.Deleted) + @($results.Modified) | Where-Object { $_ }
+        $toDelete = @($results.New) | Where-Object { $_ }
+        
+        $hasChanges = $false
+        
+        # Download from remote
+        if ($toDownload.Count -gt 0) {
+            $hasChanges = $true
+            Write-Color "[AUTOFETCH] Downloading $($toDownload.Count) files from $($targetServer.Name)" "Cyan"
+            foreach ($relativePath in $toDownload) {
+                $remotePath = "$($Config.RemotePath)/$relativePath"
+                $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", "\"))
+                $localDir = Split-Path $localPath -Parent
+                
+                if (-not (Test-Path $localDir)) { 
+                    New-Item -ItemType Directory -Path $localDir -Force | Out-Null 
+                }
+                
+                $null = & $Config.PscpPath -pw $targetServer.Password -q "$($targetServer.User)@$($targetServer.Host):$remotePath" $localPath 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Color "  [DOWNLOAD] $relativePath" "Green"
+                }
+            }
+        }
+        
+        # Delete local files not on remote
+        if ($toDelete.Count -gt 0) {
+            $hasChanges = $true
+            Write-Color "[AUTOFETCH] Deleting $($toDelete.Count) local files not on remote" "Red"
+            foreach ($relativePath in $toDelete) {
+                $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", "\"))
+                if (Test-Path $localPath) {
+                    Remove-Item $localPath -Force
+                    Write-Color "  [DELETE] $relativePath" "Red"
+                }
+            }
+        }
+        
+        if (-not $hasChanges) {
+            Write-Color "[AUTOFETCH] $($targetServer.Name) - Already in sync" "Green"
+        } else {
+            Write-Color "[AUTOFETCH] Complete: $($toDownload.Count) downloaded, $($toDelete.Count) deleted" "Cyan"
         }
     }
     
@@ -1003,61 +1291,58 @@ switch ($Command) {
         Write-Host ""
         Write-Host "Usage: mobaxterm <command>" -ForegroundColor White
         Write-Host ""
-        Write-Host "Git-like Commands:" -ForegroundColor Yellow
-        Write-Host "  status      - Show sync status (like git status)"
-        Write-Host "  add         - Show pending changes (like git add)"
-        Write-Host "  diff        - Compare local vs remote (like git diff)"
-        Write-Host "  push        - Full sync: upload + delete remote-only (like git push)"
-        Write-Host "  pull        - Download from remote (like git pull)"
-        Write-Host "  pull .87    - Pull from .87 specifically"
-        Write-Host "  pull .154   - Pull from .154 specifically"
-        Write-Host "  fetch       - Check remote status without download (like git fetch)"
-        Write-Host "  log         - View remote log files (like git log)"
-        Write-Host "  log .154    - View logs from .154"
-        Write-Host "  reset       - Delete remote-only files only (no upload)"
-        Write-Host "  clone       - Full download from remote (like git clone)"
-        Write-Host "  clone .154  - Clone from .154"
+        Write-Host "=== Sync Command Summary ===" -ForegroundColor Yellow
+        Write-Host "  FETCH series: Download + DELETE local (sync local to remote)" -ForegroundColor Red
+        Write-Host "  PULL series:  Download only (no delete)" -ForegroundColor Green
+        Write-Host "  PUSH series:  Upload + DELETE remote (sync remote to local)" -ForegroundColor Red
         Write-Host ""
-        Write-Host "Extra Commands:" -ForegroundColor Yellow
+        Write-Host "Download Commands (from remote):" -ForegroundColor Yellow
+        Write-Host "  pull        - Download only, NO delete (safe)" -ForegroundColor Green
+        Write-Host "  pull .87    - Pull from .87 only"
+        Write-Host "  pull .154   - Pull from .154 only"
+        Write-Host "  autopull    - Auto-pull if changes detected (no delete)"
+        Write-Host "  watchpull   - Background auto-download (no delete)"
+        Write-Host ""
+        Write-Host "  fetch       - Download + DELETE local files not on remote" -ForegroundColor Red
+        Write-Host "  fetch .87   - Fetch from .87 only"
+        Write-Host "  fetch .154  - Fetch from .154 only"
+        Write-Host "  autofetch   - Auto-fetch if changes detected (with delete)"
+        Write-Host "  watchfetch  - Background auto-fetch (download + delete)"
+        Write-Host ""
+        Write-Host "Upload Commands (to remote):" -ForegroundColor Yellow
+        Write-Host "  push        - Upload + DELETE remote files not in local" -ForegroundColor Red
+        Write-Host "  autopush    - Auto-push if changes detected (with delete)"
+        Write-Host "  watchpush   - Background auto-upload (with delete)"
+        Write-Host ""
+        Write-Host "Status & Info:" -ForegroundColor Yellow
+        Write-Host "  status      - Show sync status"
+        Write-Host "  diff        - Compare local vs remote"
+        Write-Host "  log         - View remote log files"
+        Write-Host "  syncstatus  - Check all background sync status"
+        Write-Host ""
+        Write-Host "Other Commands:" -ForegroundColor Yellow
+        Write-Host "  clone       - Full download from remote"
+        Write-Host "  reset       - Delete remote-only files (no upload)"
         Write-Host "  sync        - Interactive: diff -> confirm -> push"
         Write-Host "  issynced    - Quick one-line status check"
-        Write-Host "  watch       - Auto-push on file change (Ctrl+C to stop)"
-        Write-Host "  autopush    - Push only if changes detected"
-        Write-Host "  autopull    - Pull if remote has new files"
         Write-Host ""
-        Write-Host "Background Auto-Sync:" -ForegroundColor Yellow
-        Write-Host "  syncstatus        - Combined upload/download status"
-        Write-Host ""
-        Write-Host "  [Upload]"
-        Write-Host "  watchpush         - Start background auto-upload"
-        Write-Host "  watchpush status  - Check upload status"
-        Write-Host "  watchpush log     - View upload log"
-        Write-Host "  watchpush stop    - Stop auto-upload"
-        Write-Host ""
-        Write-Host "  [Download]"
-        Write-Host "  watchpull         - Start auto-download (both servers)"
-        Write-Host "  watchpull .87     - Monitor .87 only"
-        Write-Host "  watchpull .154    - Monitor .154 only"
-        Write-Host "  watchpull status  - Check download status"
-        Write-Host "  watchpull log     - View download log"
-        Write-Host "  watchpull stop    - Stop auto-download"
+        Write-Host "Background Commands:" -ForegroundColor Yellow
+        Write-Host "  watchpull/watchfetch/watchpush [.87|.154]  - Start monitoring"
+        Write-Host "  watchpull/watchfetch/watchpush status      - Check status"
+        Write-Host "  watchpull/watchfetch/watchpush log         - View log"
+        Write-Host "  watchpull/watchfetch/watchpush stop        - Stop monitoring"
         Write-Host ""
         Write-Host "Aliases:" -ForegroundColor Yellow
-        Write-Host "  check       - Same as diff"
-        Write-Host "  delete      - Same as reset"
-        Write-Host "  pull87      - Same as pull .87"
-        Write-Host "  pull154     - Same as pull .154"
+        Write-Host "  pull87/pull154   - Same as pull .87/.154"
+        Write-Host "  fetch87/fetch154 - Same as fetch .87/.154"
+        Write-Host "  check            - Same as diff"
         Write-Host ""
         Write-Host "Examples:" -ForegroundColor Yellow
-        Write-Host "  mobaxterm status       # Check sync state"
-        Write-Host "  mobaxterm diff         # View differences"
-        Write-Host "  mobaxterm push         # Upload changes"
-        Write-Host "  mobaxterm pull .154    # Download from .154"
-        Write-Host "  mobaxterm log          # View remote logs"
-        Write-Host "  mobaxterm watch        # Auto-push (foreground, Ctrl+C stop)"
-        Write-Host "  mobaxterm watchpush    # Auto-upload (background)"
-        Write-Host "  mobaxterm watchpull    # Auto-download (background)"
-        Write-Host "  mobaxterm syncstatus   # Check all background sync status"
+        Write-Host "  mobaxterm pull .87      # Safe download (no delete)"
+        Write-Host "  mobaxterm fetch .87     # Download + delete local extras"
+        Write-Host "  mobaxterm push          # Upload + delete remote extras"
+        Write-Host "  mobaxterm watchpull     # Background safe download"
+        Write-Host "  mobaxterm watchfetch    # Background sync (with delete)"
         Write-Host ""
     }
 }
