@@ -20,6 +20,7 @@ DURATION_SEC = 3        # 全部 timestep 在幾秒內播完
 LOOP         = True     # 是否連續循環播放
 EXPORT_VIDEO = True     # True = 匯出影片檔, False = 僅畫面播放
 VIDEO_FPS    = 30       # 匯出影片 FPS
+MAX_FILES    = 0        # 限制載入檔案數 (0 = 全部載入)
 # ====================================================
 
 import os
@@ -45,6 +46,11 @@ if skipped:
 
 if not vtk_files:
     raise RuntimeError("No valid 6-digit VTK files found in: " + vtk_dir)
+
+# 限制載入數量 (預覽用)
+if MAX_FILES > 0:
+    vtk_files = vtk_files[:MAX_FILES]
+    print("PREVIEW MODE: only loading first {} files".format(MAX_FILES))
 
 print("Found {} valid VTK files".format(len(vtk_files)))
 print("  First: {}".format(os.path.basename(vtk_files[0])))
@@ -90,11 +96,11 @@ annotation.Expression = "'Step = %d' % ({} + int(t_index) * {})".format(first_st
 annotation.ArrayAssociation = 'Point Data'
 
 annDisplay = Show(annotation, renderView)
-annDisplay.FontSize = 18
+annDisplay.FontSize = 48
 annDisplay.Bold = 1
 annDisplay.Color = [0.0, 0.0, 0.0]       # 黑色文字
 annDisplay.FontFamily = 'Times'           # Times New Roman
-annDisplay.WindowLocation = 'Upper Center' # 顯示在畫面上方中央
+annDisplay.WindowLocation = 'Upper Center' # 主體上方中央
 
 print("  Step range: {} ~ {} (interval={})".format(
     step_numbers[0], step_numbers[-1], step_interval))
@@ -106,6 +112,11 @@ renderView.ResetCamera()
 renderView.CameraPosition = [18.0019, -8.2673, 2.3630]
 renderView.CameraFocalPoint = [2.25, 4.5, 1.518]
 renderView.CameraViewUp = [-0.03047, 0.02853, 0.99913]
+
+# 先 Reset Camera Closest 再稍微拉遠，主體與邊框留一點間距
+renderView.ResetCamera(True)
+camera = renderView.GetActiveCamera()
+camera.Dolly(1.05)  # >1 拉近，主體更大
 
 # 跳到最後一幀抓色彩範圍 (避免 Step 1 速度太小看不到顏色)
 animationScene.GoToLast()
