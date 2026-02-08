@@ -12,8 +12,8 @@
 | `git add` | `mobaxterm add` | 顯示待推送的變更 |
 | `git diff` | `mobaxterm diff` | 比較本地與遠端差異 |
 | `git push` | `mobaxterm push` | **完整推送**：上傳 + 刪除遠端多餘檔案 |
-| `git pull` | `mobaxterm pull` | 從遠端拉取（預設 .87） |
-| `git fetch` | `mobaxterm fetch` | 只檢查遠端狀態（不下載） |
+| `git pull` | `mobaxterm pull` | 從遠端下載（無刪除功能，安全模式） |
+| `git fetch` | `mobaxterm fetch` | **同步下載**：下載 + 刪除本地多餘檔案 |
 | `git log` | `mobaxterm log` | 查看遠端 log 檔案 |
 | `git reset --hard` | `mobaxterm reset` | 只刪除遠端多餘檔案（不上傳） |
 | `git clone` | `mobaxterm clone` | 從遠端完整複製到本地 |
@@ -29,6 +29,72 @@
 | `mobaxterm pull154` | 快捷：等同 `pull .154` |
 | `mobaxterm clone .154` | 從 .154 完整複製 |
 | `mobaxterm log .154` | 查看 .154 的 log 檔案 |
+
+### 同步命令完整說明（重要！）
+
+**三大系列命令的差異：**
+
+| 系列 | 下載/上傳 | 是否刪除 | 使用時機 | 安全性 |
+|------|-----------|----------|----------|--------|
+| **PULL 系列** | ⬇️ 下載 | ❌ 不刪除本地檔案 | 安全下載遠端檔案 | ✅ 最安全 |
+| **FETCH 系列** | ⬇️ 下載 | ⚠️ 刪除本地多餘檔案 | 本地完全同步至遠端 | ⚠️ 會刪除 |
+| **PUSH 系列** | ⬆️ 上傳 | ⚠️ 刪除遠端多餘檔案 | 遠端完全同步至本地 | ⚠️ 會刪除 |
+
+#### PULL 系列（安全下載）
+
+| 命令 | 功能 | 說明 |
+|------|------|------|
+| `mobaxterm pull` | 下載檔案（不刪除） | 從 .87 下載，本地檔案保留 |
+| `mobaxterm pull .87` | 從 .87 下載 | 明確指定伺服器 |
+| `mobaxterm pull .154` | 從 .154 下載 | 明確指定伺服器 |
+| `mobaxterm pull87` / `pull154` | 快捷方式 | 同上 |
+| `mobaxterm autopull` | 自動拉取 | 有變更才下載（不刪除） |
+| `mobaxterm watchpull` | 背景監控下載 | 持續監控，自動下載新檔案 |
+
+**特點：**
+- ✅ 只下載遠端有的檔案
+- ✅ 本地檔案不會被刪除（即使遠端沒有）
+- ✅ 最安全的下載方式
+
+#### FETCH 系列（完整同步）
+
+| 命令 | 功能 | 說明 |
+|------|------|------|
+| `mobaxterm fetch` | 同步本地至遠端 | 下載 + **刪除本地多餘檔案** |
+| `mobaxterm fetch .87` | 從 .87 完整同步 | 明確指定伺服器 |
+| `mobaxterm fetch .154` | 從 .154 完整同步 | 明確指定伺服器 |
+| `mobaxterm fetch87` / `fetch154` | 快捷方式 | 同上 |
+| `mobaxterm autofetch` | 自動同步 | 有變更才執行（含刪除） |
+| `mobaxterm watchfetch` | 背景完整同步 | 持續監控並同步 |
+
+**特點：**
+- ⬇️ 下載遠端有的檔案
+- ⚠️ **刪除本地有但遠端沒有的檔案**
+- 🎯 讓本地完全等於遠端狀態
+- ⚠️ 使用前請確認本地沒有重要未上傳檔案
+
+#### PUSH 系列（上傳同步）
+
+| 命令 | 功能 | 說明 |
+|------|------|------|
+| `mobaxterm push` | 完整推送 | 上傳 + **刪除遠端多餘檔案** |
+| `mobaxterm autopush` | 自動推送 | 有變更才執行（含刪除） |
+| `mobaxterm watchpush` | 背景自動上傳 | 持續監控並上傳 |
+
+**特點：**
+- ⬆️ 上傳本地有的檔案
+- ⚠️ **刪除遠端有但本地沒有的檔案**
+- 🎯 讓遠端完全等於本地狀態
+
+### Fetch 指定伺服器
+
+| 命令 | 功能 |
+|------|------|
+| `mobaxterm fetch` | 從 .87 同步（預設） |
+| `mobaxterm fetch .87` | 明確指定從 .87 同步 |
+| `mobaxterm fetch .154` | 從 .154 同步 |
+| `mobaxterm fetch87` | 快捷：等同 `fetch .87` |
+| `mobaxterm fetch154` | 快捷：等同 `fetch .154` |
 
 ### 額外功能（超越 Git）
 
@@ -75,12 +141,58 @@
 
 **watchpull 技術細節：**
 - 監控間隔：30 秒
-- 下載檔案類型：`*.dat`, `log*`, `*.plt`（**只下載輸出檔**）
+- 下載檔案類型：`*.dat`, `log*`, `*.plt`, `*.vtk`, `*.bin`（**只下載輸出檔**）
 - **不會下載**：程式碼檔案 (`.h`, `.cu`, `.c` 等)
+- **不會刪除**：本地檔案（即使遠端沒有）
 - 比對方式：MD5 hash（只下載內容有變更的檔案）
 - 日誌位置：`.vscode/watchpull.log`
 
-> **安全設計**：只拉取程式輸出，不會覆蓋你正在編輯的程式碼
+> **安全設計**：只拉取程式輸出，不會覆蓋你正在編輯的程式碼，也不會刪除本地檔案
+
+### 背景完整同步 (watchfetch)
+
+| 命令 | 功能 | 說明 |
+|------|------|------|
+| `mobaxterm watchfetch` | **啟動背景完整同步** | 下載 + 刪除本地多餘檔案 |
+| `mobaxterm watchfetch .87` | 只監控 .87 | 背景執行 |
+| `mobaxterm watchfetch .154` | 只監控 .154 | 背景執行 |
+| `mobaxterm watchfetch status` | 檢查同步狀態 | 顯示是否執行中 + 最近活動 |
+| `mobaxterm watchfetch log` | 查看同步日誌 | 完整同步歷史 |
+| `mobaxterm watchfetch stop` | 停止同步 | 關閉背景程序 |
+
+**watchfetch 技術細節：**
+- 監控間隔：30 秒
+- 下載檔案類型：`*.dat`, `log*`, `*.plt`, `*.vtk`, `*.bin`
+- **會刪除**：本地有但遠端沒有的檔案
+- 比對方式：MD5 hash
+- 日誌位置：`.vscode/watchfetch.log`
+
+> **⚠️ 注意**：watchfetch 會刪除本地檔案以保持與遠端同步，使用前請確認本地沒有重要未上傳檔案
+
+### VTK 檔案自動重命名
+
+| 命令 | 功能 | 說明 |
+|------|------|------|
+| `mobaxterm vtkrename` | **啟動 VTK 重命名器** | 自動將 VTK 檔案重命名為 zero-padding 格式 |
+| `mobaxterm vtkrename status` | 檢查重命名器狀態 | 顯示執行狀態 + 最近重命名記錄 |
+| `mobaxterm vtkrename log` | 查看重命名日誌 | 完整重命名歷史 |
+| `mobaxterm vtkrename stop` | 停止重命名器 | 關閉背景程序 |
+
+**vtkrename 技術細節：**
+- 監控目錄：`result/`
+- 檢查間隔：5 秒
+- 重命名格式：`velocity_merged_000001.vtk`（6 位數 zero-padding）
+- 最大支援：500000 步
+- 日誌位置：`.vscode/vtk-renamer.log`
+
+**重命名範例：**
+```
+velocity_merged_1001.vtk    → velocity_merged_001001.vtk
+velocity_merged_31001.vtk   → velocity_merged_031001.vtk
+velocity_merged_123456.vtk  → 保持不變（已是 6 位數）
+```
+
+> **用途**：確保 ParaView 能正確按時間步排序 VTK 檔案
 
 ### 合併狀態監控
 
