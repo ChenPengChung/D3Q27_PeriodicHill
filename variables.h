@@ -98,7 +98,7 @@
 
 //Smagorinsky LES subgrid model parameters
 #define     SMAGORINSKY  1          // 1=enable LES, 0=disable
-#define     C_Smag       0.1        // Smagorinsky constant (typical: 0.1-0.2)
+#define     C_Smag       0.15       // Smagorinsky constant (typical: 0.1-0.2)
 #define     DELTA        (1.0)      // Filter width in lattice units
 //#define     Uref        (Re*niu/LZ)
 #define     Uref        (Re*niu)
