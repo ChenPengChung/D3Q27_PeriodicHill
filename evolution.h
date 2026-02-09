@@ -276,6 +276,72 @@ __global__ void stream_collide_Buffer(
 	const double F17_eq = (1./36.) *rho_s*(1.0+3.0*( v1 -w1) +4.5*( v1 -w1)*( v1 -w1)-1.5*udot);
 	const double F18_eq = (1./36.) *rho_s*(1.0+3.0*(-v1 -w1) +4.5*(-v1 -w1)*(-v1 -w1)-1.5*udot);
 
+    //==================== Smagorinsky LES Subgrid Model ====================//
+    #if SMAGORINSKY
+    // Calculate nonequilibrium stress tensor components: Pi_ab = sum_i(c_ia * c_ib * f_neq_i)
+    // D3Q19 lattice velocities:
+    // f0:(0,0,0), f1:(1,0,0), f2:(-1,0,0), f3:(0,1,0), f4:(0,-1,0), f5:(0,0,1), f6:(0,0,-1)
+    // f7:(1,1,0), f8:(-1,1,0), f9:(1,-1,0), f10:(-1,-1,0)
+    // f11:(1,0,1), f12:(-1,0,1), f13:(1,0,-1), f14:(-1,0,-1)
+    // f15:(0,1,1), f16:(0,-1,1), f17:(0,1,-1), f18:(0,-1,-1)
+    
+    double fneq1  = F1_in  - F1_eq;
+    double fneq2  = F2_in  - F2_eq;
+    double fneq3  = F3_in  - F3_eq;
+    double fneq4  = F4_in  - F4_eq;
+    double fneq5  = F5_in  - F5_eq;
+    double fneq6  = F6_in  - F6_eq;
+    double fneq7  = F7_in  - F7_eq;
+    double fneq8  = F8_in  - F8_eq;
+    double fneq9  = F9_in  - F9_eq;
+    double fneq10 = F10_in - F10_eq;
+    double fneq11 = F11_in - F11_eq;
+    double fneq12 = F12_in - F12_eq;
+    double fneq13 = F13_in - F13_eq;
+    double fneq14 = F14_in - F14_eq;
+    double fneq15 = F15_in - F15_eq;
+    double fneq16 = F16_in - F16_eq;
+    double fneq17 = F17_in - F17_eq;
+    double fneq18 = F18_in - F18_eq;
+    
+    // Pi_xx = sum over directions with ex^2=1
+    double Pi_xx = fneq1 + fneq2 + fneq7 + fneq8 + fneq9 + fneq10 + fneq11 + fneq12 + fneq13 + fneq14;
+    // Pi_yy = sum over directions with ey^2=1
+    double Pi_yy = fneq3 + fneq4 + fneq7 + fneq8 + fneq9 + fneq10 + fneq15 + fneq16 + fneq17 + fneq18;
+    // Pi_zz = sum over directions with ez^2=1
+    double Pi_zz = fneq5 + fneq6 + fneq11 + fneq12 + fneq13 + fneq14 + fneq15 + fneq16 + fneq17 + fneq18;
+    // Pi_xy = sum over directions with ex*ey != 0
+    double Pi_xy = fneq7 - fneq8 - fneq9 + fneq10;
+    // Pi_xz = sum over directions with ex*ez != 0
+    double Pi_xz = fneq11 - fneq12 - fneq13 + fneq14;
+    // Pi_yz = sum over directions with ey*ez != 0
+    double Pi_yz = fneq15 - fneq16 - fneq17 + fneq18;
+    
+    // Second invariant of strain rate tensor: Q = Pi_ab * Pi_ab
+    double Q_inv = Pi_xx*Pi_xx + Pi_yy*Pi_yy + Pi_zz*Pi_zz + 2.0*(Pi_xy*Pi_xy + Pi_xz*Pi_xz + Pi_yz*Pi_yz);
+    
+    // Strain rate magnitude: |S| = (sqrt(nu0^2 + 18*C^2*Delta^2*sqrt(Q)) - nu0) / (6*C^2*Delta^2)
+    double C2_Delta2 = C_Smag * C_Smag * DELTA * DELTA;
+    double nu0 = niu;  // base kinematic viscosity
+    double S_mag = (sqrt(nu0*nu0 + 18.0*C2_Delta2*sqrt(Q_inv)) - nu0) / (6.0*C2_Delta2 + 1.0e-10);
+    
+    // Total viscosity and relaxation time
+    double nu_total = nu0 + C2_Delta2 * S_mag;
+    double tau_total = 3.0 * nu_total / dt + 0.5;
+    
+    // Ensure stability: tau_total > 0.5
+    if (tau_total < 0.505) tau_total = 0.505;
+    
+    // Update viscosity-related relaxation rates
+    double s_visc = 1.0 / tau_total;
+    s9  = s_visc;
+    s11 = s_visc;
+    s13 = s_visc;
+    s14 = s_visc;
+    s15 = s_visc;
+    #endif
+    //========================================================================//
+
     //
     m_matrix;
     meq;
@@ -511,29 +577,7 @@ __global__ void stream_collide(
             //F0_in = F0_in + ModifydRho_F16( F16_in, f17_old[index] );
         }
     }
-    /* if( k == 3 || k == 4 ) {
-        idx_xi = (k-3)*NYD6+j;
-        if ( BFLReqF3_d[(k-3)*NYD6+j] == 1 ){
-            F3_Intrpl7( f4_old,  i, j, k, (i-3), (j-3), 3, i, j, idx_xi, YBFLf3_0,   YBFLf3_1,   YBFLf3_2,   YBFLf3_3,   YBFLf3_4,   YBFLf3_5,   YBFLf3_6,   XiBFLf3_0, XiBFLf3_1, XiBFLf3_2, XiBFLf3_3, XiBFLf3_4, XiBFLf3_5, XiBFLf3_6 );
-            X_Y_XI_Intrpl7( f10_old, F7_in,  i, j, k, (i-3), (j-3), 3, i, j, idx_xi, XBFLf37_0,   XBFLf37_1,   XBFLf37_2,   XBFLf37_3,   XBFLf37_4,   XBFLf37_5,   XBFLf37_6,   YBFLf3_0,   YBFLf3_1,   YBFLf3_2,   YBFLf3_3,   YBFLf3_4,   YBFLf3_5,   YBFLf3_6,   XiBFLf3_0, XiBFLf3_1, XiBFLf3_2, XiBFLf3_3, XiBFLf3_4, XiBFLf3_5, XiBFLf3_6 );
-            X_Y_XI_Intrpl7(  f9_old, F8_in,  i, j, k, (i-3), (j-3), 3, i, j, idx_xi, XBFLf38_0,   XBFLf38_1,   XBFLf38_2,   XBFLf38_3,   XBFLf38_4,   XBFLf38_5,   XBFLf38_6,   YBFLf3_0,   YBFLf3_1,   YBFLf3_2,   YBFLf3_3,   YBFLf3_4,   YBFLf3_5,   YBFLf3_6,   XiBFLf3_0, XiBFLf3_1, XiBFLf3_2, XiBFLf3_3, XiBFLf3_4, XiBFLf3_5, XiBFLf3_6 );
-            //F0_in = F0_in - ModifydRho_F378( F3_in, F7_in, F8_in, f4_old[index], f9_old[index], f10_old[index] ); 
-        }
-        if ( BFLReqF4_d[(k-3)*NYD6+j] == 1 ){
-            F4_Intrpl7( f3_old,  i, j, k, (i-3), (j-3), 3, i, j, idx_xi, YBFLf4_0,   YBFLf4_1,   YBFLf4_2,   YBFLf4_3,   YBFLf4_4,   YBFLf4_5,   YBFLf4_6,   XiBFLf4_0, XiBFLf4_1, XiBFLf4_2, XiBFLf4_3, XiBFLf4_4, XiBFLf4_5, XiBFLf4_6 );
-            X_Y_XI_Intrpl7( f8_old,  F9_in,  i, j, k, (i-3), (j-3), 3, i, j, idx_xi, XBFLf49_0,   XBFLf49_1,   XBFLf49_2,   XBFLf49_3,   XBFLf49_4,   XBFLf49_5,   XBFLf49_6,   YBFLf4_0,   YBFLf4_1,   YBFLf4_2,   YBFLf4_3,   YBFLf4_4,   YBFLf4_5,   YBFLf4_6,   XiBFLf4_0, XiBFLf4_1, XiBFLf4_2, XiBFLf4_3, XiBFLf4_4, XiBFLf4_5, XiBFLf4_6 );
-            X_Y_XI_Intrpl7( f7_old, F10_in,  i, j, k, (i-3), (j-3), 3, i, j, idx_xi, XBFLf410_0,  XBFLf410_1,  XBFLf410_2,  XBFLf410_3,  XBFLf410_4,  XBFLf410_5,  XBFLf410_6,  YBFLf4_0,   YBFLf4_1,   YBFLf4_2,   YBFLf4_3,   YBFLf4_4,   YBFLf4_5,   YBFLf4_6,   XiBFLf4_0, XiBFLf4_1, XiBFLf4_2, XiBFLf4_3, XiBFLf4_4, XiBFLf4_5, XiBFLf4_6 );
-            //F0_in = F0_in - ModifydRho_F4910( F4_in, F9_in, F10_in, f3_old[index], f7_old[index], f8_old[index] );
-        }
-        if ( BFLReqF15_d[(k-3)*NYD6+j] == 1 ){
-            Y_XI_Intrpl7(  f18_old, F15_in, i, j, k, (i-3), (j-3), 3, i, j, idx_xi, YBFLf15_0,   YBFLf15_1,   YBFLf15_2,   YBFLf15_3,   YBFLf15_4,   YBFLf15_5,   YBFLf15_6,   XiBFLf15_0, XiBFLf15_1, XiBFLf15_2, XiBFLf15_3, XiBFLf15_4, XiBFLf15_5, XiBFLf15_6 );
-            //F0_in = F0_in - ModifydRho_F15( F15_in, f18_old[index] );
-        }
-        if ( BFLReqF16_d[(k-3)*NYD6+j] == 1 ){
-            Y_XI_Intrpl7(  f17_old, F16_in, i, j, k, (i-3), (j-3), 3, i, j, idx_xi, YBFLf16_0,   YBFLf16_1,   YBFLf16_2,   YBFLf16_3,   YBFLf16_4,   YBFLf16_5,   YBFLf16_6,   XiBFLf16_0, XiBFLf16_1, XiBFLf16_2, XiBFLf16_3, XiBFLf16_4, XiBFLf16_5, XiBFLf16_6 );
-            //F0_in = F0_in - ModifydRho_F16( F16_in, f17_old[index] );
-        }
-    } */
+
     F0_in = F0_in + rho_modify[0];
     __syncthreads();
 
@@ -565,32 +609,77 @@ __global__ void stream_collide(
 	const double F17_eq = (1./36.) *rho_s*(1.0+3.0*( v1 -w1) +4.5*( v1 -w1)*( v1 -w1)-1.5*udot);
 	const double F18_eq = (1./36.) *rho_s*(1.0+3.0*(-v1 -w1) +4.5*(-v1 -w1)*(-v1 -w1)-1.5*udot);
 
+    //==================== Smagorinsky LES Subgrid Model ====================//
+    #if SMAGORINSKY
+    // Calculate nonequilibrium stress tensor components: Pi_ab = sum_i(c_ia * c_ib * f_neq_i)
+    // D3Q19 lattice velocities:
+    // f0:(0,0,0), f1:(1,0,0), f2:(-1,0,0), f3:(0,1,0), f4:(0,-1,0), f5:(0,0,1), f6:(0,0,-1)
+    // f7:(1,1,0), f8:(-1,1,0), f9:(1,-1,0), f10:(-1,-1,0)
+    // f11:(1,0,1), f12:(-1,0,1), f13:(1,0,-1), f14:(-1,0,-1)
+    // f15:(0,1,1), f16:(0,-1,1), f17:(0,1,-1), f18:(0,-1,-1)
+    
+    double fneq1  = F1_in  - F1_eq;
+    double fneq2  = F2_in  - F2_eq;
+    double fneq3  = F3_in  - F3_eq;
+    double fneq4  = F4_in  - F4_eq;
+    double fneq5  = F5_in  - F5_eq;
+    double fneq6  = F6_in  - F6_eq;
+    double fneq7  = F7_in  - F7_eq;
+    double fneq8  = F8_in  - F8_eq;
+    double fneq9  = F9_in  - F9_eq;
+    double fneq10 = F10_in - F10_eq;
+    double fneq11 = F11_in - F11_eq;
+    double fneq12 = F12_in - F12_eq;
+    double fneq13 = F13_in - F13_eq;
+    double fneq14 = F14_in - F14_eq;
+    double fneq15 = F15_in - F15_eq;
+    double fneq16 = F16_in - F16_eq;
+    double fneq17 = F17_in - F17_eq;
+    double fneq18 = F18_in - F18_eq;
+    
+    // Pi_xx = sum over directions with ex^2=1
+    double Pi_xx = fneq1 + fneq2 + fneq7 + fneq8 + fneq9 + fneq10 + fneq11 + fneq12 + fneq13 + fneq14;
+    // Pi_yy = sum over directions with ey^2=1
+    double Pi_yy = fneq3 + fneq4 + fneq7 + fneq8 + fneq9 + fneq10 + fneq15 + fneq16 + fneq17 + fneq18;
+    // Pi_zz = sum over directions with ez^2=1
+    double Pi_zz = fneq5 + fneq6 + fneq11 + fneq12 + fneq13 + fneq14 + fneq15 + fneq16 + fneq17 + fneq18;
+    // Pi_xy = sum over directions with ex*ey != 0
+    double Pi_xy = fneq7 - fneq8 - fneq9 + fneq10;
+    // Pi_xz = sum over directions with ex*ez != 0
+    double Pi_xz = fneq11 - fneq12 - fneq13 + fneq14;
+    // Pi_yz = sum over directions with ey*ez != 0
+    double Pi_yz = fneq15 - fneq16 - fneq17 + fneq18;
+    
+    // Second invariant of strain rate tensor: Q = Pi_ab * Pi_ab
+    double Q_inv = Pi_xx*Pi_xx + Pi_yy*Pi_yy + Pi_zz*Pi_zz + 2.0*(Pi_xy*Pi_xy + Pi_xz*Pi_xz + Pi_yz*Pi_yz);
+    
+    // Strain rate magnitude: |S| = (sqrt(nu0^2 + 18*C^2*Delta^2*sqrt(Q)) - nu0) / (6*C^2*Delta^2)
+    double C2_Delta2 = C_Smag * C_Smag * DELTA * DELTA;
+    double nu0 = niu;  // base kinematic viscosity
+    double S_mag = (sqrt(nu0*nu0 + 18.0*C2_Delta2*sqrt(Q_inv)) - nu0) / (6.0*C2_Delta2 + 1.0e-10);
+    
+    // Total viscosity and relaxation time
+    double nu_total = nu0 + C2_Delta2 * S_mag;
+    double tau_total = 3.0 * nu_total / dt + 0.5;
+    
+    // Ensure stability: tau_total > 0.5
+    if (tau_total < 0.505) tau_total = 0.505;
+    
+    // Update viscosity-related relaxation rates
+    double s_visc = 1.0 / tau_total;
+    s9  = s_visc;
+    s11 = s_visc;
+    s13 = s_visc;
+    s14 = s_visc;
+    s15 = s_visc;
+    #endif
+    //========================================================================//
+
     //
     m_matrix;
     meq;
     collision;
     ////
-
-    /* F0_in  = F0_in  + 1.0 / tau * (F0_eq  - F0_in );
-	F1_in  = F1_in  + 1.0 / tau * (F1_eq  - F1_in );
-	F2_in  = F2_in  + 1.0 / tau * (F2_eq  - F2_in );
-	F3_in  = F3_in  + 1.0 / tau * (F3_eq  - F3_in ) + 1.0/6.0*dt*Force[0];
-	F4_in  = F4_in  + 1.0 / tau * (F4_eq  - F4_in ) - 1.0/6.0*dt*Force[0];
-	F5_in  = F5_in  + 1.0 / tau * (F5_eq  - F5_in );
-	F6_in  = F6_in  + 1.0 / tau * (F6_eq  - F6_in );
-	F7_in  = F7_in  + 1.0 / tau * (F7_eq  - F7_in ) + 1.0/12.0*dt*Force[0];
-	F8_in  = F8_in  + 1.0 / tau * (F8_eq  - F8_in ) + 1.0/12.0*dt*Force[0];
-	F9_in  = F9_in  + 1.0 / tau * (F9_eq  - F9_in ) - 1.0/12.0*dt*Force[0];
-	F10_in = F10_in + 1.0 / tau * (F10_eq - F10_in) - 1.0/12.0*dt*Force[0];
-	F11_in = F11_in + 1.0 / tau * (F11_eq - F11_in);
-	F12_in = F12_in + 1.0 / tau * (F12_eq - F12_in);
-	F13_in = F13_in + 1.0 / tau * (F13_eq - F13_in);
-	F14_in = F14_in + 1.0 / tau * (F14_eq - F14_in);
-	F15_in = F15_in + 1.0 / tau * (F15_eq - F15_in) + 1.0/12.0*dt*Force[0];
-	F16_in = F16_in + 1.0 / tau * (F16_eq - F16_in) - 1.0/12.0*dt*Force[0];
-	F17_in = F17_in + 1.0 / tau * (F17_eq - F17_in) + 1.0/12.0*dt*Force[0];
-	F18_in = F18_in + 1.0 / tau * (F18_eq - F18_in) - 1.0/12.0*dt*Force[0]; */
-
     __syncthreads();
 
     f0_new[index] = F0_in;
@@ -616,10 +705,7 @@ __global__ void stream_collide(
 	v[index] = v1;
 	w[index] = w1;
 	rho_d[index] = rho_s;
-    /* if( i == 30 && j == 30 && k == 30){
-         printf(" step = %d \t i = %d \t j = %d \t k = %d \t rho = %lf \n",step, i, j, k, rho_d[index]);
-    } */
-   
+
 }
 
 __global__ void periodicUD(

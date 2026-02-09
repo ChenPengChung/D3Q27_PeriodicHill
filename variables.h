@@ -38,7 +38,7 @@
 //#define     Ma          0.1
 //#define     Umax        18.4824
 
-#define     Re          150
+#define     Re          700
 
 //steps to end simulation
 #define     loop      500000
@@ -95,6 +95,11 @@
 #define     tau          0.6833
 //#define     alpha       10.0
 #define     niu         ((tau-0.5)/3.0*dt)
+
+//Smagorinsky LES subgrid model parameters
+#define     SMAGORINSKY  1          // 1=enable LES, 0=disable
+#define     C_Smag       0.1        // Smagorinsky constant (typical: 0.1-0.2)
+#define     DELTA        (1.0)      // Filter width in lattice units
 //#define     Uref        (Re*niu/LZ)
 #define     Uref        (Re*niu)
 
