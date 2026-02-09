@@ -9,7 +9,7 @@
 //global grid numbers of each direction
 #define     NX      32
 #define     NY      128
-#define     NZ      64
+#define     NZ      128     // Doubled from 64 for Re=700 stability
 
 #define     jp      4
 
