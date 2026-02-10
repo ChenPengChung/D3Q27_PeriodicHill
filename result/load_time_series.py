@@ -132,7 +132,7 @@ renderView.CameraViewUp = [-0.03047, 0.02853, 0.99913]
 
 # 放大主體
 camera = GetActiveCamera()
-camera.Dolly(1.25)
+camera.Dolly(1.65)
 Render()
 
 # 跳到最後一幀抓色彩範圍 (避免 Step 1 速度太小看不到顏色)
