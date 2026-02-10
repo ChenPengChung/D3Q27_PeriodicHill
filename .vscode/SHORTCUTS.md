@@ -297,25 +297,62 @@ nohup mpirun -np 4 ./a.out > log$(date +%Y%m%d) 2>&1 &
 
 ## 任務執行 (Terminal > Run Task)
 
+### 🔌 SSH 連線
+
 | 任務名稱 | 功能 | 觸發方式 |
 |----------|------|----------|
 | SSH to cfdlab | 開啟資料夾時自動連接 | 自動執行 |
 | Switch Node | 切換子機 | Ctrl+Alt+F |
 | Reconnect | 從本地重連 | Ctrl+Alt+G |
-| Compile + Run | 編譯並執行程式 | Ctrl+Shift+B |
-| Check Running Jobs | 檢查執行中的作業 | 手動執行 |
-| Kill Running Job | 終止執行中的作業 | 手動執行 |
-| **Auto Sync (Watch)** | 自動推送（前景） | 手動執行 |
+
+### 🔨 編譯與執行
+
+| 任務名稱 | 功能 | 說明 |
+|----------|------|------|
+| Compile + Run (.87/.154) | 編譯並執行程式 | 選擇子機 + GPU 數量 |
+| **Compile Only (.87/.154)** | **只編譯不執行** | 檢查語法錯誤用 |
+
+### 📊 監控面板 (NEW!)
+
+| 任務名稱 | 顯示內容 | 說明 |
+|----------|----------|------|
+| **Dashboard (.87/.154)** | **一鍵總覽** | Jobs + GPU + 記憶體 + Log + 磁碟 |
+| **GPU Status (.87/.154)** | `nvidia-smi` 完整輸出 | GPU 使用率、溫度、記憶體 |
+| **System Load (.87/.154)** | uptime + memory + disk | CPU 負載 + RAM + 磁碟空間 |
+| Check Running Jobs (.87/.154) | 執行中的 a.out 程序 | `ps aux | grep a.out` |
+| Kill Running Job (.87/.154) | 終止執行中的作業 | `pkill a.out / mpirun` |
+
+### 📝 Log 查看 (NEW!)
+
+| 任務名稱 | 功能 | 說明 |
+|----------|------|------|
+| **Tail Log (.87/.154)** | 查看最新 log 後 50 行 | 自動找到最新 log 檔 |
+
+### 📁 檔案管理 (NEW!)
+
+| 任務名稱 | 功能 | 說明 |
+|----------|------|------|
+| **List Remote Files (.87/.154)** | 列出遠端檔案 | 含 VTK 檔案數量統計 |
+| **Count Results (.87/.154)** | 統計結果數量 | VTK + backup + statistics 各多少檔 |
+| **Disk Usage (.87/.154)** | 磁碟使用詳情 | 總空間 + 專案大小 + 子目錄大小 |
+| **Clean Results (.87/.154)** | 清理遠端結果檔 | ⚠️ 刪除 result/ 下的 vtk/plt/dat |
+
+### 🌐 節點管理 (NEW!)
+
+| 任務名稱 | 功能 | 說明 |
+|----------|------|------|
+| **Check All Nodes (.87)** | 檢查 ib2/3/5/6 狀態 | 顯示 uptime 或 OFFLINE |
+| **Check All Nodes (.154)** | 檢查 ib1/4/7/9 狀態 | 顯示 uptime 或 OFFLINE |
+
+### 🔄 同步相關
+
+| 任務名稱 | 功能 | 觸發方式 |
+|----------|------|----------|
+| Auto Sync (Watch) | 自動推送（前景） | 手動執行 |
 | Quick Sync | 有變更才推送 | 手動執行 |
-| **Sync Status** | 查看上傳+下載狀態 | 手動執行 |
-| **Auto Upload (Start)** | 啟動背景上傳 | 手動執行 |
-| Auto Upload (Status) | 檢查上傳狀態 | 手動執行 |
-| Auto Upload (Stop) | 停止背景上傳 | 手動執行 |
-| **Auto Download (Start)** | 啟動背景下載 | 手動執行 |
-| Auto Download (.87 only) | 只監控 .87 | 手動執行 |
-| Auto Download (.154 only) | 只監控 .154 | 手動執行 |
-| Auto Download (Status) | 檢查下載狀態 | 手動執行 |
-| Auto Download (Stop) | 停止背景下載 | 手動執行 |
+| Sync Status | 查看上傳+下載狀態 | 手動執行 |
+| Auto Upload (Start/Status/Stop) | 背景上傳管理 | 手動執行 |
+| Auto Download (Start/Status/Stop) | 背景下載管理 | 手動執行 |
 
 ---
 

@@ -27,7 +27,7 @@ $script:Config = @{
     PscpPath = "C:\Program Files\PuTTY\pscp.exe"
     PlinkPath = "C:\Program Files\PuTTY\plink.exe"
     # ?垢?郊嚗???.git??vscode ?楊霅舐??
-    ExcludePatterns = @(".git/*", ".vscode/*", "a.out", "*.o", "*.exe")
+    ExcludePatterns = @(".git/*", ".vscode/*", "a.out", "*.o", "*.exe", "*.vtk", "result/*.vtk", "*.avi", "*.mp4", "*.mkv")
     # ?郊???獢???
     SyncExtensions = @("*")
     SyncAll = $true  # ?郊???獢?垢撌乩??
@@ -268,7 +268,17 @@ switch ($Command) {
             
             # ?芷?垢憭?瑼?
             $deleteCount = 0
+            # 跳過 VTK/影片/輸出檔，避免誤刪遠端產生的結果
+            $pushDeleteSkipPatterns = @("*.vtk", "*.avi", "*.mp4", "*.mkv", "*.dat", "*.DAT", "*.plt", "*.bin", "log*", "result/*", "backup/*", "statistics/*")
             foreach ($f in $toDelete) {
+                $skipDelete = $false
+                foreach ($pat in $pushDeleteSkipPatterns) {
+                    if ($f -like $pat) { $skipDelete = $true; break }
+                }
+                if ($skipDelete) {
+                    Write-Color "  [SKIP-DELETE] $f (output file)" "DarkGray"
+                    continue
+                }
                 $remotePath = "$($Config.RemotePath)/$f"
                 & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "rm -f '$remotePath'" 2>$null
                 if ($LASTEXITCODE -eq 0) {
@@ -601,7 +611,7 @@ switch ($Command) {
             
             # Skip excluded files
             $skip = $false
-            $excludePatterns = @("*.exe", "*.out", "a.out", "log*", "result\*", "statistics\*", "backup\*", ".git\*", "initial_D3Q19\*")
+            $excludePatterns = @("*.exe", "*.out", "a.out", "log*", "result\*", "statistics\*", "backup\*", ".git\*", "initial_D3Q19\*", "*.vtk", "*.avi", "*.mp4", "*.mkv")
             foreach ($pattern in $excludePatterns) {
                 if ($name -like $pattern) { $skip = $true; break }
             }

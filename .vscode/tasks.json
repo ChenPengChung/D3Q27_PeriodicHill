@@ -363,6 +363,254 @@
       },
       "problemMatcher": []
     },
+    // ============ GPU / System Monitoring ============
+    {
+      "label": "GPU Status (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.87",
+        "ssh cfdlab-ib${input:nodeFor87} 'nvidia-smi'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "GPU Status (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.154",
+        "ssh cfdlab-ib${input:nodeFor154} 'nvidia-smi'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "System Load (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.87",
+        "ssh cfdlab-ib${input:nodeFor87} 'echo \"=== UPTIME ===\"; uptime; echo; echo \"=== MEMORY ===\"; free -h; echo; echo \"=== DISK ===\"; df -h /home'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "System Load (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.154",
+        "ssh cfdlab-ib${input:nodeFor154} 'echo \"=== UPTIME ===\"; uptime; echo; echo \"=== MEMORY ===\"; free -h; echo; echo \"=== DISK ===\"; df -h /home'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    // ============ Log Monitoring ============
+    {
+      "label": "Tail Log (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.87",
+        "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill && echo \"=== Latest log ===\"; ls -lt log* 2>/dev/null | head -1; echo; tail -50 $(ls -t log* 2>/dev/null | head -1) 2>/dev/null || echo No log found'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Tail Log (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.154",
+        "ssh cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill && echo \"=== Latest log ===\"; ls -lt log* 2>/dev/null | head -1; echo; tail -50 $(ls -t log* 2>/dev/null | head -1) 2>/dev/null || echo No log found'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    // ============ Disk & Files ============
+    {
+      "label": "Disk Usage (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.87",
+        "ssh cfdlab-ib${input:nodeFor87} 'echo \"=== Disk Total ===\"; df -h /home; echo; echo \"=== Project Size ===\"; du -sh /home/chenpengchung/D3Q27_PeriodicHill; echo; echo \"=== Subdirectories ===\"; du -sh /home/chenpengchung/D3Q27_PeriodicHill/*/ 2>/dev/null'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Disk Usage (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.154",
+        "ssh cfdlab-ib${input:nodeFor154} 'echo \"=== Disk Total ===\"; df -h /home; echo; echo \"=== Project Size ===\"; du -sh /home/chenpengchung/D3Q27_PeriodicHill; echo; echo \"=== Subdirectories ===\"; du -sh /home/chenpengchung/D3Q27_PeriodicHill/*/ 2>/dev/null'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "List Remote Files (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.87",
+        "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill && echo \"=== Files ===\"; ls -lah --color=never; echo; echo \"=== Result count ===\"; ls result/*.vtk 2>/dev/null | wc -l; echo \"VTK files in result/\"'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "List Remote Files (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.154",
+        "ssh cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill && echo \"=== Files ===\"; ls -lah --color=never; echo; echo \"=== Result count ===\"; ls result/*.vtk 2>/dev/null | wc -l; echo \"VTK files in result/\"'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    // ============ Compile Only (No Run) ============
+    {
+      "label": "Compile Only (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.87",
+        "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill && nvcc main.cu -arch=sm_35 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out && echo \"=== Compile SUCCESS ===\"'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Compile Only (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.154",
+        "ssh cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill && nvcc main.cu -arch=sm_35 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out && echo \"=== Compile SUCCESS ===\"'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    // ============ Quick Dashboard ============
+    {
+      "label": "Dashboard (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.87",
+        "ssh cfdlab-ib${input:nodeFor87} 'echo \"========================================\"; echo \"  DASHBOARD - cfdlab-ib$(hostname | grep -o \"[0-9]*$\" || echo ?) via .87\"; echo \"========================================\"; echo; echo \"--- RUNNING JOBS ---\"; ps aux | grep a.out | grep -v grep || echo \"  No jobs running\"; echo; echo \"--- GPU STATUS ---\"; nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader 2>/dev/null || echo \"  nvidia-smi not available\"; echo; echo \"--- SYSTEM ---\"; uptime; free -h | head -2; echo; echo \"--- LATEST LOG (last 10 lines) ---\"; cd /home/chenpengchung/D3Q27_PeriodicHill && tail -10 $(ls -t log* 2>/dev/null | head -1) 2>/dev/null || echo \"  No log found\"; echo; echo \"--- DISK ---\"; df -h /home | tail -1; echo \"========================================\"'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Dashboard (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.154",
+        "ssh cfdlab-ib${input:nodeFor154} 'echo \"========================================\"; echo \"  DASHBOARD - cfdlab-ib$(hostname | grep -o \"[0-9]*$\" || echo ?) via .154\"; echo \"========================================\"; echo; echo \"--- RUNNING JOBS ---\"; ps aux | grep a.out | grep -v grep || echo \"  No jobs running\"; echo; echo \"--- GPU STATUS ---\"; nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader 2>/dev/null || echo \"  nvidia-smi not available\"; echo; echo \"--- SYSTEM ---\"; uptime; free -h | head -2; echo; echo \"--- LATEST LOG (last 10 lines) ---\"; cd /home/chenpengchung/D3Q27_PeriodicHill && tail -10 $(ls -t log* 2>/dev/null | head -1) 2>/dev/null || echo \"  No log found\"; echo; echo \"--- DISK ---\"; df -h /home | tail -1; echo \"========================================\"'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    // ============ Result Management ============
+    {
+      "label": "Count Results (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.87",
+        "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill && echo \"=== VTK Files ===\"; ls result/*.vtk 2>/dev/null | wc -l; echo \"files in result/\"; echo; echo \"=== Latest 5 ===\"; ls -lt result/*.vtk 2>/dev/null | head -5; echo; echo \"=== Backup Files ===\"; ls backup/ 2>/dev/null | wc -l; echo \"files in backup/\"; echo; echo \"=== Statistics Files ===\"; ls statistics/ 2>/dev/null | wc -l; echo \"files in statistics/\"'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Count Results (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.154",
+        "ssh cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill && echo \"=== VTK Files ===\"; ls result/*.vtk 2>/dev/null | wc -l; echo \"files in result/\"; echo; echo \"=== Latest 5 ===\"; ls -lt result/*.vtk 2>/dev/null | head -5; echo; echo \"=== Backup Files ===\"; ls backup/ 2>/dev/null | wc -l; echo \"files in backup/\"; echo; echo \"=== Statistics Files ===\"; ls statistics/ 2>/dev/null | wc -l; echo \"files in statistics/\"'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Clean Results (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.87",
+        "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill && echo \"Before:\"; du -sh result/ backup/ statistics/ 2>/dev/null; rm -f result/*.vtk result/*.plt result/*.dat; echo; echo \"After:\"; du -sh result/ backup/ statistics/ 2>/dev/null; echo \"=== Result files cleaned ===\"'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Clean Results (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.154",
+        "ssh cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill && echo \"Before:\"; du -sh result/ backup/ statistics/ 2>/dev/null; rm -f result/*.vtk result/*.plt result/*.dat; echo; echo \"After:\"; du -sh result/ backup/ statistics/ 2>/dev/null; echo \"=== Result files cleaned ===\"'"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    // ============ Check All Nodes ============
+    {
+      "label": "Check All Nodes (.87)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.87",
+        "for n in 2 3 5 6; do echo -n \"ib$n: \"; ssh -o ConnectTimeout=3 cfdlab-ib$n 'uptime' 2>/dev/null && echo '' || echo 'OFFLINE'; done"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Check All Nodes (.154)",
+      "type": "process",
+      "command": "C:\\Program Files\\PuTTY\\plink.exe",
+      "args": [
+        "-ssh", "-pw", "1256", "-batch",
+        "chenpengchung@140.114.58.154",
+        "for n in 1 4 7 9; do echo -n \"ib$n: \"; ssh -o ConnectTimeout=3 cfdlab-ib$n 'uptime' 2>/dev/null && echo '' || echo 'OFFLINE'; done"
+      ],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    // ============ Local Build ============
     {
       "label": "Build main.exe (MinGW)",
       "type": "shell",
