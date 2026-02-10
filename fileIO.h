@@ -458,5 +458,4 @@ void fileIO_velocity_vtk_merged(int step) {
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }
 
-
 #endif

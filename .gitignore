@@ -53,3 +53,5 @@ a.out
 # - 會上傳: result/*.png *.jpg *.gif *.mp4 圖片影片
 # - 不上傳: result/*.vtk *.bin *.dat 等大型資料檔
 # ========================================
+result/*.avi
+result/*.gif

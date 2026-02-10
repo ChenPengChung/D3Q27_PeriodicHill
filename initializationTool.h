@@ -28,7 +28,7 @@ double GetNonuniParameter() {
     /*if( myid == 0 ){
         printf("a = %lf\n", a_mid);
     }*/
-
+    a_mid = minSize / CFL ; 
     return a_mid;
 }
 
