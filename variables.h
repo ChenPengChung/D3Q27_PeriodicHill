@@ -41,7 +41,7 @@
 #define     Re          700
 
 //steps to end simulation
-#define     loop      500000
+#define     loop      1000000
 //how many time steps to output val of monitor point(NX/2, NY/2, NZ/2)
 #define		NDTMIT	   50
 //how many time steps to modify the forcing term

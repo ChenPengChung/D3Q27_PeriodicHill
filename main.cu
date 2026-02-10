@@ -210,7 +210,7 @@ int main(int argc, char *argv[])
 
         // 每1000步輸出合併 VTK 追蹤流場 (所有GPU合併為單一檔案)
         // 注意: step 在迴圈中是奇數 (1,3,5...)，所以用 % 1000 == 1
-        if ( step % 1000 == 1 ) {
+        if ( step % 50000 == 1 ) {
             SendDataToCPU( ft );
             fileIO_velocity_vtk_merged( step );
         }
