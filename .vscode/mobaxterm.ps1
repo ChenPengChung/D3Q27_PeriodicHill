@@ -26,11 +26,11 @@ $script:Config = @{
     )
     PscpPath = "C:\Program Files\PuTTY\pscp.exe"
     PlinkPath = "C:\Program Files\PuTTY\plink.exe"
-    # ?垢?郊嚗???.git??vscode ?楊霅舐??
+    # 排除的檔案，例如 .git 和 .vscode 設定檔等
     ExcludePatterns = @(".git/*", ".vscode/*", "a.out", "*.o", "*.exe")
-    # ?郊???獢???
+    # 同步的副檔名
     SyncExtensions = @("*")
-    SyncAll = $true  # ?郊???獢?垢撌乩??
+    SyncAll = $true  # 同步所有類型的檔案
 }
 
 function Write-Color {
@@ -65,7 +65,7 @@ function Get-LocalFiles {
 function Get-RemoteFiles {
     param([hashtable]$Server)
     
-    # ? .git ??.vscode ?桅?
+    # 排除 .git 和 .vscode 目錄
     $excludeGrep = "grep -v '/.git/' | grep -v '/.vscode/'"
     $cmd = "find $($Config.RemotePath) -type f -exec md5sum {} \; 2>/dev/null | $excludeGrep"
     $result = & $Config.PlinkPath -ssh -pw $Server.Password -batch "$($Server.User)@$($Server.Host)" $cmd 2>$null
@@ -161,7 +161,7 @@ function Show-CompareResults {
 switch ($Command) {
     # ===== Git-like Commands =====
     
-    # git diff - 瘥??砍??蝡臬榆??
+    # git diff - 比較本地與遠端差異
     { $_ -in "diff", "check" } {
         Write-Color "[DIFF] Comparing local vs remote..." "Magenta"
         foreach ($server in $Config.Servers) {
@@ -170,7 +170,7 @@ switch ($Command) {
         }
     }
     
-    # git status - 憿舐內?郊???
+    # git status - 顯示同步狀態
     "status" {
         Write-Color "[STATUS] Sync overview" "Magenta"
         
@@ -194,7 +194,7 @@ switch ($Command) {
         }
     }
     
-    # git add - 憿舐內敺??霈
+    # git add - 顯示待上傳的變更
     "add" {
         Write-Color "[ADD] Showing pending changes..." "Magenta"
         $allChanges = @()
@@ -229,7 +229,7 @@ switch ($Command) {
         foreach ($server in $Config.Servers) {
             Write-Color "`nPushing to $($server.Name) ($($server.Host))..." "Cyan"
             
-            # 瘥?撌桃
+            # 比較差異
             $results = Compare-Files -Server $server -Silent
             $toUpload = @()
             $toUpload += $results.New
@@ -241,7 +241,7 @@ switch ($Command) {
                 continue
             }
             
-            # 銝?啣?/靽格??獢?
+            # 上傳/同步檔案
             $successCount = 0
             $failCount = 0
             
@@ -266,7 +266,7 @@ switch ($Command) {
                 }
             }
             
-            # ?芷?垢憭?瑼?
+            # 刪除遠端多餘檔案
             $deleteCount = 0
             foreach ($f in $toDelete) {
                 $remotePath = "$($Config.RemotePath)/$f"
@@ -279,7 +279,7 @@ switch ($Command) {
             
             Write-Color "`n$($server.Name): Uploaded=$successCount | Deleted=$deleteCount | Failed=$failCount" "Cyan"
             
-            # 皜??垢蝛箄??冗嚗???.git嚗?
+            # 清除遠端空目錄（排除 .git）
             $cleanupCmd = "find $($Config.RemotePath) -type d -empty ! -path '*/.git/*' -delete 2>/dev/null"
             & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $cleanupCmd 2>$null
         }
@@ -325,7 +325,7 @@ switch ($Command) {
         & $PSCommandPath pull .154
     }
     
-    # git fetch - 敺?蝡臭?頛蒂?芷?砍憭??辣嚗ync local to remote嚗?
+    # git fetch - 從遠端下載並刪除本地多餘檔案 (sync local to remote)
     "fetch" {
 
         $targetServer = $null
@@ -364,7 +364,7 @@ switch ($Command) {
 
             foreach ($file in $toDownload) {
 
-                $remotePath = "$($targetServer.User)@$($targetServer.Host):$($targetServer.RemotePath)/$file"
+                $remotePath = "$($targetServer.User)@$($targetServer.Host):$($Config.RemotePath)/$file"
 
                 $localPath = Join-Path $Config.LocalPath $file
 
@@ -372,9 +372,17 @@ switch ($Command) {
 
                 if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Path $localDir -Force | Out-Null }
 
-                & $Config.PSCPPath -pw $targetServer.Password -r $remotePath $localPath 2>$null
+                $null = & $Config.PscpPath -pw $targetServer.Password -q $remotePath $localPath 2>&1
 
-                Write-Color "  Downloaded: $file" "Green"
+                if ($LASTEXITCODE -eq 0) {
+
+                    Write-Color "  Downloaded: $file" "Green"
+
+                } else {
+
+                    Write-Color "  [FAIL] $file" "Red"
+
+                }
 
             }
 
@@ -433,7 +441,7 @@ switch ($Command) {
         & $PSCommandPath fetch 154
 
     }
-    # git log - ?亦??垢 log 瑼?
+    # git log - 查看遠端 log 檔案
     "log" {
         Write-Color "[LOG] Fetching remote log files..." "Magenta"
         
@@ -459,7 +467,7 @@ switch ($Command) {
             Write-Color "  No log files found" "Yellow"
         }
         
-        # 憿舐內???log ??敺嗾銵?
+        # 顯示最新 log 的最後幾行
         Write-Color "`nLatest log tail:" "Cyan"
         $cmd = "tail -20 `$(ls -t $($Config.RemotePath)/log* 2>/dev/null | head -1) 2>/dev/null"
         $result = & $Config.PlinkPath -ssh -pw $targetServer.Password -batch "$($targetServer.User)@$($targetServer.Host)" $cmd 2>$null
@@ -468,7 +476,7 @@ switch ($Command) {
         }
     }
     
-    # git reset --hard - ?蔭?垢嚗?日?蝡臬?擗?獢?
+    # git reset --hard - 清理遠端，刪除遠端多餘檔案
     { $_ -in "reset", "delete" } {
         Write-Color "[RESET] Removing files from remote that don't exist locally..." "Magenta"
         
@@ -510,7 +518,7 @@ switch ($Command) {
         }
     }
     
-    # git clone - 敺?蝡臬??渲?鋆賢?砍
+    # git clone - 從遠端完整下載到本地
     "clone" {
         Write-Color "[CLONE] Full download from remote to local..." "Magenta"
         
@@ -619,6 +627,7 @@ switch ($Command) {
                     Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $changeType : $name" -ForegroundColor Cyan
                     
                     # Trigger push in background
+                    Get-Job -State Completed -ErrorAction SilentlyContinue | Remove-Job -Force -ErrorAction SilentlyContinue
                     Start-Job -ScriptBlock {
                         param($scriptPath)
                         Start-Sleep -Seconds 1
