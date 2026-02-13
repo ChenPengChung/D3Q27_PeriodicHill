@@ -4,14 +4,22 @@
                   {
                       "label":  "SSH to cfdlab",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\ssh-connect.ps1\u0027 -ServerCombo \u0027${input:serverCombo}\u0027",
+                      "windows":  {
+                                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\ssh-connect.ps1\u0027 -ServerCombo \u0027${input:serverCombo}\u0027"
+                                  },
+                      "osx":  {
+                                  "command":  "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 ssh \u0027${input:serverCombo}\u0027"
+                              },
+                      "linux":  {
+                                    "command":  "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 ssh \u0027${input:serverCombo}\u0027"
+                                },
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "new",
                                            "focus":  true
                                        },
                       "runOptions":  {
-                                         "runOn":  "folderOpen"
+                                         "runOn":  "default"
                                      },
                       "problemMatcher":  [
 
@@ -20,7 +28,15 @@
                   {
                       "label":  "Reconnect",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\ssh-connect.ps1\u0027 -ServerCombo \u0027${input:serverCombo}\u0027",
+                      "windows":  {
+                                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\ssh-connect.ps1\u0027 -ServerCombo \u0027${input:serverCombo}\u0027"
+                                  },
+                      "osx":  {
+                                  "command":  "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 ssh \u0027${input:serverCombo}\u0027"
+                              },
+                      "linux":  {
+                                    "command":  "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 ssh \u0027${input:serverCombo}\u0027"
+                                },
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "new",
@@ -33,7 +49,15 @@
                   {
                       "label":  "Switch Node",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\ssh-connect.ps1\u0027 -ServerCombo \u0027${input:serverCombo}\u0027",
+                      "windows":  {
+                                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\ssh-connect.ps1\u0027 -ServerCombo \u0027${input:serverCombo}\u0027"
+                                  },
+                      "osx":  {
+                                  "command":  "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 ssh \u0027${input:serverCombo}\u0027"
+                              },
+                      "linux":  {
+                                    "command":  "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 ssh \u0027${input:serverCombo}\u0027"
+                                },
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "dedicated",

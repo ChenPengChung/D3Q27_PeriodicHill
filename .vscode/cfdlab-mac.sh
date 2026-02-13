@@ -13,8 +13,8 @@ CFDLAB_NVCC_ARCH="${CFDLAB_NVCC_ARCH:-sm_35}"
 CFDLAB_MPI_INCLUDE="${CFDLAB_MPI_INCLUDE:-/home/chenpengchung/openmpi-3.0.3/include}"
 CFDLAB_MPI_LIB="${CFDLAB_MPI_LIB:-/home/chenpengchung/openmpi-3.0.3/lib}"
 CFDLAB_ASSUME_YES="${CFDLAB_ASSUME_YES:-0}"
-CFDLAB_PASSWORD="${CFDLAB_PASSWORD:-}"
-CFDLAB_SSH_OPTS="${CFDLAB_SSH_OPTS:--o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new}"
+CFDLAB_PASSWORD="${CFDLAB_PASSWORD:-1256}"
+CFDLAB_SSH_OPTS="${CFDLAB_SSH_OPTS:--o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new}"
 
 WATCHPUSH_PID="$STATE_DIR/watchpush.pid"
 WATCHPUSH_LOG="$STATE_DIR/watchpush.log"
@@ -544,7 +544,17 @@ function cmd_ssh() {
   node="${parsed##*:}"
   host="$(resolve_host "$server")"
 
-  ssh -t "${CFDLAB_USER}@${host}" "ssh -t cfdlab-ib${node} 'cd ${CFDLAB_REMOTE_PATH}; exec bash'"
+  if [[ -n "$CFDLAB_PASSWORD" ]]; then
+    # Use ProxyCommand with sshpass for both hops (local sshpass only, no sshpass needed on server)
+    local proxy_cmd="sshpass -p '${CFDLAB_PASSWORD}' ssh -o StrictHostKeyChecking=accept-new -W %h:%p ${CFDLAB_USER}@${host}"
+    sshpass -p "$CFDLAB_PASSWORD" ssh -t \
+      -o StrictHostKeyChecking=accept-new \
+      -o ProxyCommand="$proxy_cmd" \
+      "${CFDLAB_USER}@cfdlab-ib${node}" \
+      "cd ${CFDLAB_REMOTE_PATH}; exec bash"
+  else
+    ssh -t "${CFDLAB_USER}@${host}" "ssh -t cfdlab-ib${node} 'cd ${CFDLAB_REMOTE_PATH}; exec bash'"
+  fi
 }
 
 function cmd_run() {
