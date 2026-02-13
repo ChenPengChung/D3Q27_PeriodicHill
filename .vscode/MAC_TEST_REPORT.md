@@ -1,68 +1,65 @@
-# Mac/Windows Automation Test Report
+# Mac/Windows MobaXterm Command Test Report
 
-Date: 2026-02-11
-Scope: `.vscode` integration, command compatibility, regression checks.
+Date: 2026-02-14
 
-## 1) Folder migration (`scripts` removal)
+Scope:
+- Mac script: `.vscode/cfdlab-mac.sh`
+- Windows script: `.vscode/mobaxterm.ps1`
+- Focus: all command entry points, especially `pull`, `autopull`, `watchpull` and related aliases
 
-- `scripts/cfdlab-mac.sh`: removed
-- `scripts/MAC_AUTOMATION.md`: removed
-- `scripts/` folder: removed
-- Active Mac script: `.vscode/cfdlab-mac.sh`
+## 1) Test environment
 
-Result: PASS
+### Mac runtime
+- Host OS: macOS 15.5 (arm64)
+- Shell: `/bin/bash`
+- Method: command matrix execution with mock `ssh/rsync/sshpass` to validate command routing and daemon lifecycle safely
 
-## 2) Windows compatibility regression
+### Windows runtime (PowerShell)
+- Runtime: PowerShell 7.5.4 (portable `pwsh`)
+- Method: execute `mobaxterm.ps1` command matrix with mock `plink/pscp/powershell.exe`
+- Note: this validates Windows-script behavior under PowerShell runtime; final production verification should still be done once on a real Windows host
 
-Checks performed:
+## 2) Overall results
 
-- PowerShell parse test for `.vscode/mobaxterm.ps1`
-- Run `mobaxterm.ps1` (help output)
-- Run `mobaxterm.ps1 bgstatus`
-- Run `mobaxterm.ps1 syncstatus`
-- Run `mobaxterm.ps1 check`
-- Validate `.vscode/tasks.json` can be parsed
-- Verify key Windows task labels still exist
+| Platform | Commands tested | Pass (exit code 0) | Non-zero |
+|---|---:|---:|---:|
+| Mac (`cfdlab-mac.sh`) | 75 | 75 | 0 |
+| Windows (`mobaxterm.ps1`) | 74 | 73 | 1 |
 
-Result: PASS
+Windows non-zero command:
+- `watch` -> timeout (expected): foreground continuous monitor by design, requires manual `Ctrl+C`
 
-## 3) Command-name parity (Windows vs Mac)
+## 3) Key command verification (requested focus)
 
-Compared top-level Windows command names in `.vscode/mobaxterm.ps1` against
-case labels in `.vscode/cfdlab-mac.sh`.
+### Mac
+- `pull`, `pull87`, `pull89`, `pull154`: PASS
+- `autopull`, `autopull87`, `autopull89`, `autopull154`: PASS
+- `watchpull` lifecycle:
+  - `watchpull start`: PASS
+  - `watchpull status`: PASS
+  - `watchpull log`: PASS
+  - `watchpull clear`: PASS
+  - `watchpull stop`: PASS
 
-Result:
+### Windows
+- `pull`, `pull87`, `pull89`, `pull154`: PASS
+- `autopull`, `autopull87`, `autopull154`: PASS
+- `watchpull` lifecycle:
+  - `watchpull start`: PASS
+  - `watchpull status`: PASS
+  - `watchpull log`: PASS
+  - `watchpull clear`: PASS
+  - `watchpull stop`: PASS
 
-- Missing Mac command names: none
-- Windows names are fully covered on Mac
+## 4) Important findings
 
-## 4) Mac script functional smoke tests
+1. `mobaxterm autopull89` currently falls back to `.87` (not `.89`).
+2. `mobaxterm autofetch89` currently falls back to `.87` (not `.89`).
+3. `mobaxterm autopush87` / `autopush89` / `autopush154` currently push to all servers, not only the named server.
+4. `mobaxterm watch` is a foreground watcher and will not return automatically.
 
-Checks performed:
+## 5) Recommendation
 
-- `bash -n .vscode/cfdlab-mac.sh` (syntax)
-- `.vscode/cfdlab-mac.sh help`
-- `.vscode/cfdlab-mac.sh bgstatus`
-- `.vscode/cfdlab-mac.sh syncstatus all`
-- `.vscode/cfdlab-mac.sh issynced`
-- `.vscode/cfdlab-mac.sh check`
-
-Result:
-
-- Local logic commands: PASS
-- Remote auth checks (.87, .154): FAIL in this environment
-  - Cause: SSH authentication denied (no key/password automation configured)
-
-## 5) Machine reachability/auth status
-
-From this test environment:
-
-- `.87` (`140.114.58.87`): SSH auth FAILED
-- `.154` (`140.114.58.154`): SSH auth FAILED
-
-Action needed on Mac:
-
-1. Use SSH key auth, or
-2. Install `sshpass` and set `CFDLAB_PASSWORD`, then rerun:
-   - `.vscode/cfdlab-mac.sh check`
-
+- Daily use can proceed for most commands.
+- Before production use on Windows, fix/verify the 3 alias-routing issues above (`autopull89`, `autofetch89`, `autopush87/89/154`).
+- For background mode on Windows, prefer `watchpush/watchpull/watchfetch`; use `watch` only when you want foreground continuous monitoring.

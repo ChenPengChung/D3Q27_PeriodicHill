@@ -6,6 +6,40 @@ set -euo pipefail
 [[ -d /usr/local/bin ]]    && export PATH="/usr/local/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ========== Auto-setup 'mobaxterm' alias ==========
+# This will add alias to your shell profile if not already added
+function auto_setup_alias() {
+  local script_path="$SCRIPT_DIR/cfdlab-mac.sh"
+  local shell_profile=""
+
+  # Determine shell profile
+  if [[ -n "${ZSH_VERSION:-}" ]]; then
+    shell_profile="$HOME/.zshrc"
+  elif [[ -f "$HOME/.bash_profile" ]]; then
+    shell_profile="$HOME/.bash_profile"
+  elif [[ -f "$HOME/.bashrc" ]]; then
+    shell_profile="$HOME/.bashrc"
+  else
+    shell_profile="$HOME/.profile"
+  fi
+
+  # Check if alias already exists
+  if ! grep -q "alias mobaxterm=" "$shell_profile" 2>/dev/null; then
+    echo "" >> "$shell_profile"
+    echo "# MobaXterm alias (auto-added)" >> "$shell_profile"
+    echo "alias mobaxterm='$script_path'" >> "$shell_profile"
+    echo "[AUTO-SETUP] Added 'mobaxterm' alias to $shell_profile"
+    echo "             Run 'source $shell_profile' or restart terminal to use."
+    echo ""
+  fi
+}
+
+# Run auto-setup on first use (only if running interactively)
+if [[ -t 1 ]] && [[ "${1:-}" != "__daemon_loop" ]]; then
+  auto_setup_alias
+fi
+# ========== End Auto-setup ==========
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 STATE_DIR="$WORKSPACE_DIR/.vscode"
 

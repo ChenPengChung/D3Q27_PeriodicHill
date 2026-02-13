@@ -1,77 +1,62 @@
-# VS Code Mac Integration Guide
+# VS Code Setup Guide (Mac-focused, Windows-aligned)
 
-This repository now uses a single Mac automation script inside `.vscode`:
+This project keeps command naming aligned between:
+- Mac: `.vscode/cfdlab-mac.sh`
+- Windows: `.vscode/mobaxterm.ps1`
 
-- Script: `.vscode/cfdlab-mac.sh`
-- VS Code tasks: `.vscode/tasks.json` (labels start with `[Mac]`)
-
-## Folder layout
-
-Keep these files:
-
-- `.vscode/cfdlab-mac.sh`
-- `.vscode/tasks.json`
-- `.vscode/MAC_VSCODE_SETUP.md`
-
-The old `scripts/` folder is no longer required.
-
-## macOS prerequisites
+## 1) Mac prerequisites
 
 ```bash
 brew install rsync
+brew install hudochenkov/sshpass/sshpass   # optional but recommended for password mode
 ```
 
-`ssh` is built in on macOS.
+Built-in on macOS:
+- `ssh`
 
-Optional (if you want password-based automation like Windows):
-
-```bash
-brew install hudochenkov/sshpass/sshpass
-```
-
-## First-time setup on Mac
+## 2) Mac first-time setup
 
 ```bash
 chmod +x .vscode/cfdlab-mac.sh
+chmod +x .vscode/setup-alias.sh
+.vscode/setup-alias.sh
 ```
 
-## Run tasks in VS Code
+After reopening terminal, you can use:
+- `mobaxterm <command>`
 
-1. Open project in VS Code.
-2. Open `Terminal -> Run Task...`.
-3. Run any task with `[Mac]` prefix, for example:
+## 3) VS Code task usage
+
+1. Open this workspace in VS Code.
+2. `Terminal -> Run Task...`
+3. Use tasks with `[Mac]` prefix, for example:
    - `[Mac] Check Environment`
-   - `[Mac] SSH to cfdlab`
-   - `[Mac] Compile + Run`
    - `[Mac] Sync Status`
    - `[Mac] Auto Pull (once)`
-   - `[Mac] Auto Push (once)`
    - `[Mac] Watch Pull`
    - `[Mac] Watch Push`
 
-## Input fields used by tasks
+## 4) Input fields used by tasks
 
-- `macServerCombo`: server and node, for example `87:3`
-- `macServer`: one server (`87` or `154`)
-- `macServerOrAll`: `all`, `87`, or `154`
-- `macGpuCount`: GPU count (`4` or `8`)
+- `macServerCombo`: `87:3`, `154:4`, `89:0`
+- `macServer`: `87`, `89`, `154`
+- `macServerOrAll`: `all`, `87`, `89`, `154`
+- `macGpuCount`: `4` or `8`
 
-## Command naming compatibility
+## 5) Command compatibility baseline
 
-`.vscode/cfdlab-mac.sh` supports the same core command names as Windows `mobaxterm.ps1`:
-
-- `diff`, `check`, `status`, `add`, `push`, `pull`, `fetch`, `log`
+Both platforms provide the same core command names:
+- `diff`, `status`, `add`, `push`, `pull`, `fetch`, `log`
 - `reset`, `delete`, `clone`, `sync`, `fullsync`, `issynced`
 - `autopush`, `autopull`, `autofetch`
 - `watch`, `watchpush`, `watchpull`, `watchfetch`
 - `syncstatus`, `bgstatus`, `vtkrename`
-- `pull87`, `pull154`, `fetch87`, `fetch154`
+- `ssh`, `run`, `jobs`, `kill`, `gpus`, `gpu`
 
-## Troubleshooting
+See full daily command handbook in `.vscode/SHORTCUTS.md`.
 
-- `Missing command: rsync` -> run `brew install rsync`
-- Password mode -> install `sshpass` and set:
-  `export CFDLAB_PASSWORD='your_password'`
-- SSH fails -> test manually:
-  `ssh chenpengchung@140.114.58.87`
-- Task runs but no sync -> run `[Mac] Check Environment` and `[Mac] Sync Status`
+## 6) Known Windows behavior differences from latest tests
+
+- `autopull89` / `autofetch89` currently route to `.87`.
+- `autopush87/89/154` currently operate all servers.
+- `watch` is foreground infinite monitor by design.

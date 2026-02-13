@@ -1,4 +1,4 @@
-<# 
+<#
 .SYNOPSIS
     MobaXterm-style Sync Commands for D3Q27_PeriodicHill
 .DESCRIPTION
@@ -16,14 +16,73 @@ param(
     [string[]]$Arguments
 )
 
+# ========== Auto-setup 'mobaxterm' alias ==========
+function Auto-SetupAlias {
+    $scriptPath = $PSCommandPath
+
+    # Ensure profile directory exists
+    $profileDir = Split-Path -Parent $PROFILE
+    if (-not (Test-Path $profileDir)) {
+        New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+    }
+
+    # Ensure profile file exists
+    if (-not (Test-Path $PROFILE)) {
+        New-Item -ItemType File -Path $PROFILE -Force | Out-Null
+    }
+
+    # Check if alias already exists
+    $profileContent = Get-Content $PROFILE -Raw -ErrorAction SilentlyContinue
+    if (-not $profileContent -or -not $profileContent.Contains("function mobaxterm")) {
+        $aliasCode = @"
+
+# MobaXterm alias (auto-added)
+function mobaxterm { & '$scriptPath' @args }
+"@
+        Add-Content -Path $PROFILE -Value $aliasCode
+        Write-Host "[AUTO-SETUP] Added 'mobaxterm' function to $PROFILE" -ForegroundColor Green
+        Write-Host "             Run '. `$PROFILE' or restart PowerShell to use." -ForegroundColor Gray
+        Write-Host ""
+    }
+}
+
+# Run auto-setup on first use (only in interactive console)
+if ([Environment]::UserInteractive -and $Host.Name -eq 'ConsoleHost') {
+    Auto-SetupAlias
+}
+# ========== End Auto-setup ==========
+
 # Configuration
 $script:Config = @{
     LocalPath = "c:\Users\88697.CHENPENGCHUNG12\Desktop\GitHub-PeriodicHill\D3Q27_PeriodicHill"
     RemotePath = "/home/chenpengchung/D3Q27_PeriodicHill"
     Servers = @(
         @{ Name = ".87"; Host = "140.114.58.87"; User = "chenpengchung"; Password = "1256" },
+        @{ Name = ".89"; Host = "140.114.58.89"; User = "chenpengchung"; Password = "1256" },
         @{ Name = ".154"; Host = "140.114.58.154"; User = "chenpengchung"; Password = "1256" }
     )
+    # 節點定義: Server -> Node -> GPU 類型
+    Nodes = @{
+        "89" = @(
+            @{ Node = "0"; Label = ".89 direct"; GpuType = "V100-32G"; Description = "8x Tesla V100-SXM2-32GB" }
+        )
+        "87" = @(
+            @{ Node = "2"; Label = ".87->ib2"; GpuType = "P100-16G"; Description = "8x Tesla P100-PCIE-16GB" },
+            @{ Node = "3"; Label = ".87->ib3"; GpuType = "P100-16G"; Description = "8x Tesla P100-PCIE-16GB" },
+            @{ Node = "5"; Label = ".87->ib5"; GpuType = "P100-16G"; Description = "8x Tesla P100-PCIE-16GB" },
+            @{ Node = "6"; Label = ".87->ib6"; GpuType = "V100-16G"; Description = "8x Tesla V100-SXM2-16GB" }
+        )
+        "154" = @(
+            @{ Node = "1"; Label = ".154->ib1"; GpuType = "P100-16G"; Description = "8x Tesla P100-PCIE-16GB" },
+            @{ Node = "4"; Label = ".154->ib4"; GpuType = "P100-16G"; Description = "8x Tesla P100-PCIE-16GB" },
+            @{ Node = "7"; Label = ".154->ib7"; GpuType = "P100-16G"; Description = "8x Tesla P100-PCIE-16GB" },
+            @{ Node = "9"; Label = ".154->ib9"; GpuType = "P100-16G"; Description = "8x Tesla P100-PCIE-16GB" }
+        )
+    }
+    NvccArch = "sm_35"
+    MpiInclude = "/home/chenpengchung/openmpi-3.0.3/include"
+    MpiLib = "/home/chenpengchung/openmpi-3.0.3/lib"
+    DefaultGpuCount = 4
     PscpPath = "C:\Program Files\PuTTY\pscp.exe"
     PlinkPath = "C:\Program Files\PuTTY\plink.exe"
     # 排除的檔案，例如 .git 和 .vscode 設定檔等
@@ -36,6 +95,99 @@ $script:Config = @{
 function Write-Color {
     param([string]$Text, [string]$Color = "White")
     Write-Host $Text -ForegroundColor $Color
+}
+
+# ========== GPU 相關輔助函數 ==========
+
+function Get-ServerByName {
+    param([string]$Name)
+    $name = $Name.TrimStart(".")
+    foreach ($s in $Config.Servers) {
+        if ($s.Name -eq ".$name" -or $s.Name -eq $name) { return $s }
+    }
+    return $null
+}
+
+function Parse-GpuOutput {
+    param([string]$RawOutput)
+    if (-not $RawOutput -or $RawOutput -eq "OFFLINE" -or $RawOutput -match "error|fail") {
+        return @{ Dots = @(); Free = 0; Total = 0; Offline = $true; Details = @() }
+    }
+    $dots = @(); $free = 0; $total = 0; $details = @()
+    foreach ($line in $RawOutput -split "`n") {
+        $line = $line.Trim()
+        if (-not $line) { continue }
+        $parts = $line -split ","
+        if ($parts.Count -lt 2) { continue }
+        $idx = $parts[0].Trim()
+        $util = ($parts[1].Trim() -replace '[^0-9]','')
+        if (-not $util) { continue }
+        $total++
+        $utilInt = [int]$util
+        if ($utilInt -lt 10) {
+            $free++
+            $dots += "G"  # Green = free
+            $details += @{ Index = $idx; Util = $utilInt; Free = $true }
+        } else {
+            $dots += "R"  # Red = busy
+            $details += @{ Index = $idx; Util = $utilInt; Free = $false }
+        }
+    }
+    if ($total -eq 0) { return @{ Dots = @(); Free = 0; Total = 0; Offline = $true; Details = @() } }
+    return @{ Dots = $dots; Free = $free; Total = $total; Offline = $false; Details = $details }
+}
+
+function Query-GpuStatus {
+    param(
+        [string]$ServerKey,
+        [string]$NodeNum
+    )
+    $server = Get-ServerByName $ServerKey
+    if (-not $server) { return "OFFLINE" }
+
+    try {
+        if ($NodeNum -eq "0") {
+            # 直連模式
+            $cmd = "nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader"
+            $result = & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $cmd 2>$null
+        } else {
+            # 跳板模式
+            $cmd = "ssh -o ConnectTimeout=5 cfdlab-ib$NodeNum 'nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader'"
+            $result = & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $cmd 2>$null
+        }
+        if ($result) { return ($result -join "`n") } else { return "OFFLINE" }
+    } catch {
+        return "OFFLINE"
+    }
+}
+
+function Run-RemoteCommand {
+    param(
+        [string]$ServerKey,
+        [string]$NodeNum,
+        [string]$Command
+    )
+    $server = Get-ServerByName $ServerKey
+    if (-not $server) {
+        Write-Color "[ERROR] Unknown server: $ServerKey" "Red"
+        return
+    }
+
+    if ($NodeNum -eq "0") {
+        # 直連模式
+        $fullCmd = "cd $($Config.RemotePath) && $Command"
+        & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $fullCmd
+    } else {
+        # 跳板模式
+        $fullCmd = "ssh cfdlab-ib$NodeNum 'cd $($Config.RemotePath) && $Command'"
+        & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $fullCmd
+    }
+}
+
+function Ensure-RemoteDir {
+    param([hashtable]$Server)
+    $cmd = "mkdir -p '$($Config.RemotePath)'"
+    & $Config.PlinkPath -ssh -pw $Server.Password -batch "$($Server.User)@$($Server.Host)" $cmd 2>$null | Out-Null
 }
 
 function Get-LocalFiles {
@@ -1474,7 +1626,453 @@ switch ($Command) {
             }
         }
     }
-    
+
+    # ========== GPU 狀態查詢命令 ==========
+
+    "gpus" {
+        # GPU 狀態總覽（所有伺服器）
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host "         GPU Status Overview            " -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  Querying all servers..." -ForegroundColor Gray
+        Write-Host ""
+
+        # 查詢 .89 直連
+        Write-Host "  .89 (140.114.58.89) - 8x Tesla V100-SXM2-32GB" -ForegroundColor White
+        $gpu89 = Query-GpuStatus "89" "0"
+        $info89 = Parse-GpuOutput $gpu89
+        Write-Host "    " -NoNewline
+        if ($info89.Offline) {
+            Write-Host "[OFFLINE]" -ForegroundColor DarkGray
+        } else {
+            foreach ($d in $info89.Dots) {
+                if ($d -eq "G") { Write-Host " O " -NoNewline -ForegroundColor Green }
+                else { Write-Host " X " -NoNewline -ForegroundColor Red }
+            }
+            $freeStr = "$($info89.Free)/$($info89.Total)"
+            if ($info89.Free -eq 0) { Write-Host "  $freeStr" -ForegroundColor Red }
+            elseif ($info89.Free -ge 4) { Write-Host "  $freeStr" -ForegroundColor Green }
+            else { Write-Host "  $freeStr" -ForegroundColor Yellow }
+        }
+        Write-Host ""
+
+        # 查詢 .87 節點
+        Write-Host "  .87 (140.114.58.87) - Jump Server" -ForegroundColor White
+        foreach ($node in $Config.Nodes["87"]) {
+            $gpuOut = Query-GpuStatus "87" $node.Node
+            $info = Parse-GpuOutput $gpuOut
+            Write-Host "    ib$($node.Node) ($($node.GpuType)): " -NoNewline
+            if ($info.Offline) {
+                Write-Host "[OFFLINE/Maintenance]" -ForegroundColor DarkGray
+            } else {
+                foreach ($d in $info.Dots) {
+                    if ($d -eq "G") { Write-Host "O " -NoNewline -ForegroundColor Green }
+                    else { Write-Host "X " -NoNewline -ForegroundColor Red }
+                }
+                $freeStr = "$($info.Free)/$($info.Total)"
+                if ($info.Free -eq 0) { Write-Host " $freeStr" -ForegroundColor Red }
+                elseif ($info.Free -ge 4) { Write-Host " $freeStr" -ForegroundColor Green }
+                else { Write-Host " $freeStr" -ForegroundColor Yellow }
+            }
+        }
+        Write-Host ""
+
+        # 查詢 .154 節點
+        Write-Host "  .154 (140.114.58.154) - Jump Server" -ForegroundColor White
+        foreach ($node in $Config.Nodes["154"]) {
+            $gpuOut = Query-GpuStatus "154" $node.Node
+            $info = Parse-GpuOutput $gpuOut
+            Write-Host "    ib$($node.Node) ($($node.GpuType)): " -NoNewline
+            if ($info.Offline) {
+                Write-Host "[OFFLINE/Maintenance]" -ForegroundColor DarkGray
+            } else {
+                foreach ($d in $info.Dots) {
+                    if ($d -eq "G") { Write-Host "O " -NoNewline -ForegroundColor Green }
+                    else { Write-Host "X " -NoNewline -ForegroundColor Red }
+                }
+                $freeStr = "$($info.Free)/$($info.Total)"
+                if ($info.Free -eq 0) { Write-Host " $freeStr" -ForegroundColor Red }
+                elseif ($info.Free -ge 4) { Write-Host " $freeStr" -ForegroundColor Green }
+                else { Write-Host " $freeStr" -ForegroundColor Yellow }
+            }
+        }
+
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host "  O=Free  X=Busy  Free/Total" -ForegroundColor DarkGray
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host ""
+    }
+
+    "gpu" {
+        # GPU 詳細狀態（nvidia-smi 完整輸出）
+        $target = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "all" }
+        $target = $target.TrimStart(".")
+
+        Write-Host ""
+        Write-Host "=== GPU Detailed Status ===" -ForegroundColor Cyan
+        Write-Host ""
+
+        switch ($target) {
+            "89" {
+                Write-Host ".89 (140.114.58.89) - 8x Tesla V100-SXM2-32GB" -ForegroundColor Yellow
+                Write-Host ("-" * 50)
+                $server = Get-ServerByName "89"
+                $result = & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "nvidia-smi" 2>$null
+                if ($result) { $result | ForEach-Object { Write-Host $_ } }
+                else { Write-Host "[OFFLINE] Cannot connect" -ForegroundColor Red }
+            }
+            "87" {
+                Write-Host ".87 Nodes Status" -ForegroundColor Yellow
+                $server = Get-ServerByName "87"
+                foreach ($node in $Config.Nodes["87"]) {
+                    Write-Host ""
+                    Write-Host "=== .87 ib$($node.Node) ===" -ForegroundColor Cyan
+                    $result = & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "ssh -o ConnectTimeout=3 cfdlab-ib$($node.Node) 'nvidia-smi'" 2>$null
+                    if ($result) { $result | ForEach-Object { Write-Host $_ } }
+                    else { Write-Host "[OFFLINE/Maintenance]" -ForegroundColor Red }
+                }
+            }
+            "154" {
+                Write-Host ".154 Nodes Status" -ForegroundColor Yellow
+                $server = Get-ServerByName "154"
+                foreach ($node in $Config.Nodes["154"]) {
+                    Write-Host ""
+                    Write-Host "=== .154 ib$($node.Node) ===" -ForegroundColor Cyan
+                    $result = & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "ssh -o ConnectTimeout=3 cfdlab-ib$($node.Node) 'nvidia-smi'" 2>$null
+                    if ($result) { $result | ForEach-Object { Write-Host $_ } }
+                    else { Write-Host "[OFFLINE/Maintenance]" -ForegroundColor Red }
+                }
+            }
+            default {
+                # all
+                & $PSCommandPath gpu 89
+                Write-Host ""
+                & $PSCommandPath gpu 87
+                Write-Host ""
+                & $PSCommandPath gpu 154
+            }
+        }
+        Write-Host ""
+    }
+
+    # ========== SSH / 遠端執行命令 ==========
+
+    "ssh" {
+        # SSH 連線（帶 GPU 狀態顯示）
+        $combo = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "87:3" }
+
+        # 解析 server:node 格式
+        $parts = $combo -split ":"
+        if ($parts.Count -ne 2) {
+            Write-Color "[ERROR] Invalid format. Use: 87:3 or 154:4 or 89:0" "Red"
+            exit 1
+        }
+
+        $serverKey = $parts[0].TrimStart(".")
+        $nodeNum = $parts[1]
+
+        $server = Get-ServerByName $serverKey
+        if (-not $server) {
+            Write-Color "[ERROR] Unknown server: $serverKey. Use 87, 89 or 154." "Red"
+            exit 1
+        }
+
+        # 顯示 GPU 狀態
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Cyan
+        if ($nodeNum -eq "0") {
+            Write-Host "  Connecting to .$serverKey (direct)" -ForegroundColor White
+        } else {
+            Write-Host "  Connecting to .$serverKey -> ib$nodeNum" -ForegroundColor White
+        }
+        Write-Host "========================================" -ForegroundColor Cyan
+
+        $gpuOut = Query-GpuStatus $serverKey $nodeNum
+        $info = Parse-GpuOutput $gpuOut
+
+        Write-Host "  GPU Status: " -NoNewline
+        if ($info.Offline) {
+            Write-Host "[OFFLINE]" -ForegroundColor Red
+        } else {
+            foreach ($d in $info.Dots) {
+                if ($d -eq "G") { Write-Host "O " -NoNewline -ForegroundColor Green }
+                else { Write-Host "X " -NoNewline -ForegroundColor Red }
+            }
+            $freeStr = "$($info.Free)/$($info.Total) available"
+            if ($info.Free -eq 0) { Write-Host " ($freeStr)" -ForegroundColor Red }
+            elseif ($info.Free -ge 4) { Write-Host " ($freeStr)" -ForegroundColor Green }
+            else { Write-Host " ($freeStr)" -ForegroundColor Yellow }
+        }
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host ""
+
+        # 確保遠端目錄存在
+        Ensure-RemoteDir $server
+
+        # 連線
+        if ($nodeNum -eq "0") {
+            Write-Color "[SSH] Connecting directly to .$serverKey..." "Cyan"
+            & $Config.PlinkPath -ssh -pw $server.Password "$($server.User)@$($server.Host)" -t "cd $($Config.RemotePath); exec bash"
+        } else {
+            Write-Color "[SSH] Connecting via .$serverKey to ib$nodeNum..." "Cyan"
+            & $Config.PlinkPath -ssh -pw $server.Password "$($server.User)@$($server.Host)" -t "ssh -t cfdlab-ib$nodeNum 'cd $($Config.RemotePath); exec bash'"
+        }
+    }
+
+    "issh" {
+        # 互動式 SSH 選擇器（調用 ssh-connect.ps1 -Interactive）
+        $sshScript = Join-Path $Config.LocalPath ".vscode\ssh-connect.ps1"
+        if (Test-Path $sshScript) {
+            & $sshScript -Interactive
+        } else {
+            Write-Color "[ERROR] ssh-connect.ps1 not found" "Red"
+        }
+    }
+
+    "run" {
+        # 編譯並執行
+        $combo = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "87:3" }
+        $gpuCount = if ($Arguments.Count -gt 1) { $Arguments[1] } else { $Config.DefaultGpuCount }
+
+        $parts = $combo -split ":"
+        if ($parts.Count -ne 2) {
+            Write-Color "[ERROR] Invalid format. Use: run 87:3 [gpu_count]" "Red"
+            exit 1
+        }
+
+        $serverKey = $parts[0].TrimStart(".")
+        $nodeNum = $parts[1]
+
+        Write-Color "[RUN] Compiling and running on .$serverKey ib$nodeNum with $gpuCount GPUs..." "Magenta"
+
+        $buildCmd = "nvcc main.cu -arch=$($Config.NvccArch) -I$($Config.MpiInclude) -L$($Config.MpiLib) -lmpi -o a.out"
+        $runCmd = "nohup mpirun -np $gpuCount ./a.out > log`$(date +%Y%m%d) 2>&1 &"
+        $fullCmd = "$buildCmd && $runCmd"
+
+        Run-RemoteCommand $serverKey $nodeNum $fullCmd
+        Write-Color "[RUN] Job submitted!" "Green"
+    }
+
+    "jobs" {
+        # 查看執行中的任務
+        $combo = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "87:3" }
+
+        $parts = $combo -split ":"
+        if ($parts.Count -ne 2) {
+            Write-Color "[ERROR] Invalid format. Use: jobs 87:3" "Red"
+            exit 1
+        }
+
+        $serverKey = $parts[0].TrimStart(".")
+        $nodeNum = $parts[1]
+
+        Write-Color "[JOBS] Checking running jobs on .$serverKey ib$nodeNum..." "Cyan"
+        Run-RemoteCommand $serverKey $nodeNum "ps aux | grep a.out | grep -v grep || echo 'No running jobs'"
+    }
+
+    "kill" {
+        # 終止執行中的任務
+        $combo = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "87:3" }
+
+        $parts = $combo -split ":"
+        if ($parts.Count -ne 2) {
+            Write-Color "[ERROR] Invalid format. Use: kill 87:3" "Red"
+            exit 1
+        }
+
+        $serverKey = $parts[0].TrimStart(".")
+        $nodeNum = $parts[1]
+
+        Write-Color "[KILL] Stopping jobs on .$serverKey ib$nodeNum..." "Red"
+        Run-RemoteCommand $serverKey $nodeNum "pkill -f a.out || pkill -f mpirun || echo 'No jobs to kill'"
+        Write-Color "[KILL] Done" "Green"
+    }
+
+    # ========== 伺服器別名命令 ==========
+
+    # ========== 額外別名（與 Mac 對齊）==========
+
+    # check = diff (Mac 兼容)
+    "check" { & $PSCommandPath diff }
+
+    # delete = reset (Mac 兼容)
+    "delete" { & $PSCommandPath reset }
+
+    # watch = watchpush (Mac 兼容)
+    "watch" { & $PSCommandPath watchpush $Arguments }
+
+    # pull 別名
+    "pull87" { & $PSCommandPath pull .87 }
+    "pull89" { & $PSCommandPath pull .89 }
+
+    # fetch 別名
+    "fetch89" { & $PSCommandPath fetch 89 }
+
+    # log 別名
+    "log87" { & $PSCommandPath log .87 }
+    "log89" { & $PSCommandPath log .89 }
+    "log154" { & $PSCommandPath log .154 }
+
+    # diff 別名
+    "diff87" {
+        $server = $Config.Servers | Where-Object { $_.Name -eq ".87" }
+        if ($server) {
+            $results = Compare-Files -Server $server
+            Show-CompareResults -Results $results -ServerName $server.Name
+        }
+    }
+    "diff89" {
+        $server = $Config.Servers | Where-Object { $_.Name -eq ".89" }
+        if ($server) {
+            $results = Compare-Files -Server $server
+            Show-CompareResults -Results $results -ServerName $server.Name
+        }
+    }
+    "diff154" {
+        $server = $Config.Servers | Where-Object { $_.Name -eq ".154" }
+        if ($server) {
+            $results = Compare-Files -Server $server
+            Show-CompareResults -Results $results -ServerName $server.Name
+        }
+    }
+    "diffall" { & $PSCommandPath diff }
+
+    # push 別名
+    "push87" {
+        Write-Color "[PUSH] Pushing to .87 only..." "Magenta"
+        $server = $Config.Servers | Where-Object { $_.Name -eq ".87" }
+        if ($server) {
+            $localFiles = Get-LocalFiles
+            $localHash = @{}
+            foreach ($f in $localFiles) { $localHash[$f.Path] = $f }
+
+            $results = Compare-Files -Server $server -Silent
+            $toUpload = @()
+            $toUpload += $results.New
+            $toUpload += $results.Modified
+            $toDelete = $results.Deleted
+
+            if ($toUpload.Count -eq 0 -and $toDelete.Count -eq 0) {
+                Write-Color "  [OK] Already synced" "Green"
+            } else {
+                $successCount = 0
+                foreach ($path in $toUpload) {
+                    $file = $localHash[$path]
+                    if (-not $file) { continue }
+                    $localPath = $file.FullPath
+                    $remoteDest = "$($server.User)@$($server.Host):$($Config.RemotePath)/$($file.Path)"
+                    $remoteDir = [System.IO.Path]::GetDirectoryName("$($Config.RemotePath)/$($file.Path)").Replace("\", "/")
+                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "mkdir -p '$remoteDir'" 2>$null
+                    $null = & $Config.PscpPath -pw $server.Password -q $localPath $remoteDest 2>&1
+                    if ($LASTEXITCODE -eq 0) { Write-Color "  [UPLOAD] $($file.Path)" "Green"; $successCount++ }
+                }
+                $deleteCount = 0
+                foreach ($f in $toDelete) {
+                    $remotePath = "$($Config.RemotePath)/$f"
+                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "rm -f '$remotePath'" 2>$null
+                    if ($LASTEXITCODE -eq 0) { Write-Color "  [DELETE] $f" "Red"; $deleteCount++ }
+                }
+                Write-Color ".87: Uploaded=$successCount | Deleted=$deleteCount" "Cyan"
+            }
+        }
+    }
+    "push89" {
+        Write-Color "[PUSH] Pushing to .89 only..." "Magenta"
+        $server = $Config.Servers | Where-Object { $_.Name -eq ".89" }
+        if ($server) {
+            $localFiles = Get-LocalFiles
+            $localHash = @{}
+            foreach ($f in $localFiles) { $localHash[$f.Path] = $f }
+
+            $results = Compare-Files -Server $server -Silent
+            $toUpload = @()
+            $toUpload += $results.New
+            $toUpload += $results.Modified
+            $toDelete = $results.Deleted
+
+            if ($toUpload.Count -eq 0 -and $toDelete.Count -eq 0) {
+                Write-Color "  [OK] Already synced" "Green"
+            } else {
+                $successCount = 0
+                foreach ($path in $toUpload) {
+                    $file = $localHash[$path]
+                    if (-not $file) { continue }
+                    $localPath = $file.FullPath
+                    $remoteDest = "$($server.User)@$($server.Host):$($Config.RemotePath)/$($file.Path)"
+                    $remoteDir = [System.IO.Path]::GetDirectoryName("$($Config.RemotePath)/$($file.Path)").Replace("\", "/")
+                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "mkdir -p '$remoteDir'" 2>$null
+                    $null = & $Config.PscpPath -pw $server.Password -q $localPath $remoteDest 2>&1
+                    if ($LASTEXITCODE -eq 0) { Write-Color "  [UPLOAD] $($file.Path)" "Green"; $successCount++ }
+                }
+                $deleteCount = 0
+                foreach ($f in $toDelete) {
+                    $remotePath = "$($Config.RemotePath)/$f"
+                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "rm -f '$remotePath'" 2>$null
+                    if ($LASTEXITCODE -eq 0) { Write-Color "  [DELETE] $f" "Red"; $deleteCount++ }
+                }
+                Write-Color ".89: Uploaded=$successCount | Deleted=$deleteCount" "Cyan"
+            }
+        }
+    }
+    "push154" {
+        Write-Color "[PUSH] Pushing to .154 only..." "Magenta"
+        $server = $Config.Servers | Where-Object { $_.Name -eq ".154" }
+        if ($server) {
+            $localFiles = Get-LocalFiles
+            $localHash = @{}
+            foreach ($f in $localFiles) { $localHash[$f.Path] = $f }
+
+            $results = Compare-Files -Server $server -Silent
+            $toUpload = @()
+            $toUpload += $results.New
+            $toUpload += $results.Modified
+            $toDelete = $results.Deleted
+
+            if ($toUpload.Count -eq 0 -and $toDelete.Count -eq 0) {
+                Write-Color "  [OK] Already synced" "Green"
+            } else {
+                $successCount = 0
+                foreach ($path in $toUpload) {
+                    $file = $localHash[$path]
+                    if (-not $file) { continue }
+                    $localPath = $file.FullPath
+                    $remoteDest = "$($server.User)@$($server.Host):$($Config.RemotePath)/$($file.Path)"
+                    $remoteDir = [System.IO.Path]::GetDirectoryName("$($Config.RemotePath)/$($file.Path)").Replace("\", "/")
+                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "mkdir -p '$remoteDir'" 2>$null
+                    $null = & $Config.PscpPath -pw $server.Password -q $localPath $remoteDest 2>&1
+                    if ($LASTEXITCODE -eq 0) { Write-Color "  [UPLOAD] $($file.Path)" "Green"; $successCount++ }
+                }
+                $deleteCount = 0
+                foreach ($f in $toDelete) {
+                    $remotePath = "$($Config.RemotePath)/$f"
+                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "rm -f '$remotePath'" 2>$null
+                    if ($LASTEXITCODE -eq 0) { Write-Color "  [DELETE] $f" "Red"; $deleteCount++ }
+                }
+                Write-Color ".154: Uploaded=$successCount | Deleted=$deleteCount" "Cyan"
+            }
+        }
+    }
+    "pushall" { & $PSCommandPath push }
+
+    # autopull 別名
+    "autopull87" { & $PSCommandPath autopull .87 }
+    "autopull89" { & $PSCommandPath autopull .89 }
+    "autopull154" { & $PSCommandPath autopull .154 }
+
+    # autofetch 別名
+    "autofetch87" { & $PSCommandPath autofetch 87 }
+    "autofetch89" { & $PSCommandPath autofetch 89 }
+    "autofetch154" { & $PSCommandPath autofetch 154 }
+
+    # autopush 別名
+    "autopush87" { & $PSCommandPath autopush .87 }
+    "autopush89" { & $PSCommandPath autopush .89 }
+    "autopush154" { & $PSCommandPath autopush .154 }
+    "autopushall" { & $PSCommandPath autopush }
+
     default {
         Write-Host ""
         Write-Host "MobaXterm Sync Commands (Git-like)" -ForegroundColor Cyan
@@ -1488,60 +2086,78 @@ switch ($Command) {
         Write-Host "  PUSH series:  Upload + DELETE remote (sync remote to local)" -ForegroundColor Red
         Write-Host ""
         Write-Host "Download Commands (from remote):" -ForegroundColor Yellow
-        Write-Host "  pull        - Download only, NO delete (safe)" -ForegroundColor Green
-        Write-Host "  pull .87    - Pull from .87 only"
-        Write-Host "  pull .154   - Pull from .154 only"
-        Write-Host "  autopull    - Auto-pull if changes detected (no delete)"
-        Write-Host "  watchpull   - Background auto-download (no delete)"
+        Write-Host "  pull             - Download only, NO delete (safe)" -ForegroundColor Green
+        Write-Host "  pull .87/.89/.154 - Pull from specific server"
+        Write-Host "  pull87/pull89/pull154 - Shorthand aliases"
+        Write-Host "  autopull [server]  - Auto-pull if changes detected"
+        Write-Host "  autopull87/89/154  - Shorthand aliases"
+        Write-Host "  watchpull        - Background auto-download"
         Write-Host ""
-        Write-Host "  fetch       - Download + DELETE local files not on remote" -ForegroundColor Red
-        Write-Host "  fetch .87   - Fetch from .87 only"
-        Write-Host "  fetch .154  - Fetch from .154 only"
-        Write-Host "  autofetch   - Auto-fetch if changes detected (with delete)"
-        Write-Host "  watchfetch  - Background auto-fetch (download + delete)"
+        Write-Host "  fetch            - Download + DELETE local extras" -ForegroundColor Red
+        Write-Host "  fetch .87/.89/.154 - Fetch from specific server"
+        Write-Host "  fetch87/fetch89/fetch154 - Shorthand aliases"
+        Write-Host "  autofetch [server] - Auto-fetch if changes detected"
+        Write-Host "  autofetch87/89/154 - Shorthand aliases"
+        Write-Host "  watchfetch       - Background auto-fetch"
         Write-Host ""
         Write-Host "Upload Commands (to remote):" -ForegroundColor Yellow
-        Write-Host "  push        - Upload + DELETE remote files not in local" -ForegroundColor Red
-        Write-Host "  autopush    - Auto-push if changes detected (with delete)"
-        Write-Host "  watchpush   - Background auto-upload (with delete)"
+        Write-Host "  push             - Upload + DELETE remote extras" -ForegroundColor Red
+        Write-Host "  push87/push89/push154 - Push to specific server"
+        Write-Host "  pushall          - Push to all servers"
+        Write-Host "  autopush [server] - Auto-push if changes detected"
+        Write-Host "  autopush87/89/154/all - Shorthand aliases"
+        Write-Host "  watchpush        - Background auto-upload"
+        Write-Host ""
+        Write-Host "GPU Status:" -ForegroundColor Yellow
+        Write-Host "  gpus             - GPU status overview (all servers)"
+        Write-Host "  gpu [89|87|154]  - Detailed GPU status (nvidia-smi)"
+        Write-Host ""
+        Write-Host "SSH & Remote Execution:" -ForegroundColor Yellow
+        Write-Host "  ssh [87:3]       - SSH to server:node (with GPU status)"
+        Write-Host "  issh             - Interactive SSH selector (GPU status menu)"
+        Write-Host "  run [87:3] [gpu] - Compile and run on node"
+        Write-Host "  jobs [87:3]      - Check running jobs on node"
+        Write-Host "  kill [87:3]      - Kill running jobs on node"
         Write-Host ""
         Write-Host "Status & Info:" -ForegroundColor Yellow
-        Write-Host "  status      - Show sync status"
-        Write-Host "  diff        - Compare local vs remote"
-        Write-Host "  log         - View remote log files"
-        Write-Host "  bgstatus    - Check ALL background processes (push/pull/fetch/vtkrename)"
-        Write-Host "  syncstatus  - Check sync background status (push/pull only)"
+        Write-Host "  status           - Show sync status"
+        Write-Host "  diff             - Compare local vs remote"
+        Write-Host "  diff87/diff89/diff154/diffall - Diff specific server"
+        Write-Host "  log [server]     - View remote log files"
+        Write-Host "  log87/log89/log154 - Log from specific server"
+        Write-Host "  issynced         - Quick one-line status check"
+        Write-Host "  bgstatus         - Check all background processes"
+        Write-Host "  syncstatus       - Check sync background status"
         Write-Host ""
         Write-Host "Other Commands:" -ForegroundColor Yellow
-        Write-Host "  clone       - Full download from remote"
-        Write-Host "  reset       - Delete remote-only files (no upload)"
-        Write-Host "  sync        - Interactive: diff -> confirm -> push"
-        Write-Host "  issynced    - Quick one-line status check"
+        Write-Host "  clone            - Full download from remote"
+        Write-Host "  reset            - Delete remote-only files"
+        Write-Host "  sync             - Interactive: diff -> confirm -> push"
+        Write-Host "  fullsync         - Push + Reset (exact mirror)"
         Write-Host ""
         Write-Host "VTK File Management:" -ForegroundColor Yellow
-        Write-Host "  vtkrename         - Auto-rename VTK files to zero-padded format"
-        Write-Host "  vtkrename status  - Check renamer status"
-        Write-Host "  vtkrename log     - View rename log"
-        Write-Host "  vtkrename stop    - Stop auto-renamer"
-        Write-Host "  (Renames: velocity_merged_1001.vtk -> velocity_merged_001001.vtk)" -ForegroundColor Gray
+        Write-Host "  vtkrename        - Auto-rename VTK files to zero-padded"
+        Write-Host "  vtkrename status/log/stop - Manage VTK renamer"
         Write-Host ""
         Write-Host "Background Commands:" -ForegroundColor Yellow
-        Write-Host "  watchpull/watchfetch/watchpush [.87|.154]  - Start monitoring"
-        Write-Host "  watchpull/watchfetch/watchpush status      - Check status"
-        Write-Host "  watchpull/watchfetch/watchpush log         - View log"
-        Write-Host "  watchpull/watchfetch/watchpush stop        - Stop monitoring"
+        Write-Host "  watch<cmd> [server] - Start monitoring"
+        Write-Host "  watch<cmd> status   - Check status"
+        Write-Host "  watch<cmd> log      - View log"
+        Write-Host "  watch<cmd> stop     - Stop monitoring"
         Write-Host ""
-        Write-Host "Aliases:" -ForegroundColor Yellow
-        Write-Host "  pull87/pull154   - Same as pull .87/.154"
-        Write-Host "  fetch87/fetch154 - Same as fetch .87/.154"
-        Write-Host "  check            - Same as diff"
+        Write-Host "Server/Node Combos:" -ForegroundColor Yellow
+        Write-Host "  .89:0   - Direct connection to .89 (V100-32G)"
+        Write-Host "  .87:2/3/5/6 - Via .87 to ib2/3/5/6"
+        Write-Host "  .154:1/4/7/9 - Via .154 to ib1/4/7/9"
         Write-Host ""
         Write-Host "Examples:" -ForegroundColor Yellow
-        Write-Host "  mobaxterm pull .87      # Safe download (no delete)"
-        Write-Host "  mobaxterm fetch .87     # Download + delete local extras"
-        Write-Host "  mobaxterm push          # Upload + delete remote extras"
-        Write-Host "  mobaxterm watchpull     # Background safe download"
-        Write-Host "  mobaxterm watchfetch    # Background sync (with delete)"
+        Write-Host "  mobaxterm gpus        # Check all GPU status"
+        Write-Host "  mobaxterm ssh 89:0    # SSH to .89 directly"
+        Write-Host "  mobaxterm issh        # Interactive SSH menu"
+        Write-Host "  mobaxterm run 87:3 4  # Compile & run with 4 GPUs"
+        Write-Host "  mobaxterm jobs 87:3   # Check running jobs"
+        Write-Host "  mobaxterm pull89      # Pull from .89"
+        Write-Host "  mobaxterm push        # Push to all servers"
         Write-Host ""
     }
 }
