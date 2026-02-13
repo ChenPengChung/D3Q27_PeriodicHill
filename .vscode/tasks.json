@@ -841,6 +841,70 @@
                                          ]
                   },
                   {
+                      "label":  "[Mac] GPU Status (All Servers)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' gpus"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] GPU Detail (.89)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' gpu 89"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] GPU Detail (.87)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' gpu 87"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] GPU Detail (.154)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' gpu 154"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
                       "label":  "[Mac] Diff (Compare local vs remote)",
                       "type":  "process",
                       "command":  "bash",
@@ -927,6 +991,70 @@
                       "args":  [
                                    "-lc",
                                    "'${workspaceFolder}/.vscode/cfdlab-mac.sh' fetch 154"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Fetch (.89, Download + Delete)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' fetch 89"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Pull (.89)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' pull 89"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Watch Fetch (.89 only)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchfetch 89"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Auto Download (.89 only)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchpull 89"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1154,6 +1282,10 @@
                                            "value":  "87:6"
                                        },
                                        {
+                                           "label":  ".89 (direct)",
+                                           "value":  "89:0"
+                                       },
+                                       {
                                            "label":  ".154 → ib1",
                                            "value":  "154:1"
                                        },
@@ -1276,6 +1408,15 @@
                                            "description":  "8× Tesla V100 16GB ⚡"
                                        },
                                        {
+                                           "label":  "── .89 伺服器 (140.114.58.89) ──",
+                                           "value":  ""
+                                       },
+                                       {
+                                           "label":  ".89 (direct)",
+                                           "value":  "89:0",
+                                           "description":  "8× Tesla V100 32GB ⚡⚡"
+                                       },
+                                       {
                                            "label":  "── .154 伺服器 (140.114.58.154) ──",
                                            "value":  ""
                                        },
@@ -1313,6 +1454,11 @@
                                            "description":  "140.114.58.87 — ib2/ib3/ib5/ib6"
                                        },
                                        {
+                                           "label":  "89",
+                                           "value":  "89",
+                                           "description":  "140.114.58.89 — 8× V100 32GB ⚡⚡"
+                                       },
+                                       {
                                            "label":  "154",
                                            "value":  "154",
                                            "description":  "140.114.58.154 — ib1/ib4/ib7/ib9"
@@ -1328,12 +1474,17 @@
                                        {
                                            "label":  "all",
                                            "value":  "all",
-                                           "description":  "兩台伺服器同時執行"
+                                           "description":  "三台伺服器同時執行"
                                        },
                                        {
                                            "label":  "87",
                                            "value":  "87",
                                            "description":  "140.114.58.87"
+                                       },
+                                       {
+                                           "label":  "89",
+                                           "value":  "89",
+                                           "description":  "140.114.58.89"
                                        },
                                        {
                                            "label":  "154",

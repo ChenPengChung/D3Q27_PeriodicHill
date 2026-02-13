@@ -18,7 +18,7 @@ void ExistOrCreateDir(const char* doc) {
     //步驟一:創立資料夾 
 	std::string path(doc);// path 是 C++ string 物件
 	path = "./" + path;
-    //檢查資料夾是否存在 
+    //檢查資料夾是否存在
 	if (access(path.c_str(), F_OK) != 0) { //c++字串傳成對應的字元陣列 
         //不存在，用mkdir() 創建 
         if (mkdir(path.c_str(), S_IRWXU) == 0)

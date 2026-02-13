@@ -10,7 +10,9 @@ WORKSPACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 STATE_DIR="$WORKSPACE_DIR/.vscode"
 
 CFDLAB_USER="${CFDLAB_USER:-chenpengchung}"
-CFDLAB_REMOTE_PATH="${CFDLAB_REMOTE_PATH:-/home/chenpengchung/D3Q27_PeriodicHill}"
+# 自動根據本地資料夾名稱生成遠端路徑
+LOCAL_FOLDER_NAME="$(basename "$WORKSPACE_DIR")"
+CFDLAB_REMOTE_PATH="${CFDLAB_REMOTE_PATH:-/home/chenpengchung/${LOCAL_FOLDER_NAME}}"
 CFDLAB_DEFAULT_NODE="${CFDLAB_DEFAULT_NODE:-3}"
 CFDLAB_DEFAULT_GPU_COUNT="${CFDLAB_DEFAULT_GPU_COUNT:-4}"
 CFDLAB_NVCC_ARCH="${CFDLAB_NVCC_ARCH:-sm_35}"
@@ -71,8 +73,8 @@ function normalize_server() {
   local raw="${1:-87}"
   raw="${raw#.}"
   case "$raw" in
-    87|154) echo "$raw" ;;
-    *) die "Unknown server '$1' (use 87 or 154)" ;;
+    87|89|154) echo "$raw" ;;
+    *) die "Unknown server '$1' (use 87, 89 or 154)" ;;
   esac
 }
 
@@ -80,6 +82,7 @@ function resolve_host() {
   local server="$1"
   case "$server" in
     87) echo "140.114.58.87" ;;
+    89) echo "140.114.58.89" ;;
     154) echo "140.114.58.154" ;;
     *) die "Unknown server '$server'" ;;
   esac
@@ -117,6 +120,7 @@ function each_target_server() {
   local target="$1"
   if [[ "$target" == "all" ]]; then
     echo "87"
+    echo "89"
     echo "154"
   else
     echo "$target"
@@ -130,7 +134,12 @@ function run_on_node() {
   local host
 
   host="$(resolve_host "$server")"
-  ssh -t "${CFDLAB_USER}@${host}" "ssh -t cfdlab-ib${node} \"bash -lc '$remote_cmd'\""
+  # node=0 表示直連伺服器，不需要跳板到 cfdlab-ibX
+  if [[ "$node" == "0" ]]; then
+    ssh -t "${CFDLAB_USER}@${host}" "bash -lc 'cd ${CFDLAB_REMOTE_PATH}; $remote_cmd'"
+  else
+    ssh -t "${CFDLAB_USER}@${host}" "ssh -t cfdlab-ib${node} \"bash -lc '$remote_cmd'\""
+  fi
 }
 
 function run_on_server() {
@@ -140,6 +149,16 @@ function run_on_server() {
 
   host="$(resolve_host "$server")"
   ssh -t "${CFDLAB_USER}@${host}" "bash -lc '$remote_cmd'"
+}
+
+# 確保遠端資料夾存在（自動建立）
+function ensure_remote_dir() {
+  local server="$1"
+  local host
+
+  host="$(resolve_host "$server")"
+  note "Ensuring remote directory exists on ${server}: ${CFDLAB_REMOTE_PATH}"
+  ssh_batch_exec "$host" "mkdir -p '${CFDLAB_REMOTE_PATH}'" 2>/dev/null || true
 }
 
 function push_args() {
@@ -224,6 +243,10 @@ function run_push() {
   local args=()
 
   host="$(resolve_host "$server")"
+  
+  # 自動建立遠端資料夾
+  ensure_remote_dir "$server"
+  
   while IFS= read -r line; do
     args+=("$line")
   done < <(build_arg_array push "$delete_mode")
@@ -515,10 +538,20 @@ Core (same names as Windows):
   autopush, autopull, autofetch
   watch, watchpush, watchpull, watchfetch
   syncstatus, bgstatus, vtkrename
-  pull87, pull154, fetch87, fetch154
+  pull87, pull89, pull154, fetch87, fetch89, fetch154
+  push87, push89, push154, pushall
+  autopull87, autopull89, autopull154
+  autofetch87, autofetch89, autofetch154
+  autopush87, autopush89, autopush154, autopushall
+  diff87, diff89, diff154, diffall
+  log87, log89, log154
 
 Extra node helpers:
   ssh [87:3], run [87:3] [gpu], jobs [87:3], kill [87:3]
+
+GPU Status:
+  gpus              - GPU 狀態總覽（所有伺服器）
+  gpu [89|87|154]   - 詳細 GPU 狀態（nvidia-smi 完整輸出）
 
 Watch subcommands:
   <watchcmd> status | log | stop | clear
@@ -548,16 +581,121 @@ function cmd_ssh() {
   node="${parsed##*:}"
   host="$(resolve_host "$server")"
 
-  if [[ -n "$CFDLAB_PASSWORD" ]]; then
-    # Use ProxyCommand with sshpass for both hops (local sshpass only, no sshpass needed on server)
-    local proxy_cmd="sshpass -p '${CFDLAB_PASSWORD}' ssh -o StrictHostKeyChecking=accept-new -W %h:%p ${CFDLAB_USER}@${host}"
-    sshpass -p "$CFDLAB_PASSWORD" ssh -t \
-      -o StrictHostKeyChecking=accept-new \
-      -o ProxyCommand="$proxy_cmd" \
-      "${CFDLAB_USER}@cfdlab-ib${node}" \
-      "cd ${CFDLAB_REMOTE_PATH}; exec bash"
+  # === 顯示目標節點的 GPU 狀態 ===
+  echo ""
+  echo "╔══════════════════════════════════════════════════════════════════╗"
+  echo "║  🔗 準備連線到: .${server} $([ "$node" != "0" ] && echo "ib${node}" || echo "(直連)")                                    ║"
+  echo "╠══════════════════════════════════════════════════════════════════╣"
+  
+  local gpu_output
+  local free_status
+  
+  if [[ "$node" == "0" ]]; then
+    # 直連伺服器 (如 .89)
+    echo "║  📍 .${server} (${host})                                           ║"
+    if [[ "$server" == "89" ]]; then
+      echo "║  ├─ GPU: 8× Tesla V100-SXM2-32GB                                 ║"
+    else
+      echo "║  ├─ GPU: 8× Tesla P100-PCIE-16GB                                 ║"
+    fi
+    
+    if gpu_output="$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "${CFDLAB_USER}@${host}" "nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader" 2>/dev/null)"; then
+      free_status=$(get_gpu_status_line "$gpu_output")
+      local free_count="${free_status%%/*}"
+      if [[ "$free_count" -eq 0 ]]; then
+        echo "║  └─ 狀態: ❌ 全部使用中 (${free_status} 可用)                          ║"
+      elif [[ "$free_count" -ge 4 ]]; then
+        echo "║  └─ 狀態: ✅ ${free_status} GPU 可用                                   ║"
+      else
+        echo "║  └─ 狀態: ⚠️  ${free_status} GPU 可用                                   ║"
+      fi
+      echo "╠══════════════════════════════════════════════════════════════════╣"
+      # 顯示每個 GPU 狀態
+      while IFS=',' read -r idx util; do
+        [[ -z "$idx" ]] && continue
+        idx="${idx// /}"
+        util="${util//[^0-9]/}"
+        if [[ "$util" -lt 10 ]]; then
+          printf "║  GPU %s: ✅ 閒置 (%3s%%)                                          ║\n" "$idx" "$util"
+        else
+          printf "║  GPU %s: 🔥 使用中 (%3s%%)                                        ║\n" "$idx" "$util"
+        fi
+      done <<< "$gpu_output"
+    else
+      echo "║  └─ 狀態: 🔴 無法取得 GPU 資訊                                   ║"
+    fi
   else
-    ssh -t "${CFDLAB_USER}@${host}" "ssh -t cfdlab-ib${node} 'cd ${CFDLAB_REMOTE_PATH}; exec bash'"
+    # 跳板節點 (如 .87 ib3)
+    echo "║  📍 .${server} → ib${node}                                              ║"
+    echo "║  ├─ 跳板: ${host}                                          ║"
+    
+    # 根據節點判斷 GPU 類型
+    if [[ "$server" == "87" && "$node" == "6" ]]; then
+      echo "║  ├─ GPU: 8× Tesla V100-SXM2-16GB ⚡                               ║"
+    else
+      echo "║  ├─ GPU: 8× Tesla P100-PCIE-16GB                                 ║"
+    fi
+    
+    if gpu_output="$(ssh_batch_exec "$host" "ssh -o ConnectTimeout=3 cfdlab-ib${node} 'nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader'" 2>/dev/null)"; then
+      free_status=$(get_gpu_status_line "$gpu_output")
+      local free_count="${free_status%%/*}"
+      if [[ "$free_count" -eq 0 ]]; then
+        echo "║  └─ 狀態: ❌ 全部使用中 (${free_status} 可用)                          ║"
+      elif [[ "$free_count" -ge 4 ]]; then
+        echo "║  └─ 狀態: ✅ ${free_status} GPU 可用                                   ║"
+      else
+        echo "║  └─ 狀態: ⚠️  ${free_status} GPU 可用                                   ║"
+      fi
+      echo "╠══════════════════════════════════════════════════════════════════╣"
+      # 顯示每個 GPU 狀態
+      while IFS=',' read -r idx util; do
+        [[ -z "$idx" ]] && continue
+        idx="${idx// /}"
+        util="${util//[^0-9]/}"
+        if [[ "$util" -lt 10 ]]; then
+          printf "║  GPU %s: ✅ 閒置 (%3s%%)                                          ║\n" "$idx" "$util"
+        else
+          printf "║  GPU %s: 🔥 使用中 (%3s%%)                                        ║\n" "$idx" "$util"
+        fi
+      done <<< "$gpu_output"
+    else
+      echo "║  └─ 狀態: 🔴 節點離線/維修中                                     ║"
+      echo "╚══════════════════════════════════════════════════════════════════╝"
+      echo ""
+      die "ib${node} 無法連線，請選擇其他節點"
+    fi
+  fi
+  
+  echo "╚══════════════════════════════════════════════════════════════════╝"
+  echo ""
+  echo "🚀 正在連線..."
+  echo ""
+
+  # 確保遠端資料夾存在
+  ensure_remote_dir "$server"
+
+  # node=0 表示直連伺服器（例如 .89）
+  if [[ "$node" == "0" ]]; then
+    if [[ -n "$CFDLAB_PASSWORD" ]]; then
+      sshpass -p "$CFDLAB_PASSWORD" ssh -t \
+        -o StrictHostKeyChecking=accept-new \
+        "${CFDLAB_USER}@${host}" \
+        "cd ${CFDLAB_REMOTE_PATH}; exec bash"
+    else
+      ssh -t "${CFDLAB_USER}@${host}" "cd ${CFDLAB_REMOTE_PATH}; exec bash"
+    fi
+  else
+    if [[ -n "$CFDLAB_PASSWORD" ]]; then
+      # Use ProxyCommand with sshpass for both hops (local sshpass only, no sshpass needed on server)
+      local proxy_cmd="sshpass -p '${CFDLAB_PASSWORD}' ssh -o StrictHostKeyChecking=accept-new -W %h:%p ${CFDLAB_USER}@${host}"
+      sshpass -p "$CFDLAB_PASSWORD" ssh -t \
+        -o StrictHostKeyChecking=accept-new \
+        -o ProxyCommand="$proxy_cmd" \
+        "${CFDLAB_USER}@cfdlab-ib${node}" \
+        "cd ${CFDLAB_REMOTE_PATH}; exec bash"
+    else
+      ssh -t "${CFDLAB_USER}@${host}" "ssh -t cfdlab-ib${node} 'cd ${CFDLAB_REMOTE_PATH}; exec bash'"
+    fi
   fi
 }
 
@@ -598,6 +736,166 @@ function cmd_kill() {
   server="${parsed%%:*}"
   node="${parsed##*:}"
   run_on_node "$server" "$node" "pkill -f a.out || pkill -f mpirun || true"
+}
+
+# GPU 狀態查詢功能
+function get_gpu_status_line() {
+  # 解析 nvidia-smi 輸出，計算可用 GPU 數量
+  local output="$1"
+  local total=0
+  local free=0
+  local busy=0
+  
+  while IFS=',' read -r idx util rest; do
+    [[ -z "$idx" ]] && continue
+    util="${util//[^0-9]/}"  # 只保留數字
+    [[ -z "$util" ]] && continue
+    ((total++))
+    if [[ "$util" -lt 10 ]]; then
+      ((free++))
+    else
+      ((busy++))
+    fi
+  done <<< "$output"
+  
+  if [[ "$total" -eq 0 ]]; then
+    echo "0/0"
+  else
+    echo "${free}/${total}"
+  fi
+}
+
+function cmd_gpus() {
+  echo ""
+  echo "╔══════════════════════════════════════════════════════════════════╗"
+  echo "║                    🖥️  GPU 狀態總覽                              ║"
+  echo "╠══════════════════════════════════════════════════════════════════╣"
+  
+  # === .89 (直連，8x V100-32GB) ===
+  echo "║                                                                  ║"
+  echo "║  📍 .89 (140.114.58.89) - 直連伺服器                             ║"
+  echo "║  ├─ GPU: 8× Tesla V100-SXM2-32GB                                 ║"
+  
+  local gpu89_output
+  if gpu89_output="$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "${CFDLAB_USER}@140.114.58.89" "nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader" 2>/dev/null)"; then
+    local free89=$(get_gpu_status_line "$gpu89_output")
+    local free_count="${free89%%/*}"
+    if [[ "$free_count" -eq 0 ]]; then
+      echo "║  └─ 狀態: ❌ 全部使用中 (${free89} 可用)                          ║"
+    elif [[ "$free_count" -ge 4 ]]; then
+      echo "║  └─ 狀態: ✅ ${free89} GPU 可用                                   ║"
+    else
+      echo "║  └─ 狀態: ⚠️  ${free89} GPU 可用                                   ║"
+    fi
+    # 顯示每個 GPU 狀態
+    while IFS=',' read -r idx util; do
+      [[ -z "$idx" ]] && continue
+      idx="${idx// /}"
+      util="${util//[^0-9]/}"
+      if [[ "$util" -lt 10 ]]; then
+        printf "║     GPU %s: ✅ 閒置 (%s%%)                                       ║\n" "$idx" "$util"
+      else
+        printf "║     GPU %s: 🔥 使用中 (%s%%)                                     ║\n" "$idx" "$util"
+      fi
+    done <<< "$gpu89_output"
+  else
+    echo "║  └─ 狀態: 🔴 無法連線                                          ║"
+  fi
+  
+  echo "╠══════════════════════════════════════════════════════════════════╣"
+  
+  # === .87 (ib2, ib3, ib5, ib6) ===
+  echo "║                                                                  ║"
+  echo "║  📍 .87 (140.114.58.87) - 跳板伺服器                             ║"
+  echo "║  ├─ GPU: 8× Tesla P100-PCIE-16GB (每節點)                        ║"
+  
+  local nodes_87="2 3 5 6"
+  for node in $nodes_87; do
+    local node_output
+    if node_output="$(ssh_batch_exec "140.114.58.87" "ssh -o ConnectTimeout=3 cfdlab-ib${node} 'nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader'" 2>/dev/null)"; then
+      local free_status=$(get_gpu_status_line "$node_output")
+      local free_count="${free_status%%/*}"
+      if [[ "$free_count" -eq 0 ]]; then
+        printf "║  ├─ ib%s: ❌ 全部使用中 (%s 可用)                               ║\n" "$node" "$free_status"
+      elif [[ "$free_count" -ge 4 ]]; then
+        printf "║  ├─ ib%s: ✅ %s GPU 可用                                       ║\n" "$node" "$free_status"
+      else
+        printf "║  ├─ ib%s: ⚠️  %s GPU 可用                                       ║\n" "$node" "$free_status"
+      fi
+    else
+      printf "║  ├─ ib%s: 🔴 維修中/無法連線                                    ║\n" "$node"
+    fi
+  done
+  
+  echo "╠══════════════════════════════════════════════════════════════════╣"
+  
+  # === .154 (ib1, ib4, ib7, ib9) ===
+  echo "║                                                                  ║"
+  echo "║  📍 .154 (140.114.58.154) - 跳板伺服器                           ║"
+  echo "║  ├─ GPU: 8× Tesla P100-PCIE-16GB (每節點)                        ║"
+  
+  local nodes_154="1 4 7 9"
+  for node in $nodes_154; do
+    local node_output
+    if node_output="$(ssh_batch_exec "140.114.58.154" "ssh -o ConnectTimeout=3 cfdlab-ib${node} 'nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader'" 2>/dev/null)"; then
+      local free_status=$(get_gpu_status_line "$node_output")
+      local free_count="${free_status%%/*}"
+      if [[ "$free_count" -eq 0 ]]; then
+        printf "║  ├─ ib%s: ❌ 全部使用中 (%s 可用)                               ║\n" "$node" "$free_status"
+      elif [[ "$free_count" -ge 4 ]]; then
+        printf "║  ├─ ib%s: ✅ %s GPU 可用                                       ║\n" "$node" "$free_status"
+      else
+        printf "║  ├─ ib%s: ⚠️  %s GPU 可用                                       ║\n" "$node" "$free_status"
+      fi
+    else
+      printf "║  ├─ ib%s: 🔴 維修中/無法連線                                    ║\n" "$node"
+    fi
+  done
+  
+  echo "╠══════════════════════════════════════════════════════════════════╣"
+  echo "║  💡 說明: ✅ 可用 | ⚠️ 部分可用 | ❌ 全滿 | 🔴 離線/維修        ║"
+  echo "║  📝 可用 = GPU 使用率 < 10%                                      ║"
+  echo "╚══════════════════════════════════════════════════════════════════╝"
+  echo ""
+}
+
+function cmd_gpu_detail() {
+  local target="${1:-all}"
+  
+  echo ""
+  echo "=== GPU 詳細狀態 ==="
+  echo ""
+  
+  case "$target" in
+    89|.89)
+      echo "📍 .89 (140.114.58.89) - 8× Tesla V100-SXM2-32GB"
+      echo "─────────────────────────────────────────────────"
+      ssh -o ConnectTimeout=8 "${CFDLAB_USER}@140.114.58.89" "nvidia-smi" 2>/dev/null || echo "❌ 無法連線"
+      ;;
+    87|.87)
+      echo "📍 .87 節點狀態"
+      for node in 2 3 5 6; do
+        echo ""
+        echo "=== .87 ib${node} ==="
+        ssh_batch_exec "140.114.58.87" "ssh -o ConnectTimeout=3 cfdlab-ib${node} 'nvidia-smi'" 2>/dev/null || echo "❌ ib${node} 無法連線/維修中"
+      done
+      ;;
+    154|.154)
+      echo "📍 .154 節點狀態"
+      for node in 1 4 7 9; do
+        echo ""
+        echo "=== .154 ib${node} ==="
+        ssh_batch_exec "140.114.58.154" "ssh -o ConnectTimeout=3 cfdlab-ib${node} 'nvidia-smi'" 2>/dev/null || echo "❌ ib${node} 無法連線/維修中"
+      done
+      ;;
+    all|*)
+      cmd_gpu_detail 89
+      echo ""
+      cmd_gpu_detail 87
+      echo ""
+      cmd_gpu_detail 154
+      ;;
+  esac
 }
 
 function cmd_log() {
@@ -715,7 +1013,7 @@ function cmd_issynced() {
   local out=()
   local server
 
-  for server in 87 154; do
+  for server in 87 89 154; do
     local push_preview
     local pull_preview
     local push_count
@@ -739,7 +1037,7 @@ function cmd_issynced() {
     fi
   done
 
-  printf '%s | %s\n' "${out[0]}" "${out[1]}"
+  printf '%s | %s | %s\n' "${out[0]}" "${out[1]}" "${out[2]}"
 }
 
 function cmd_autopull() {
@@ -949,7 +1247,7 @@ function main() {
   require_cmd ssh
   ensure_password_tooling
   case "$cmd" in
-    add|autofetch|autopull|autopush|bgstatus|check|clone|delete|diff|fetch|fetch154|fetch87|fullsync|issynced|log|pull|pull154|pull87|push|reset|status|sync|syncstatus|vtkrename|watch|watchfetch|watchpull|watchpush)
+    add|autofetch|autofetch87|autofetch89|autofetch154|autopull|autopull87|autopull89|autopull154|autopush|autopush87|autopush89|autopush154|autopushall|bgstatus|check|clone|delete|diff|diff87|diff89|diff154|diffall|fetch|fetch154|fetch87|fetch89|fullsync|issynced|log|log87|log89|log154|pull|pull154|pull87|pull89|push|push87|push89|push154|pushall|reset|status|sync|syncstatus|vtkrename|watch|watchfetch|watchpull|watchpush)
       require_cmd rsync
       ;;
   esac
@@ -957,23 +1255,46 @@ function main() {
   case "$cmd" in
     add) cmd_add "$@" ;;
     autofetch) cmd_autofetch "$@" ;;
+    autofetch87) cmd_autofetch 87 ;;
+    autofetch89) cmd_autofetch 89 ;;
+    autofetch154) cmd_autofetch 154 ;;
     autopull) cmd_autopull "$@" ;;
+    autopull87) cmd_autopull 87 ;;
+    autopull89) cmd_autopull 89 ;;
+    autopull154) cmd_autopull 154 ;;
     autopush) cmd_autopush "$@" ;;
+    autopush87) cmd_autopush 87 ;;
+    autopush89) cmd_autopush 89 ;;
+    autopush154) cmd_autopush 154 ;;
+    autopushall) cmd_autopush all ;;
     bgstatus) cmd_bgstatus ;;
     check) cmd_check ;;
     clone) cmd_clone "$@" ;;
     delete) cmd_reset "$@" ;;
     diff) cmd_diff "$@" ;;
+    diff87) cmd_diff 87 ;;
+    diff89) cmd_diff 89 ;;
+    diff154) cmd_diff 154 ;;
+    diffall) cmd_diff all ;;
     fetch) cmd_pull_like fetch "$@" ;;
     fetch87) cmd_pull_like fetch 87 ;;
+    fetch89) cmd_pull_like fetch 89 ;;
     fetch154) cmd_pull_like fetch 154 ;;
     fullsync) cmd_fullsync ;;
     issynced) cmd_issynced ;;
     log) cmd_log "$@" ;;
+    log87) cmd_log 87 ;;
+    log89) cmd_log 89 ;;
+    log154) cmd_log 154 ;;
     pull) cmd_pull_like pull "$@" ;;
     pull87) cmd_pull_like pull 87 ;;
+    pull89) cmd_pull_like pull 89 ;;
     pull154) cmd_pull_like pull 154 ;;
     push) cmd_push_like push "$@" ;;
+    push87) cmd_push_like push 87 ;;
+    push89) cmd_push_like push 89 ;;
+    push154) cmd_push_like push 154 ;;
+    pushall) cmd_push_like push all ;;
     reset) cmd_reset "$@" ;;
     status) cmd_status "$@" ;;
     sync) cmd_sync ;;
@@ -988,6 +1309,8 @@ function main() {
     run) cmd_run "$@" ;;
     jobs) cmd_jobs "$@" ;;
     kill) cmd_kill "$@" ;;
+    gpus) cmd_gpus ;;
+    gpu) cmd_gpu_detail "$@" ;;
 
     *)
       cmd_help
