@@ -1,10 +1,10 @@
 # SSH Connect Script
-# Usage: ./ssh-connect.ps1 <serverCombo> [panel]
-# serverCombo format: "87:3" or "154:4"
+# Usage: ./ssh-connect.ps1 -ServerCombo "87:3"
+#        ./ssh-connect.ps1 -Interactive           (GPU 即時狀態互動選單)
 
 param(
-    [Parameter(Mandatory=$true)]
-    [string]$ServerCombo
+    [string]$ServerCombo,
+    [switch]$Interactive
 )
 
 $Config = @{
@@ -13,15 +13,176 @@ $Config = @{
     Username = "chenpengchung"
     RemotePath = "/home/chenpengchung/D3Q27_PeriodicHill"
     Servers = @{
-        "87" = "140.114.58.87"
+        "87"  = "140.114.58.87"
+        "89"  = "140.114.58.89"
         "154" = "140.114.58.154"
     }
+}
+
+# ── 解析 nvidia-smi 輸出 → 每顆 GPU 圓點 + free/total ──
+function Parse-GpuDots {
+    param([string]$RawOutput)
+    if (-not $RawOutput -or $RawOutput -eq "OFFLINE") {
+        return @{ Dots = @(); Free = 0; Total = 0; Offline = $true }
+    }
+    $dots = @(); $free = 0; $total = 0
+    foreach ($line in $RawOutput -split "`n") {
+        $line = $line.Trim()
+        if (-not $line) { continue }
+        $parts = $line -split ","
+        if ($parts.Count -lt 4) { continue }
+        $memUsed = ($parts[1].Trim() -replace '[^0-9]','')
+        $util    = ($parts[3].Trim() -replace '[^0-9]','')
+        if (-not $util) { continue }
+        $total++
+        if ([int]$util -lt 10 -and [int]$memUsed -lt 100) {
+            $free++
+            $dots += "G"   # Green = free
+        } else {
+            $dots += "R"   # Red = busy
+        }
+    }
+    if ($total -eq 0) { return @{ Dots = @(); Free = 0; Total = 0; Offline = $true } }
+    return @{ Dots = $dots; Free = $free; Total = $total; Offline = $false }
+}
+
+# ══════════════════════════════════════════════════
+#  互動模式：查詢 GPU → 顯示選單 → 選擇 → 連線
+# ══════════════════════════════════════════════════
+if ($Interactive) {
+    Write-Host ""
+    Write-Host "  Querying GPU status on all nodes ..." -ForegroundColor Cyan
+    Write-Host ""
+
+    # 節點定義: Label, Server, Node, GpuType (short)
+    $nodes = @(
+        @{ Label=".89  direct"; Server="89";  Node="0"; GT="V100-32G" },
+        @{ Label=".87->ib2";    Server="87";  Node="2"; GT="P100-16G" },
+        @{ Label=".87->ib3";    Server="87";  Node="3"; GT="P100-16G" },
+        @{ Label=".87->ib5";    Server="87";  Node="5"; GT="P100-16G" },
+        @{ Label=".87->ib6";    Server="87";  Node="6"; GT="V100-16G" },
+        @{ Label=".154->ib1";   Server="154"; Node="1"; GT="P100-16G" },
+        @{ Label=".154->ib4";   Server="154"; Node="4"; GT="P100-16G" },
+        @{ Label=".154->ib7";   Server="154"; Node="7"; GT="P100-16G" },
+        @{ Label=".154->ib9";   Server="154"; Node="9"; GT="P100-16G" }
+    )
+
+    # 並行查詢所有節點 (memory.used + memory.total + utilization)
+    $jobs = @()
+    foreach ($n in $nodes) {
+        $s = $n.Server; $nd = $n.Node
+        $jobs += Start-Job -ScriptBlock {
+            param($PlinkPath, $User, $Pass, $IP, $NodeNum)
+            try {
+                if ($NodeNum -eq "0") {
+                    $cmd = "nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader"
+                    $out = & $PlinkPath -ssh -pw $Pass -batch "$User@$IP" $cmd 2>$null
+                } else {
+                    $cmd = "ssh -o ConnectTimeout=5 cfdlab-ib$NodeNum 'nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader'"
+                    $out = & $PlinkPath -ssh -pw $Pass -batch "$User@$IP" $cmd 2>$null
+                }
+                if ($out) { return ($out -join "`n") } else { return "OFFLINE" }
+            } catch { return "OFFLINE" }
+        } -ArgumentList $Config.PlinkPath, $Config.Username, $Config.Password, $Config.Servers[$s], $nd
+    }
+
+    # 等待所有查詢完成（最多 15 秒）
+    $null = Wait-Job $jobs -Timeout 15
+    $results = @()
+    for ($i = 0; $i -lt $jobs.Count; $i++) {
+        $raw = Receive-Job $jobs[$i] -ErrorAction SilentlyContinue
+        if (-not $raw) { $raw = "OFFLINE" }
+        $results += $raw
+        Remove-Job $jobs[$i] -Force -ErrorAction SilentlyContinue
+    }
+
+    # 表頭
+    Write-Host " ##  Server      GPU       0 1 2 3 4 5 6 7   Free" -ForegroundColor White
+    Write-Host " --  ----------- --------  ----------------  ----" -ForegroundColor DarkGray
+
+    for ($i = 0; $i -lt $nodes.Count; $i++) {
+        $info = Parse-GpuDots $results[$i]
+        $num = "{0,2}" -f ($i + 1)
+        $label = $nodes[$i].Label.PadRight(11)
+        $gt = $nodes[$i].GT.PadRight(8)
+
+        # 編號
+        Write-Host " " -NoNewline
+        Write-Host "$num" -NoNewline -ForegroundColor Cyan
+        Write-Host ") " -NoNewline -ForegroundColor White
+        Write-Host "$label " -NoNewline -ForegroundColor White
+        Write-Host "$gt  " -NoNewline -ForegroundColor DarkGray
+
+        if ($info.Offline) {
+            # 離線：顯示灰色方塊
+            for ($g = 0; $g -lt 8; $g++) {
+                Write-Host "[X]" -NoNewline -ForegroundColor DarkGray
+            }
+            Write-Host "  " -NoNewline
+            Write-Host "OFFLINE" -ForegroundColor DarkGray
+        } else {
+            # 每顆 GPU 顯示彩色圓點
+            foreach ($d in $info.Dots) {
+                if ($d -eq "G") {
+                    Write-Host " O " -NoNewline -ForegroundColor Green
+                } else {
+                    Write-Host " X " -NoNewline -ForegroundColor Red
+                }
+            }
+            # 補齊不足 8 顆的位置
+            for ($g = $info.Dots.Count; $g -lt 8; $g++) {
+                Write-Host " . " -NoNewline -ForegroundColor DarkGray
+            }
+            Write-Host "  " -NoNewline
+            $freeStr = "$($info.Free)/$($info.Total)"
+            if ($info.Free -eq 0) {
+                Write-Host "$freeStr" -ForegroundColor Red
+            } elseif ($info.Free -ge 4) {
+                Write-Host "$freeStr" -ForegroundColor Green
+            } else {
+                Write-Host "$freeStr" -ForegroundColor Yellow
+            }
+        }
+    }
+
+    Write-Host " --  ----------- --------  ----------------  ----" -ForegroundColor DarkGray
+    Write-Host "  0) Cancel" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host " O=Free  X=Busy  [X]=Offline" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $choice = Read-Host "Select [1-$($nodes.Count)]"
+
+    if (-not $choice -or $choice -eq "0") {
+        Write-Host "Cancelled." -ForegroundColor Yellow
+        exit 0
+    }
+
+    $idx = [int]$choice - 1
+    if ($idx -lt 0 -or $idx -ge $nodes.Count) {
+        Write-Host "[ERROR] Invalid choice: $choice" -ForegroundColor Red
+        exit 1
+    }
+
+    $selected = $nodes[$idx]
+    $ServerCombo = "$($selected.Server):$($selected.Node)"
+    Write-Host ""
+    Write-Host "Connecting: $ServerCombo" -ForegroundColor Green
+    Write-Host ""
+}
+
+# ══════════════════════════════════════════════════
+#  正常連線（原有邏輯 + .89 直連支援）
+# ══════════════════════════════════════════════════
+if (-not $ServerCombo) {
+    Write-Host "[ERROR] No server specified. Use -ServerCombo '87:3' or -Interactive" -ForegroundColor Red
+    exit 1
 }
 
 # Parse serverCombo (e.g., "87:3" -> server=87, node=3)
 $parts = $ServerCombo -split ":"
 if ($parts.Count -ne 2) {
-    Write-Host "[ERROR] Invalid format. Use: 87:3 or 154:4" -ForegroundColor Red
+    Write-Host "[ERROR] Invalid format. Use: 87:3 or 154:4 or 89:0" -ForegroundColor Red
     exit 1
 }
 
@@ -29,14 +190,19 @@ $serverKey = $parts[0]
 $nodeNum = $parts[1]
 
 if (-not $Config.Servers.ContainsKey($serverKey)) {
-    Write-Host "[ERROR] Unknown server: $serverKey. Use 87 or 154." -ForegroundColor Red
+    Write-Host "[ERROR] Unknown server: $serverKey. Use 87, 89 or 154." -ForegroundColor Red
     exit 1
 }
 
 $masterIP = $Config.Servers[$serverKey]
-$childNode = "cfdlab-ib$nodeNum"
 
-Write-Host "[SSH] Connecting via .$serverKey ($masterIP) to $childNode..." -ForegroundColor Cyan
-
-# Execute SSH
-& $Config.PlinkPath -ssh -pw $Config.Password "$($Config.Username)@$masterIP" -t "ssh -t $childNode 'cd $($Config.RemotePath); exec bash'"
+if ($nodeNum -eq "0") {
+    # 直連模式 (如 .89)
+    Write-Host "[SSH] Connecting directly to .$serverKey ($masterIP)..." -ForegroundColor Cyan
+    & $Config.PlinkPath -ssh -pw $Config.Password "$($Config.Username)@$masterIP" -t "cd $($Config.RemotePath); exec bash"
+} else {
+    # 跳板模式 (如 .87 ib3)
+    $childNode = "cfdlab-ib$nodeNum"
+    Write-Host "[SSH] Connecting via .$serverKey ($masterIP) to $childNode..." -ForegroundColor Cyan
+    & $Config.PlinkPath -ssh -pw $Config.Password "$($Config.Username)@$masterIP" -t "ssh -t $childNode 'cd $($Config.RemotePath); exec bash'"
+}

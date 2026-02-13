@@ -288,51 +288,167 @@ nohup mpirun -np 4 ./a.out > log$(date +%Y%m%d) 2>&1 &
 
 ---
 
-## SSH 連線相關
+## 🔑 VS Code 快捷鍵（Mac / Windows 通用）
+
+> Mac 鍵盤：`Ctrl` = `⌃ Control`，`Alt` = `⌥ Option`
+> Windows 鍵盤：`Ctrl` = `Ctrl`，`Alt` = `Alt`
 
 | 快捷鍵 | 功能 | 說明 |
 |--------|------|------|
-| `Ctrl+Alt+F` | 切換子機 | 選擇母機 → 選擇子機 1-9 → 連接 |
-| `Ctrl+Alt+G` | 從本地重連 | 斷線後重新連接 |
+| `Ctrl+Alt+F` | **切換子機** (Switch Node) | 即時 GPU 狀態選單 → 選擇 → 連接 |
+| `Ctrl+Alt+G` | **重新連線** (Reconnect) | 即時 GPU 狀態選單 → 選擇 → 重連 |
+| `Ctrl+Shift+B` | **編譯 + 執行** | 編譯 CUDA + mpirun 執行 |
+
+---
+
+## 🖥️ Mac vs Windows 指令完整對照
+
+### 腳本對照
+
+| 用途 | Mac (bash) | Windows (PowerShell) |
+|------|-----------|---------------------|
+| 同步腳本 | `cfdlab-mac.sh <cmd>` | `mobaxterm <cmd>` |
+| SSH 腳本 | `cfdlab-mac.sh ssh/issh` | `ssh-connect.ps1` |
+
+### SSH / GPU 相關指令
+
+| 功能 | Mac 指令 | Windows 指令 | 狀態 |
+|------|---------|-------------|------|
+| SSH 連線 | `cfdlab-mac.sh ssh 87:3` | `ssh-connect.ps1 -ServerCombo "87:3"` | ✅ 雙平台 |
+| **互動 GPU 選單** | `cfdlab-mac.sh issh` | `ssh-connect.ps1 -Interactive` | ✅ 雙平台 |
+| GPU 總覽（精簡） | `cfdlab-mac.sh gpus` | ❌ 無 | ⚠️ Mac only |
+| GPU 詳細 (nvidia-smi) | `cfdlab-mac.sh gpu 89` | ❌ 無 | ⚠️ Mac only |
+| 編譯+執行 | `cfdlab-mac.sh run 87:3 4` | Task: Compile + Run | ✅ 雙平台 |
+| 查看執行中工作 | `cfdlab-mac.sh jobs 87:3` | Task: Check Running Jobs | ✅ 雙平台 |
+| 終止工作 | `cfdlab-mac.sh kill 87:3` | Task: Kill Running Job | ✅ 雙平台 |
+| 環境檢查 | `cfdlab-mac.sh check` | ❌ 無 | ⚠️ Mac only |
+
+### 同步指令（Git-like）
+
+| 功能 | Mac 指令 | Windows 指令 | 狀態 |
+|------|---------|-------------|------|
+| **查看差異** | `cfdlab-mac.sh diff` | `mobaxterm diff` | ✅ 雙平台 |
+| 查看差異（別名）| `cfdlab-mac.sh check` | `mobaxterm check` | ⚠️ 不同！Mac=SSH檢查 Win=diff |
+| 查看狀態 | `cfdlab-mac.sh status` | `mobaxterm status` | ✅ 雙平台 |
+| 顯示待推送 | `cfdlab-mac.sh add` | `mobaxterm add` | ✅ 雙平台 |
+| **推送** | `cfdlab-mac.sh push` | `mobaxterm push` | ✅ 雙平台 |
+| **拉取** | `cfdlab-mac.sh pull` | `mobaxterm pull` | ✅ 雙平台 |
+| **同步下載** | `cfdlab-mac.sh fetch` | `mobaxterm fetch` | ✅ 雙平台 |
+| 查看 log | `cfdlab-mac.sh log` | `mobaxterm log` | ✅ 雙平台 |
+| 清理遠端 | `cfdlab-mac.sh reset` | `mobaxterm reset` | ✅ 雙平台 |
+| 完整複製 | `cfdlab-mac.sh clone` | `mobaxterm clone` | ✅ 雙平台 |
+| 互動式同步 | `cfdlab-mac.sh sync` | `mobaxterm sync` | ✅ 雙平台 |
+| 完整同步 | `cfdlab-mac.sh fullsync` | `mobaxterm fullsync` | ✅ 雙平台 |
+| 快速確認同步 | `cfdlab-mac.sh issynced` | `mobaxterm issynced` | ✅ 雙平台 |
+
+### 指定伺服器快捷指令
+
+| 功能 | Mac 指令 | Windows 指令 | 狀態 |
+|------|---------|-------------|------|
+| `pull .87` | `cfdlab-mac.sh pull87` | `mobaxterm pull87` | ✅ 雙平台 |
+| `pull .89` | `cfdlab-mac.sh pull89` | ❌ 無 | ⚠️ Mac only |
+| `pull .154` | `cfdlab-mac.sh pull154` | `mobaxterm pull154` | ✅ 雙平台 |
+| `fetch .87` | `cfdlab-mac.sh fetch87` | `mobaxterm fetch87` | ✅ 雙平台 |
+| `fetch .89` | `cfdlab-mac.sh fetch89` | ❌ 無 | ⚠️ Mac only |
+| `fetch .154` | `cfdlab-mac.sh fetch154` | `mobaxterm fetch154` | ✅ 雙平台 |
+| `push .87` | `cfdlab-mac.sh push87` | ❌ 無 | ⚠️ Mac only |
+| `push .89` | `cfdlab-mac.sh push89` | ❌ 無 | ⚠️ Mac only |
+| `push .154` | `cfdlab-mac.sh push154` | ❌ 無 | ⚠️ Mac only |
+| `push all` | `cfdlab-mac.sh pushall` | ❌ 無 | ⚠️ Mac only |
+| `diff .87` | `cfdlab-mac.sh diff87` | ❌ 無 | ⚠️ Mac only |
+| `diff .89` | `cfdlab-mac.sh diff89` | ❌ 無 | ⚠️ Mac only |
+| `diff .154` | `cfdlab-mac.sh diff154` | ❌ 無 | ⚠️ Mac only |
+| `diff all` | `cfdlab-mac.sh diffall` | ❌ 無 | ⚠️ Mac only |
+| `log .87` | `cfdlab-mac.sh log87` | ❌ 無 | ⚠️ Mac only |
+| `log .89` | `cfdlab-mac.sh log89` | ❌ 無 | ⚠️ Mac only |
+| `log .154` | `cfdlab-mac.sh log154` | ❌ 無 | ⚠️ Mac only |
+
+### 自動同步指令
+
+| 功能 | Mac 指令 | Windows 指令 | 狀態 |
+|------|---------|-------------|------|
+| 自動推送 | `cfdlab-mac.sh autopush` | `mobaxterm autopush` | ✅ 雙平台 |
+| 自動拉取 | `cfdlab-mac.sh autopull` | `mobaxterm autopull` | ✅ 雙平台 |
+| 自動同步 | `cfdlab-mac.sh autofetch` | `mobaxterm autofetch` | ✅ 雙平台 |
+| `autopush .87` | `cfdlab-mac.sh autopush87` | ❌ 無 | ⚠️ Mac only |
+| `autopush .89` | `cfdlab-mac.sh autopush89` | ❌ 無 | ⚠️ Mac only |
+| `autopush .154` | `cfdlab-mac.sh autopush154` | ❌ 無 | ⚠️ Mac only |
+| `autopush all` | `cfdlab-mac.sh autopushall` | ❌ 無 | ⚠️ Mac only |
+| `autopull .87` | `cfdlab-mac.sh autopull87` | ❌ 無 | ⚠️ Mac only |
+| `autopull .89` | `cfdlab-mac.sh autopull89` | ❌ 無 | ⚠️ Mac only |
+| `autopull .154` | `cfdlab-mac.sh autopull154` | ❌ 無 | ⚠️ Mac only |
+| `autofetch .87` | `cfdlab-mac.sh autofetch87` | ❌ 無 | ⚠️ Mac only |
+| `autofetch .89` | `cfdlab-mac.sh autofetch89` | ❌ 無 | ⚠️ Mac only |
+| `autofetch .154` | `cfdlab-mac.sh autofetch154` | ❌ 無 | ⚠️ Mac only |
+
+### 背景監控指令
+
+| 功能 | Mac 指令 | Windows 指令 | 狀態 |
+|------|---------|-------------|------|
+| 背景推送 | `cfdlab-mac.sh watchpush` | `mobaxterm watchpush` | ✅ 雙平台 |
+| 背景拉取 | `cfdlab-mac.sh watchpull` | `mobaxterm watchpull` | ✅ 雙平台 |
+| 背景同步 | `cfdlab-mac.sh watchfetch` | `mobaxterm watchfetch` | ✅ 雙平台 |
+| VTK 重命名 | `cfdlab-mac.sh vtkrename` | `mobaxterm vtkrename` | ✅ 雙平台 |
+| 全部背景狀態 | `cfdlab-mac.sh bgstatus` | `mobaxterm bgstatus` | ✅ 雙平台 |
+| 同步狀態 | `cfdlab-mac.sh syncstatus` | `mobaxterm syncstatus` | ✅ 雙平台 |
+
+> 各 watch 指令均支援子命令：`status` / `log` / `stop` / `clear`
+
+---
+
+## 📊 平台差異總結
+
+### ⚠️ `check` 指令衝突
+
+| 平台 | `check` 做什麼 |
+|------|---------------|
+| **Mac** | SSH 環境檢查（測試 ssh/rsync 連線） |
+| **Windows** | = `diff`（比較本地 vs 遠端） |
+
+> 以 Mac 為主：`check` = 環境檢查，`diff` = 比較差異
+
+### ❌ Windows 缺少的功能
+
+| 分類 | 缺少的指令 |
+|------|-----------|
+| **GPU** | `gpus`（GPU 總覽表）、`gpu 89`（nvidia-smi 完整輸出） |
+| **.89 伺服器** | 所有 `*89` 快捷指令（pull89, fetch89, push89, diff89, log89, autopull89...） |
+| **指定伺服器** | push87, push154, pushall, diff87, diff154, diffall, log87, log154 |
+| **auto 快捷** | autopush87/89/154/all, autopull87/89/154, autofetch87/89/154 |
+| **SSH 指令** | `ssh 87:3`, `run 87:3 4`, `jobs 87:3`, `kill 87:3` |
+
+---
 
 ## 任務執行 (Terminal > Run Task)
 
-| 任務名稱 | 功能 | 觸發方式 |
-|----------|------|----------|
-| SSH to cfdlab | 開啟資料夾時自動連接 | 自動執行 |
-| Switch Node | 切換子機 | Ctrl+Alt+F |
-| Reconnect | 從本地重連 | Ctrl+Alt+G |
-| Compile + Run | 編譯並執行程式 | Ctrl+Shift+B |
-| Check Running Jobs | 檢查執行中的作業 | 手動執行 |
-| Kill Running Job | 終止執行中的作業 | 手動執行 |
-| **Auto Sync (Watch)** | 自動推送（前景） | 手動執行 |
-| Quick Sync | 有變更才推送 | 手動執行 |
-| **Sync Status** | 查看上傳+下載狀態 | 手動執行 |
-| **Auto Upload (Start)** | 啟動背景上傳 | 手動執行 |
-| Auto Upload (Status) | 檢查上傳狀態 | 手動執行 |
-| Auto Upload (Stop) | 停止背景上傳 | 手動執行 |
-| **Auto Download (Start)** | 啟動背景下載 | 手動執行 |
-| Auto Download (.87 only) | 只監控 .87 | 手動執行 |
-| Auto Download (.154 only) | 只監控 .154 | 手動執行 |
-| Auto Download (Status) | 檢查下載狀態 | 手動執行 |
-| Auto Download (Stop) | 停止背景下載 | 手動執行 |
+| 任務名稱 | 功能 | 觸發方式 | Mac | Win |
+|----------|------|----------|-----|-----|
+| SSH to cfdlab | 開啟資料夾時自動連接 | 自動執行 | ✅ | ✅ |
+| **Switch Node** | 切換子機（含 GPU 即時狀態） | **Ctrl+Alt+F** | ✅ | ✅ |
+| **Reconnect** | 重新連線（含 GPU 即時狀態） | **Ctrl+Alt+G** | ✅ | ✅ |
+| Compile + Run | 編譯並執行程式 | Ctrl+Shift+B | ✅ | ✅ |
+| Check Running Jobs | 檢查執行中的作業 | 手動執行 | ✅ | ✅ |
+| Kill Running Job | 終止執行中的作業 | 手動執行 | ✅ | ✅ |
+| GPU Status (All) | 所有伺服器 GPU 狀態 | 手動執行 | ✅ | ❌ |
+| GPU Detail (.89/.87/.154) | nvidia-smi 完整輸出 | 手動執行 | ✅ | ❌ |
+| Auto Sync (Watch) | 自動推送（前景） | 手動執行 | ✅ | ✅ |
+| Quick Sync | 有變更才推送 | 手動執行 | ✅ | ✅ |
+| Sync Status | 查看上傳+下載狀態 | 手動執行 | ✅ | ✅ |
+| Auto Upload (Start/Status/Stop) | 背景上傳管理 | 手動執行 | ✅ | ✅ |
+| Auto Download (Start/Status/Stop) | 背景下載管理 | 手動執行 | ✅ | ✅ |
+| Auto Download (.87/.154/.89 only) | 指定伺服器下載 | 手動執行 | ✅ | ✅ |
 
 ---
 
 ## 連線資訊
 
-| 母機 | IP | 可連子機 |
-|------|-----|----------|
-| cfdlab | 140.114.58.87 | ib2, ib3, ib5, ib6 |
-| 另一台 | 140.114.58.154 | ib1, ib4, ib7, ib9 |
-
-### 子機狀態
-
-| 子機 | 母機 | 狀態 |
-|------|------|------|
-| ib2, ib3, ib5, ib6 | .87 | ✅ 正常 |
-| ib4, ib9 | .154 | ✅ 正常 |
-| ib1, ib7 | .154 | ❌ 待修 |
+| 母機 | IP | 可連子機 | GPU 型號 |
+|------|-----|----------|---------|
+| .89 | 140.114.58.89 | 直連（無子機） | 8× V100-SXM2-32GB |
+| .87 | 140.114.58.87 | ib2, ib3, ib5 | 8× P100-PCIE-16GB |
+| .87 | 140.114.58.87 | ib6 | 8× V100-SXM2-16GB |
+| .154 | 140.114.58.154 | ib4, ib9 | 8× P100-PCIE-16GB |
+| .154 | 140.114.58.154 | ~~ib1, ib7~~ | ❌ 待修 |
 
 - **工作目錄**: `/home/chenpengchung/D3Q27_PeriodicHill`
 - **密碼**: `1256`
@@ -347,9 +463,10 @@ nohup mpirun -np 4 ./a.out > log$(date +%Y%m%d) 2>&1 &
 |--------|------|
 | `.git/*` | Git 版本控制（各機獨立） |
 | `.vscode/*` | VS Code 設定（本地專用） |
-| `a.out` | 編譯產物 |
-| `*.o` | 目標檔 |
-| `*.exe` | Windows 執行檔 |
+| `backup/`, `result/`, `statistics/` | 資料夾排除 |
+| `a.out`, `*.o`, `*.exe` | 編譯產物 |
+| `*.dat`, `*.DAT`, `*.plt`, `*.bin`, `*.vtk` | 程式輸出檔（僅由 pull/fetch 下載） |
+| `log*` | 日誌檔案（僅由 pull/fetch 下載） |
 
 ---
-*最後更新: 2026-02-08*
+*最後更新: 2026-02-14*
