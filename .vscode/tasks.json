@@ -817,6 +817,278 @@
                                          ]
                   },
                   {
+                      "label":  "[Mac] Diff (Compare local vs remote)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' diff '${input:macServerOrAll}'"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Push (Upload + Delete remote extras)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' push '${input:macServerOrAll}'"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Pull (.87)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' pull 87"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Pull (.154)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' pull 154"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Fetch (.87, Download + Delete)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' fetch 87"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Fetch (.154, Download + Delete)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' fetch 154"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Log (Remote)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' log '${input:macServer}'"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Is Synced (Quick Check)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' issynced"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Auto Fetch (once)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' autofetch '${input:macServer}'"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Watch Fetch (Start)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchfetch '${input:macServer}'"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Watch Fetch (.87 only)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchfetch 87"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Watch Fetch (.154 only)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchfetch 154"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Watch Fetch (Status)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchfetch status"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Watch Fetch (Stop)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchfetch stop"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] VTK Rename (Start)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' vtkrename"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] VTK Rename (Status)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' vtkrename status"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] VTK Rename (Stop)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' vtkrename stop"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
                       "label":  "[Mac] Auto Sync (Watch)",
                       "type":  "process",
                       "command":  "bash",
