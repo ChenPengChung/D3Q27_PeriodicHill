@@ -84,6 +84,65 @@ function ensure_password_tooling() {
   fi
 }
 
+# ========== VPN Route Auto-Fix ==========
+# macOS VPN often does not route 140.114.58.0/24 through the VPN tunnel.
+# This function detects the issue and fixes it automatically.
+CFDLAB_SUBNET="140.114.58.0/24"
+CFDLAB_VPN_AUTOFIX="${CFDLAB_VPN_AUTOFIX:-1}"  # set to 0 to disable
+
+function vpn_route_ok() {
+  # Check if 140.114.58.87 routes through a ppp interface (VPN)
+  local iface
+  iface="$(route -n get 140.114.58.87 2>/dev/null | awk '/interface:/{print $2}')"
+  [[ "$iface" == ppp* ]]
+}
+
+function vpn_is_connected() {
+  # Check if any ppp interface is up (VPN connected)
+  ifconfig 2>/dev/null | grep -q '^ppp[0-9]'
+}
+
+function vpn_fix_route() {
+  # Find the first active ppp interface
+  local ppp_iface
+  ppp_iface="$(ifconfig 2>/dev/null | grep -o '^ppp[0-9]*' | head -1)"
+  if [[ -z "$ppp_iface" ]]; then
+    echo "[VPN] No VPN connection detected (no ppp interface)."
+    return 1
+  fi
+
+  if vpn_route_ok; then
+    echo "[VPN] Route OK — 140.114.58.0/24 → $ppp_iface"
+    return 0
+  fi
+
+  echo "[VPN] Route missing — adding 140.114.58.0/24 → $ppp_iface ..."
+  if sudo route add -net "$CFDLAB_SUBNET" -interface "$ppp_iface" >/dev/null 2>&1; then
+    echo "[VPN] Route added successfully."
+    return 0
+  else
+    echo "[VPN] Failed to add route (need sudo password)."
+    return 1
+  fi
+}
+
+function ensure_vpn_route() {
+  # Silent auto-fix: only runs on macOS, only if VPN is up, only if route is wrong
+  [[ "$(uname)" == "Darwin" ]] || return 0
+  [[ "$CFDLAB_VPN_AUTOFIX" == "1" ]] || return 0
+  vpn_is_connected || return 0  # no VPN, skip
+  vpn_route_ok && return 0      # route already correct
+
+  # Try to fix silently; if sudo needs password, prompt once
+  local ppp_iface
+  ppp_iface="$(ifconfig 2>/dev/null | grep -o '^ppp[0-9]*' | head -1)"
+  [[ -n "$ppp_iface" ]] || return 0
+
+  echo "[VPN] Auto-fixing route: 140.114.58.0/24 → $ppp_iface"
+  sudo route add -net "$CFDLAB_SUBNET" -interface "$ppp_iface" >/dev/null 2>&1 || true
+}
+# ========== End VPN Route Auto-Fix ==========
+
 function rsync_rsh_cmd() {
   if [[ -n "$CFDLAB_PASSWORD" ]]; then
     printf "sshpass -p '%s' ssh %s" "$CFDLAB_PASSWORD" "$CFDLAB_SSH_OPTS"
@@ -1431,6 +1490,13 @@ function main() {
 
   require_cmd ssh
   ensure_password_tooling
+
+  # Auto-fix VPN route before any remote operation
+  case "$cmd" in
+    help|-h|--help|bgstatus|vtkrename) ;; # local-only, skip
+    *) ensure_vpn_route ;;
+  esac
+
   case "$cmd" in
     add|autofetch|autofetch87|autofetch89|autofetch154|autopull|autopull87|autopull89|autopull154|autopush|autopush87|autopush89|autopush154|autopushall|bgstatus|check|clone|delete|diff|diff87|diff89|diff154|diffall|fetch|fetch154|fetch87|fetch89|fullsync|issynced|log|log87|log89|log154|pull|pull154|pull87|pull89|push|push87|push89|push154|pushall|reset|status|sync|syncstatus|vtkrename|watch|watchfetch|watchpull|watchpush)
       require_cmd rsync
@@ -1497,6 +1563,7 @@ function main() {
     kill) cmd_kill "$@" ;;
     gpus) cmd_gpus ;;
     gpu) cmd_gpu_detail "$@" ;;
+    vpnfix) vpn_fix_route ;;
 
     *)
       cmd_help
