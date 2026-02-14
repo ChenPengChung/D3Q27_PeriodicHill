@@ -53,9 +53,15 @@ if ([Environment]::UserInteractive -and $Host.Name -eq 'ConsoleHost') {
 # ========== End Auto-setup ==========
 
 # Configuration
+# Auto-detect: LocalPath from script location (cross-platform)
+$_scriptDir = Split-Path -Parent $PSCommandPath
+$_workspaceDir = Split-Path -Parent $_scriptDir
+$_localFolderName = Split-Path -Leaf $_workspaceDir
+$_isWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or ($IsWindows -eq $true)
+
 $script:Config = @{
-    LocalPath = "c:\Users\88697.CHENPENGCHUNG12\Desktop\GitHub-PeriodicHill\D3Q27_PeriodicHill"
-    RemotePath = "/home/chenpengchung/D3Q27_PeriodicHill"
+    LocalPath = $_workspaceDir
+    RemotePath = "/home/chenpengchung/$_localFolderName"
     Servers = @(
         @{ Name = ".87"; Host = "140.114.58.87"; User = "chenpengchung"; Password = "1256" },
         @{ Name = ".89"; Host = "140.114.58.89"; User = "chenpengchung"; Password = "1256" },
@@ -83,8 +89,11 @@ $script:Config = @{
     MpiInclude = "/home/chenpengchung/openmpi-3.0.3/include"
     MpiLib = "/home/chenpengchung/openmpi-3.0.3/lib"
     DefaultGpuCount = 4
-    PscpPath = "C:\Program Files\PuTTY\pscp.exe"
-    PlinkPath = "C:\Program Files\PuTTY\plink.exe"
+    IsWindows = $_isWindows
+    PscpPath = if ($_isWindows) { "C:\Program Files\PuTTY\pscp.exe" } else { $null }
+    PlinkPath = if ($_isWindows) { "C:\Program Files\PuTTY\plink.exe" } else { $null }
+    SshPassword = "1256"
+    SshOpts = "-o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"
     # 排除的檔案，例如 .git 和 .vscode 設定檔等
     ExcludePatterns = @(".git/*", ".vscode/*", "a.out", "*.o", "*.exe")
     # 同步的副檔名

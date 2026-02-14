@@ -378,7 +378,7 @@ __global__ void stream_collide(
     double F0_in,  F1_in,  F2_in,  F3_in,  F4_in,  F5_in,  F6_in,  F7_in,  F8_in,  F9_in;
 	double F10_in, F11_in, F12_in, F13_in, F14_in, F15_in, F16_in, F17_in, F18_in;
 
-    //MRT Variable//
+    //MRT Variable
     double m0,m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17,m18;
 	double s0,s1,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,s12,s13,s14,s15,s16,s17,s18;
 	double meq0,meq1,meq2,meq3,meq4,meq5,meq6,meq7,meq8,meq9,meq10,meq11,meq12,meq13,meq14,meq15,meq16,meq17,meq18;

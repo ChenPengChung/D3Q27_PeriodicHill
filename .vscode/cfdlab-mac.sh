@@ -65,6 +65,231 @@ WATCHFETCH_LOG="$STATE_DIR/watchfetch.log"
 VTKRENAME_PID="$STATE_DIR/vtk-renamer.pid"
 VTKRENAME_LOG="$STATE_DIR/vtk-renamer.log"
 
+# ========== ANSI Color Constants (Git-style output) ==========
+CLR_87='\033[32m'    # green
+CLR_89='\033[34m'    # blue
+CLR_154='\033[33m'   # yellow
+CLR_ERR='\033[31m'   # red
+CLR_OK='\033[32m'    # green (success)
+CLR_DIM='\033[90m'   # dim gray
+CLR_BOLD='\033[1m'   # bold
+CLR_RST='\033[0m'    # reset
+
+function server_color() {
+  case "$1" in
+    87)  printf '%b' "$CLR_87" ;;
+    89)  printf '%b' "$CLR_89" ;;
+    154) printf '%b' "$CLR_154" ;;
+    *)   printf '%b' "$CLR_RST" ;;
+  esac
+}
+
+function server_emoji() {
+  case "$1" in
+    87)  echo "🟢" ;;
+    89)  echo "🔵" ;;
+    154) echo "🟡" ;;
+    *)   echo "⚪" ;;
+  esac
+}
+
+# ========== Git-style output formatting ==========
+
+# Convert rsync --itemize-changes line to Git-style label
+# Input: rsync itemize line, e.g. ">f+++++++++++ path/to/file"
+# Output: "  new file:   path/to/file"
+function format_rsync_line() {
+  local line="$1"
+  local flags="${line%% *}"
+  local path="${line#* }"
+  path="${path#./}"
+
+  [[ -z "$path" || "$path" == "." || "$path" == "./" ]] && return
+
+  local label=""
+  case "$flags" in
+    *deleting*)    label="${CLR_ERR}  deleted:    ${CLR_RST}" ;;
+    '>f+++++++'+*) label="${CLR_OK}  new file:   ${CLR_RST}" ;;
+    '<f+++++++'+*) label="${CLR_OK}  new file:   ${CLR_RST}" ;;
+    '>f'*)         label="  modified:  " ;;
+    '<f'*)         label="  modified:  " ;;
+    'cd+++++++'+*) label="${CLR_OK}  new dir:    ${CLR_RST}" ;;
+    '.d'*)         return ;;  # directory metadata change, skip
+    *)             label="  changed:   " ;;
+  esac
+
+  printf '%b%s\n' "$label" "$path"
+}
+
+# Format rsync itemize output to Git-style summary
+# stdin: rsync --itemize-changes output
+# stdout: formatted git-style output
+function format_rsync_output() {
+  local new_count=0
+  local mod_count=0
+  local del_count=0
+  local total=0
+  local lines=()
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    # Only process valid rsync itemize lines (11-char flags field + space + path)
+    # Valid flags start with: > < c . * h (rsync itemize format)
+    local flags="${line%% *}"
+    if [[ ! "$flags" =~ ^[.\<\>ch\*][fdLDS] ]]; then
+      # Also accept *deleting lines
+      if [[ "$flags" != *deleting ]]; then
+        continue  # skip non-rsync lines (e.g. SSH banners)
+      fi
+    fi
+    # Skip directory-only metadata lines
+    [[ "$flags" == .d* ]] && continue
+    
+    local formatted
+    formatted="$(format_rsync_line "$line")"
+    [[ -z "$formatted" ]] && continue
+
+    lines+=("$formatted")
+    ((total++))
+
+    case "$flags" in
+      *deleting*)    ((del_count++)) ;;
+      *'++++++'*)    ((new_count++)) ;;
+      *)             ((mod_count++)) ;;
+    esac
+  done
+
+  if [[ "$total" -eq 0 ]]; then
+    echo "  Already up to date."
+    return
+  fi
+
+  for l in "${lines[@]}"; do
+    printf '%s\n' "$l"
+  done
+
+  # Summary line
+  local summary="${total} file(s) changed"
+  [[ "$new_count" -gt 0 ]] && summary+=", ${new_count} insertion(+)"
+  [[ "$del_count" -gt 0 ]] && summary+=", ${del_count} deletion(-)"
+  echo "$summary"
+}
+
+# Run rsync with Git-style formatted output
+# Args: direction(push|pull) server delete_mode
+function git_style_transfer() {
+  local direction="$1"
+  local server="$2"
+  local delete_mode="$3"
+  local host
+  local args=()
+  local start_time
+
+  host="$(resolve_host "$server")"
+  start_time="$(date +%s)"
+
+  # Build rsync args with --itemize-changes for formatted output
+  while IFS= read -r line; do
+    args+=("$line")
+  done < <(build_arg_array "$direction" "$delete_mode")
+  args+=(--itemize-changes)
+
+  local src dst verb
+  if [[ "$direction" == "push" ]]; then
+    src="${WORKSPACE_DIR}/"
+    dst="${CFDLAB_USER}@${host}:${CFDLAB_REMOTE_PATH}/"
+    verb="Pushing to"
+    ensure_remote_dir "$server"
+  else
+    src="${CFDLAB_USER}@${host}:${CFDLAB_REMOTE_PATH}/"
+    dst="${WORKSPACE_DIR}/"
+    verb="Pulling from"
+  fi
+
+  printf '%bremote: Checking for changes...%b\n' "$CLR_DIM" "$CLR_RST"
+
+  local raw_output
+  if ! raw_output="$(rsync "${args[@]}" "$src" "$dst" 2>&1)"; then
+    printf '%b[ERROR] rsync failed for .%s%b\n' "$CLR_ERR" "$server" "$CLR_RST"
+    echo "$raw_output" >&2
+    return 1
+  fi
+
+  # Format output
+  if [[ -n "$raw_output" ]]; then
+    echo "$raw_output" | format_rsync_output
+  else
+    echo "  Already up to date."
+  fi
+
+  # Elapsed time
+  local end_time elapsed_s mins secs
+  end_time="$(date +%s)"
+  elapsed_s=$((end_time - start_time))
+  mins=$((elapsed_s / 60))
+  secs=$((elapsed_s % 60))
+  printf 'Transfer complete. [%02d:%02d] ✔\n' "$mins" "$secs"
+}
+
+# Multi-server wrapper with color-coded separators
+# Args: direction(push|pull|fetch) target_servers_string
+function multi_server_run() {
+  local direction="$1"
+  local target="$2"
+  local delete_mode="$3"
+  local servers=()
+  local total=0
+  local success=0
+  local failed=0
+
+  while IFS= read -r s; do
+    [[ -z "$s" ]] && continue
+    servers+=("$s")
+    ((total++))
+  done < <(each_target_server "$target")
+
+  local idx=0
+  for server in "${servers[@]}"; do
+    ((idx++))
+    local color emoji host
+    color="$(server_color "$server")"
+    emoji="$(server_emoji "$server")"
+    host="$(resolve_host "$server")"
+
+    local verb
+    case "$direction" in
+      push) verb="Pushing to" ;;
+      pull) verb="Pulling from" ;;
+      fetch) verb="Fetching from" ;;
+    esac
+
+    # Print separator
+    printf '%b══════════════════════════════════════════════════%b\n' "$color" "$CLR_RST"
+    printf '%b [%d/%d] %s %s .%s (%s)%b\n' "$color" "$idx" "$total" "$emoji" "$verb" "$server" "$host" "$CLR_RST"
+    printf '%b══════════════════════════════════════════════════%b\n' "$color" "$CLR_RST"
+
+    if git_style_transfer "$direction" "$server" "$delete_mode"; then
+      ((success++))
+    else
+      ((failed++))
+      printf '%b[ERROR] Transfer to .%s failed 🔴%b\n' "$CLR_ERR" "$server" "$CLR_RST"
+    fi
+    echo ""
+  done
+
+  if [[ "$total" -gt 1 ]]; then
+    if [[ "$failed" -eq 0 ]]; then
+      printf '══════════════════════════════════════════════════\n'
+      printf '%b Summary: %d/%d servers completed successfully ✔%b\n' "$CLR_OK" "$success" "$total" "$CLR_RST"
+      printf '══════════════════════════════════════════════════\n'
+    else
+      printf '══════════════════════════════════════════════════\n'
+      printf '%b Summary: %d/%d completed, %d failed ✘%b\n' "$CLR_ERR" "$success" "$total" "$failed" "$CLR_RST"
+      printf '══════════════════════════════════════════════════\n'
+    fi
+  fi
+}
+
 function die() {
   echo "[ERROR] $*" >&2
   exit 1
@@ -1160,15 +1385,16 @@ function cmd_log() {
 function cmd_pull_like() {
   local mode="$1"
   local server
+  local delete_mode
 
   server="$(normalize_server "${2:-87}")"
-  echo "[SYNC] ${mode} from ${server}"
-
   if [[ "$mode" == "fetch" ]]; then
-    run_pull "$server" delete
+    delete_mode="delete"
   else
-    run_pull "$server" keep
+    delete_mode="keep"
   fi
+
+  multi_server_run "$mode" "$server" "$delete_mode"
 }
 
 function cmd_push_like() {
@@ -1184,24 +1410,52 @@ function cmd_push_like() {
     delete_mode="keep"
   fi
 
-  while IFS= read -r server; do
-    [[ -z "$server" ]] && continue
-    echo "[SYNC] ${mode} to ${server}"
-    run_push "$server" "$delete_mode"
-  done < <(each_target_server "$target")
+  multi_server_run push "$target" "$delete_mode"
 }
 
 function cmd_diff() {
   local target
   target="$(parse_server_or_all "${1:-all}")"
 
-  while IFS= read -r server; do
-    [[ -z "$server" ]] && continue
-    echo "=== ${server} push preview ==="
-    preview_push_changes "$server" || echo "[ERROR] push preview failed for ${server}"
-    echo "=== ${server} pull preview ==="
-    preview_pull_changes "$server" keep || echo "[ERROR] pull preview failed for ${server}"
+  local servers=()
+  local total=0
+  while IFS= read -r s; do
+    [[ -z "$s" ]] && continue
+    servers+=("$s")
+    ((total++))
   done < <(each_target_server "$target")
+
+  local idx=0
+  for server in "${servers[@]}"; do
+    ((idx++))
+    local color emoji host
+    color="$(server_color "$server")"
+    emoji="$(server_emoji "$server")"
+    host="$(resolve_host "$server")"
+
+    printf '%b══════════════════════════════════════════════════%b\n' "$color" "$CLR_RST"
+    printf '%b [%d/%d] %s Diff .%s (%s)%b\n' "$color" "$idx" "$total" "$emoji" "$server" "$host" "$CLR_RST"
+    printf '%b══════════════════════════════════════════════════%b\n' "$color" "$CLR_RST"
+
+    echo ""
+    printf '%b--- Push preview (local → remote) ---%b\n' "$CLR_BOLD" "$CLR_RST"
+    local push_raw
+    if push_raw="$(preview_push_changes "$server")"; then
+      echo "$push_raw" | format_rsync_output
+    else
+      printf '%b[ERROR] push preview failed%b\n' "$CLR_ERR" "$CLR_RST"
+    fi
+
+    echo ""
+    printf '%b--- Pull preview (remote → local) ---%b\n' "$CLR_BOLD" "$CLR_RST"
+    local pull_raw
+    if pull_raw="$(preview_pull_changes "$server" keep)"; then
+      echo "$pull_raw" | format_rsync_output
+    else
+      printf '%b[ERROR] pull preview failed%b\n' "$CLR_ERR" "$CLR_RST"
+    fi
+    echo ""
+  done
 }
 
 function cmd_add() {
@@ -1221,7 +1475,7 @@ function cmd_add() {
   done < <(each_target_server "$target")
 
   local paths
-  paths="$(list_change_paths "$combined" | sort -u)"
+  paths="$(list_change_paths "$combined" | LC_ALL=C sort -u)"
   if [[ -z "$paths" ]]; then
     echo "No pending source changes"
     return
