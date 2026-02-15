@@ -38,7 +38,7 @@
 //#define     Ma          0.1
 //#define     Umax        18.4824
 
-#define     Re          150
+#define     Re          200
 
 //steps to end simulation
 #define     loop      500000
