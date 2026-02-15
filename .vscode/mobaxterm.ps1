@@ -101,6 +101,76 @@ $script:Config = @{
     SyncAll = $true  # 同步所有類型的檔案
 }
 
+# ========== 跨平台 SSH/SCP 封裝 ==========
+# Windows: plink/pscp (PuTTY)    macOS/Linux: sshpass + ssh/scp
+
+function Invoke-Ssh {
+    <#
+    .SYNOPSIS
+    Cross-platform SSH command execution wrapper.
+    On Windows uses plink, on macOS/Linux uses sshpass+ssh.
+    #>
+    param(
+        [hashtable]$Server,
+        [string]$Command,
+        [switch]$Batch,
+        [switch]$Interactive,
+        [string]$TtyCommand  # for -t option (interactive SSH sessions)
+    )
+    if ($Config.IsWindows) {
+        if ($TtyCommand) {
+            & $Config.PlinkPath -ssh -pw $Server.Password "$($Server.User)@$($Server.Host)" -t $TtyCommand
+        } elseif ($Interactive) {
+            & $Config.PlinkPath -ssh -pw $Server.Password "$($Server.User)@$($Server.Host)" $Command
+        } else {
+            & $Config.PlinkPath -ssh -pw $Server.Password -batch "$($Server.User)@$($Server.Host)" $Command 2>$null
+        }
+    } else {
+        # macOS/Linux: use sshpass + ssh
+        $sshOpts = $Config.SshOpts
+        if ($TtyCommand) {
+            sshpass -p $Server.Password ssh $sshOpts.Split(' ') -tt "$($Server.User)@$($Server.Host)" $TtyCommand
+        } elseif ($Interactive) {
+            sshpass -p $Server.Password ssh $sshOpts.Split(' ') -tt "$($Server.User)@$($Server.Host)" $Command
+        } else {
+            sshpass -p $Server.Password ssh $sshOpts.Split(' ') -o BatchMode=no "$($Server.User)@$($Server.Host)" $Command 2>$null
+        }
+    }
+}
+
+function Invoke-Scp {
+    <#
+    .SYNOPSIS
+    Cross-platform SCP wrapper. Direction: "upload" or "download".
+    On Windows uses pscp, on macOS/Linux uses sshpass+scp.
+    #>
+    param(
+        [string]$Direction,      # "upload" or "download"
+        [hashtable]$Server,
+        [string]$LocalPath,
+        [string]$RemotePath      # e.g. user@host:/path or just /remote/path
+    )
+    if ($Config.IsWindows) {
+        if ($Direction -eq "upload") {
+            $remoteDest = "$($Server.User)@$($Server.Host):$RemotePath"
+            $null = & $Config.PscpPath -pw $Server.Password -q $LocalPath $remoteDest 2>&1
+        } else {
+            $remoteSrc = "$($Server.User)@$($Server.Host):$RemotePath"
+            $null = & $Config.PscpPath -pw $Server.Password -q $remoteSrc $LocalPath 2>&1
+        }
+    } else {
+        # macOS/Linux: use sshpass + scp
+        $sshOpts = $Config.SshOpts
+        if ($Direction -eq "upload") {
+            $remoteDest = "$($Server.User)@$($Server.Host):$RemotePath"
+            $null = sshpass -p $Server.Password scp $sshOpts.Split(' ') -q $LocalPath $remoteDest 2>&1
+        } else {
+            $remoteSrc = "$($Server.User)@$($Server.Host):$RemotePath"
+            $null = sshpass -p $Server.Password scp $sshOpts.Split(' ') -q $remoteSrc $LocalPath 2>&1
+        }
+    }
+}
+
 function Write-Color {
     param([string]$Text, [string]$Color = "White")
     Write-Host $Text -ForegroundColor $Color
@@ -158,11 +228,11 @@ function Query-GpuStatus {
         if ($NodeNum -eq "0") {
             # 直連模式
             $cmd = "nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader"
-            $result = & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $cmd 2>$null
+            $result = Invoke-Ssh -Server $server -Command $cmd
         } else {
             # 跳板模式
             $cmd = "ssh -o ConnectTimeout=5 cfdlab-ib$NodeNum 'nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader'"
-            $result = & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $cmd 2>$null
+            $result = Invoke-Ssh -Server $server -Command $cmd
         }
         if ($result) { return ($result -join "`n") } else { return "OFFLINE" }
     } catch {
@@ -185,18 +255,18 @@ function Run-RemoteCommand {
     if ($NodeNum -eq "0") {
         # 直連模式
         $fullCmd = "cd $($Config.RemotePath) && $Command"
-        & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $fullCmd
+        Invoke-Ssh -Server $server -Command $fullCmd
     } else {
         # 跳板模式
         $fullCmd = "ssh cfdlab-ib$NodeNum 'cd $($Config.RemotePath) && $Command'"
-        & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $fullCmd
+        Invoke-Ssh -Server $server -Command $fullCmd
     }
 }
 
 function Ensure-RemoteDir {
     param([hashtable]$Server)
     $cmd = "mkdir -p '$($Config.RemotePath)'"
-    & $Config.PlinkPath -ssh -pw $Server.Password -batch "$($Server.User)@$($Server.Host)" $cmd 2>$null | Out-Null
+    Invoke-Ssh -Server $Server -Command $cmd | Out-Null
 }
 
 function Get-LocalFiles {
@@ -229,7 +299,7 @@ function Get-RemoteFiles {
     # 排除 .git 和 .vscode 目錄
     $excludeGrep = "grep -v '/.git/' | grep -v '/.vscode/'"
     $cmd = "find $($Config.RemotePath) -type f -exec md5sum {} \; 2>/dev/null | $excludeGrep"
-    $result = & $Config.PlinkPath -ssh -pw $Server.Password -batch "$($Server.User)@$($Server.Host)" $cmd 2>$null
+    $result = Invoke-Ssh -Server $Server -Command $cmd
     
     $files = @()
     if ($result) {
@@ -414,9 +484,9 @@ switch ($Command) {
                 $remoteDest = "$($server.User)@$($server.Host):$($Config.RemotePath)/$($file.Path)"
                 
                 $remoteDir = [System.IO.Path]::GetDirectoryName("$($Config.RemotePath)/$($file.Path)").Replace("\", "/")
-                & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "mkdir -p '$remoteDir'" 2>$null
+                Invoke-Ssh -Server $server -Command "mkdir -p '$remoteDir'"
                 
-                $null = & $Config.PscpPath -pw $server.Password -q $localPath $remoteDest 2>&1
+                Invoke-Scp -Direction "upload" -Server $server -LocalPath $localPath -RemotePath "$($Config.RemotePath)/$($file.Path)"
                 if ($LASTEXITCODE -eq 0) {
                     Write-Color "  [UPLOAD] $($file.Path)" "Green"
                     $successCount++
@@ -431,7 +501,7 @@ switch ($Command) {
             $deleteCount = 0
             foreach ($f in $toDelete) {
                 $remotePath = "$($Config.RemotePath)/$f"
-                & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "rm -f '$remotePath'" 2>$null
+                Invoke-Ssh -Server $server -Command "rm -f '$remotePath'"
                 if ($LASTEXITCODE -eq 0) {
                     Write-Color "  [DELETE] $f" "Red"
                     $deleteCount++
@@ -442,7 +512,7 @@ switch ($Command) {
             
             # 清除遠端空目錄（排除 .git）
             $cleanupCmd = "find $($Config.RemotePath) -type d -empty ! -path '*/.git/*' -delete 2>/dev/null"
-            & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $cleanupCmd 2>$null
+            Invoke-Ssh -Server $server -Command $cleanupCmd
         }
         
         Write-Color "`nPush completed!" "Green"
@@ -471,7 +541,7 @@ switch ($Command) {
                 $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", "\"))
                 $localDir = Split-Path $localPath -Parent
                 if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Path $localDir -Force | Out-Null }
-                $null = & $Config.PscpPath -pw $targetServer.Password -q "$($targetServer.User)@$($targetServer.Host):$remotePath" $localPath 2>&1
+                Invoke-Scp -Direction "download" -Server $targetServer -LocalPath $localPath -RemotePath $remotePath
                 if ($LASTEXITCODE -eq 0) { Write-Color "  [DOWNLOAD] $relativePath" "Green"; $pullCount++ }
             }
             Write-Color "`nDownloaded=$pullCount" "Cyan"
@@ -525,7 +595,7 @@ switch ($Command) {
 
             foreach ($file in $toDownload) {
 
-                $remotePath = "$($targetServer.User)@$($targetServer.Host):$($Config.RemotePath)/$file"
+                $remotePath = "$($Config.RemotePath)/$file"
 
                 $localPath = Join-Path $Config.LocalPath $file
 
@@ -533,7 +603,7 @@ switch ($Command) {
 
                 if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Path $localDir -Force | Out-Null }
 
-                $null = & $Config.PscpPath -pw $targetServer.Password -q $remotePath $localPath 2>&1
+                Invoke-Scp -Direction "download" -Server $targetServer -LocalPath $localPath -RemotePath $remotePath
 
                 if ($LASTEXITCODE -eq 0) {
 
@@ -620,7 +690,7 @@ switch ($Command) {
         
         Write-Color "`nLog files on $($targetServer.Name):" "Cyan"
         $cmd = "ls -lth $($Config.RemotePath)/log* 2>/dev/null | head -10"
-        $result = & $Config.PlinkPath -ssh -pw $targetServer.Password -batch "$($targetServer.User)@$($targetServer.Host)" $cmd 2>$null
+        $result = Invoke-Ssh -Server $targetServer -Command $cmd
         if ($result) {
             foreach ($line in $result) { Write-Host "  $line" }
         }
@@ -631,7 +701,7 @@ switch ($Command) {
         # 顯示最新 log 的最後幾行
         Write-Color "`nLatest log tail:" "Cyan"
         $cmd = "tail -20 `$(ls -t $($Config.RemotePath)/log* 2>/dev/null | head -1) 2>/dev/null"
-        $result = & $Config.PlinkPath -ssh -pw $targetServer.Password -batch "$($targetServer.User)@$($targetServer.Host)" $cmd 2>$null
+        $result = Invoke-Ssh -Server $targetServer -Command $cmd
         if ($result) {
             foreach ($line in $result) { Write-Host "  $line" -ForegroundColor Gray }
         }
@@ -662,7 +732,7 @@ switch ($Command) {
                 $deleteCount = 0
                 foreach ($f in $toDelete) {
                     $remotePath = "$($Config.RemotePath)/$f"
-                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "rm -f '$remotePath'" 2>$null
+                    Invoke-Ssh -Server $server -Command "rm -f '$remotePath'"
                     if ($LASTEXITCODE -eq 0) {
                         Write-Color "    [DELETED] $f" "Red"
                         $deleteCount++
@@ -712,7 +782,7 @@ switch ($Command) {
                     New-Item -ItemType Directory -Path $localDir -Force | Out-Null 
                 }
                 
-                $null = & $Config.PscpPath -pw $targetServer.Password -q "$($targetServer.User)@$($targetServer.Host):$remotePath" $localPath 2>&1
+                Invoke-Scp -Direction "download" -Server $targetServer -LocalPath $localPath -RemotePath $remotePath
                 if ($LASTEXITCODE -eq 0) {
                     Write-Color "  [OK] $($f.Path)" "Green"
                     $cloneCount++
@@ -778,7 +848,7 @@ switch ($Command) {
             # Only sync source files
             $ext = [System.IO.Path]::GetExtension($name)
             $syncExtensions = @(".cu", ".h", ".c", ".json", ".md", ".txt", ".ps1")
-            $isVscode = $name -like ".vscode\*"
+            $isVscode = ($name -like ".vscode/*" -or $name -like ".vscode\*")
             $isGitignore = $name -eq ".gitignore"
             
             if (-not $skip -and ($syncExtensions -contains $ext -or $isVscode -or $isGitignore)) {
@@ -836,9 +906,9 @@ switch ($Command) {
     
     "watchpush" {
         # Background auto-upload: monitor local files and upload changes (persistent process)
-        $pidFile = Join-Path $Config.LocalPath ".vscode\watchpush.pid"
-        $logFile = Join-Path $Config.LocalPath ".vscode\watchpush.log"
-        $daemonScript = Join-Path $Config.LocalPath ".vscode\watchpush-daemon.ps1"
+        $pidFile = Join-Path $Config.LocalPath ".vscode/watchpush.pid"
+        $logFile = Join-Path $Config.LocalPath ".vscode/watchpush.log"
+        $daemonScript = Join-Path $Config.LocalPath ".vscode/watchpush-daemon.ps1"
         $subCommand = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "" }
         
         switch ($subCommand) {
@@ -948,8 +1018,9 @@ switch ($Command) {
                 $serversJson = $Config.Servers | ConvertTo-Json -Compress
                 
                 # Start independent PowerShell process
-                $proc = Start-Process -FilePath "powershell.exe" -ArgumentList @(
-                    "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
+                $_psExe = if ($Config.IsWindows) { "powershell.exe" } else { "pwsh" }
+                $_psArgs = @(
+                    "-NoProfile", "-ExecutionPolicy", "Bypass",
                     "-File", "`"$daemonScript`"",
                     "-LocalPath", "`"$($Config.LocalPath)`"",
                     "-RemotePath", "`"$($Config.RemotePath)`"",
@@ -957,8 +1028,11 @@ switch ($Command) {
                     "-PlinkPath", "`"$($Config.PlinkPath)`"",
                     "-PscpPath", "`"$($Config.PscpPath)`"",
                     "-LogPath", "`"$logFile`"",
-                    "-Interval", $interval
-                ) -PassThru
+                    "-Interval", $interval,
+                    "-SshOpts", "`"$($Config.SshOpts)`""
+                )
+                if ($Config.IsWindows) { $_psArgs += @("-IsWindows"); $_psArgs = @("-WindowStyle", "Hidden") + $_psArgs }
+                $proc = Start-Process -FilePath $_psExe -ArgumentList $_psArgs -PassThru
                 
                 # Save process ID
                 Start-Sleep -Milliseconds 500
@@ -974,10 +1048,10 @@ switch ($Command) {
     "bgstatus" {
         # All background processes status (watchpush, watchpull, watchfetch, vtkrename)
         $services = @(
-            @{ Name = "WatchPush"; Label = "[UPLOAD] WatchPush"; PidFile = ".vscode\watchpush.pid"; LogFile = ".vscode\watchpush.log"; Color = "Yellow" },
-            @{ Name = "WatchPull"; Label = "[DOWNLOAD] WatchPull"; PidFile = ".vscode\watchpull.pid"; LogFile = ".vscode\watchpull.log"; Color = "Yellow" },
-            @{ Name = "WatchFetch"; Label = "[SYNC+DELETE] WatchFetch"; PidFile = ".vscode\watchfetch.pid"; LogFile = ".vscode\watchfetch.log"; Color = "Red" },
-            @{ Name = "VTKRenamer"; Label = "[VTK-RENAME] Auto-Renamer"; PidFile = ".vscode\vtk-renamer.pid"; LogFile = ".vscode\vtk-renamer.log"; Color = "Cyan" }
+            @{ Name = "WatchPush"; Label = "[UPLOAD] WatchPush"; PidFile = (Join-Path ".vscode" "watchpush.pid"); LogFile = (Join-Path ".vscode" "watchpush.log"); Color = "Yellow" },
+            @{ Name = "WatchPull"; Label = "[DOWNLOAD] WatchPull"; PidFile = (Join-Path ".vscode" "watchpull.pid"); LogFile = (Join-Path ".vscode" "watchpull.log"); Color = "Yellow" },
+            @{ Name = "WatchFetch"; Label = "[SYNC+DELETE] WatchFetch"; PidFile = (Join-Path ".vscode" "watchfetch.pid"); LogFile = (Join-Path ".vscode" "watchfetch.log"); Color = "Red" },
+            @{ Name = "VTKRenamer"; Label = "[VTK-RENAME] Auto-Renamer"; PidFile = (Join-Path ".vscode" "vtk-renamer.pid"); LogFile = (Join-Path ".vscode" "vtk-renamer.log"); Color = "Cyan" }
         )
         
         Write-Color "`n========== All Background Processes ==========" "Cyan"
@@ -1031,10 +1105,10 @@ switch ($Command) {
     
     "syncstatus" {
         # Combined status for both watchpush and watchpull
-        $pushPidFile = Join-Path $Config.LocalPath ".vscode\watchpush.pid"
-        $pullPidFile = Join-Path $Config.LocalPath ".vscode\watchpull.pid"
-        $pushLogFile = Join-Path $Config.LocalPath ".vscode\watchpush.log"
-        $pullLogFile = Join-Path $Config.LocalPath ".vscode\watchpull.log"
+        $pushPidFile = Join-Path $Config.LocalPath ".vscode/watchpush.pid"
+        $pullPidFile = Join-Path $Config.LocalPath ".vscode/watchpull.pid"
+        $pushLogFile = Join-Path $Config.LocalPath ".vscode/watchpush.log"
+        $pullLogFile = Join-Path $Config.LocalPath ".vscode/watchpull.log"
         
         Write-Color "`n========== Sync Monitor Status ==========" "Cyan"
         
@@ -1110,9 +1184,9 @@ switch ($Command) {
     
     "watchpull" {
         # Auto-download: monitor remote servers and download new files (persistent process)
-        $pidFile = Join-Path $Config.LocalPath ".vscode\watchpull.pid"
-        $logFile = Join-Path $Config.LocalPath ".vscode\watchpull.log"
-        $daemonScript = Join-Path $Config.LocalPath ".vscode\watchpull-daemon.ps1"
+        $pidFile = Join-Path $Config.LocalPath ".vscode/watchpull.pid"
+        $logFile = Join-Path $Config.LocalPath ".vscode/watchpull.log"
+        $daemonScript = Join-Path $Config.LocalPath ".vscode/watchpull-daemon.ps1"
         $subCommand = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "" }
         
         switch ($subCommand) {
@@ -1231,8 +1305,9 @@ switch ($Command) {
                 # Start independent process for each server
                 $processPids = @()
                 foreach ($server in $targetServers) {
-                    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList @(
-                        "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
+                    $_psExe = if ($Config.IsWindows) { "powershell.exe" } else { "pwsh" }
+                    $_psArgs = @(
+                        "-NoProfile", "-ExecutionPolicy", "Bypass",
                         "-File", "`"$daemonScript`"",
                         "-LocalPath", "`"$($Config.LocalPath)`"",
                         "-RemotePath", "`"$($Config.RemotePath)`"",
@@ -1243,8 +1318,11 @@ switch ($Command) {
                         "-PlinkPath", "`"$($Config.PlinkPath)`"",
                         "-PscpPath", "`"$($Config.PscpPath)`"",
                         "-LogPath", "`"$logFile`"",
-                        "-Interval", $interval
-                    ) -PassThru
+                        "-Interval", $interval,
+                        "-SshOpts", "`"$($Config.SshOpts)`""
+                    )
+                    if ($Config.IsWindows) { $_psArgs += @("-IsWindows"); $_psArgs = @("-WindowStyle", "Hidden") + $_psArgs }
+                    $proc = Start-Process -FilePath $_psExe -ArgumentList $_psArgs -PassThru
                     
                     Start-Sleep -Milliseconds 500
                     $processPids += $proc.Id
@@ -1262,9 +1340,9 @@ switch ($Command) {
     
     "watchfetch" {
         # Auto-download with delete: monitor remote and sync local to match (persistent process)
-        $pidFile = Join-Path $Config.LocalPath ".vscode\watchfetch.pid"
-        $logFile = Join-Path $Config.LocalPath ".vscode\watchfetch.log"
-        $daemonScript = Join-Path $Config.LocalPath ".vscode\watchfetch-daemon.ps1"
+        $pidFile = Join-Path $Config.LocalPath ".vscode/watchfetch.pid"
+        $logFile = Join-Path $Config.LocalPath ".vscode/watchfetch.log"
+        $daemonScript = Join-Path $Config.LocalPath ".vscode/watchfetch-daemon.ps1"
         $subCommand = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "" }
         
         switch ($subCommand) {
@@ -1382,8 +1460,9 @@ switch ($Command) {
                 [System.IO.File]::WriteAllText($logFile, "", $utf8NoBom)
                 
                 # Start daemon process
-                $proc = Start-Process -FilePath "powershell.exe" -ArgumentList @(
-                    "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
+                $_psExe = if ($Config.IsWindows) { "powershell.exe" } else { "pwsh" }
+                $_psArgs = @(
+                    "-NoProfile", "-ExecutionPolicy", "Bypass",
                     "-File", "`"$daemonScript`"",
                     "-LocalPath", "`"$($Config.LocalPath)`"",
                     "-RemotePath", "`"$($Config.RemotePath)`"",
@@ -1394,8 +1473,11 @@ switch ($Command) {
                     "-PlinkPath", "`"$($Config.PlinkPath)`"",
                     "-PscpPath", "`"$($Config.PscpPath)`"",
                     "-LogPath", "`"$logFile`"",
-                    "-Interval", $interval
-                ) -PassThru
+                    "-Interval", $interval,
+                    "-SshOpts", "`"$($Config.SshOpts)`""
+                )
+                if ($Config.IsWindows) { $_psArgs += @("-IsWindows"); $_psArgs = @("-WindowStyle", "Hidden") + $_psArgs }
+                $proc = Start-Process -FilePath $_psExe -ArgumentList $_psArgs -PassThru
                 
                 Start-Sleep -Milliseconds 500
                 
@@ -1441,7 +1523,7 @@ switch ($Command) {
                     New-Item -ItemType Directory -Path $localDir -Force | Out-Null 
                 }
                 
-                $null = & $Config.PscpPath -pw $targetServer.Password -q "$($targetServer.User)@$($targetServer.Host):$remotePath" $localPath 2>&1
+                Invoke-Scp -Direction "download" -Server $targetServer -LocalPath $localPath -RemotePath $remotePath
                 if ($LASTEXITCODE -eq 0) {
                     Write-Color "  [DOWNLOAD] $relativePath" "Green"
                     $pullCount++
@@ -1486,7 +1568,7 @@ switch ($Command) {
                     New-Item -ItemType Directory -Path $localDir -Force | Out-Null 
                 }
                 
-                $null = & $Config.PscpPath -pw $targetServer.Password -q "$($targetServer.User)@$($targetServer.Host):$remotePath" $localPath 2>&1
+                Invoke-Scp -Direction "download" -Server $targetServer -LocalPath $localPath -RemotePath $remotePath
                 if ($LASTEXITCODE -eq 0) {
                     Write-Color "  [DOWNLOAD] $relativePath" "Green"
                 }
@@ -1515,9 +1597,9 @@ switch ($Command) {
     
     "vtkrename" {
         # VTK file auto-renamer: monitor and rename VTK files to use zero-padding
-        $pidFile = Join-Path $Config.LocalPath ".vscode\vtk-renamer.pid"
-        $logFile = Join-Path $Config.LocalPath ".vscode\vtk-renamer.log"
-        $renamerScript = Join-Path $Config.LocalPath ".vscode\vtk-renamer.ps1"
+        $pidFile = Join-Path $Config.LocalPath ".vscode/vtk-renamer.pid"
+        $logFile = Join-Path $Config.LocalPath ".vscode/vtk-renamer.log"
+        $renamerScript = Join-Path $Config.LocalPath ".vscode/vtk-renamer.ps1"
         $subCommand = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "" }
         
         switch ($subCommand) {
@@ -1617,12 +1699,15 @@ switch ($Command) {
                 }
                 
                 # Start renamer process
-                $proc = Start-Process -FilePath "powershell.exe" -ArgumentList @(
-                    "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
+                $_psExe = if ($Config.IsWindows) { "powershell.exe" } else { "pwsh" }
+                $_psArgs = @(
+                    "-NoProfile", "-ExecutionPolicy", "Bypass",
                     "-File", "`"$renamerScript`"",
                     "-WatchPath", "`"$($Config.LocalPath)`"",
                     "-CheckInterval", $checkInterval
-                ) -PassThru
+                )
+                if ($Config.IsWindows) { $_psArgs = @("-WindowStyle", "Hidden") + $_psArgs }
+                $proc = Start-Process -FilePath $_psExe -ArgumentList $_psArgs -PassThru
                 
                 Start-Sleep -Milliseconds 500
                 
@@ -1729,7 +1814,7 @@ switch ($Command) {
                 Write-Host ".89 (140.114.58.89) - 8x Tesla V100-SXM2-32GB" -ForegroundColor Yellow
                 Write-Host ("-" * 50)
                 $server = Get-ServerByName "89"
-                $result = & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "nvidia-smi" 2>$null
+                $result = Invoke-Ssh -Server $server -Command "nvidia-smi"
                 if ($result) { $result | ForEach-Object { Write-Host $_ } }
                 else { Write-Host "[OFFLINE] Cannot connect" -ForegroundColor Red }
             }
@@ -1739,7 +1824,7 @@ switch ($Command) {
                 foreach ($node in $Config.Nodes["87"]) {
                     Write-Host ""
                     Write-Host "=== .87 ib$($node.Node) ===" -ForegroundColor Cyan
-                    $result = & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "ssh -o ConnectTimeout=3 cfdlab-ib$($node.Node) 'nvidia-smi'" 2>$null
+                    $result = Invoke-Ssh -Server $server -Command "ssh -o ConnectTimeout=3 cfdlab-ib$($node.Node) 'nvidia-smi'"
                     if ($result) { $result | ForEach-Object { Write-Host $_ } }
                     else { Write-Host "[OFFLINE/Maintenance]" -ForegroundColor Red }
                 }
@@ -1750,7 +1835,7 @@ switch ($Command) {
                 foreach ($node in $Config.Nodes["154"]) {
                     Write-Host ""
                     Write-Host "=== .154 ib$($node.Node) ===" -ForegroundColor Cyan
-                    $result = & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "ssh -o ConnectTimeout=3 cfdlab-ib$($node.Node) 'nvidia-smi'" 2>$null
+                    $result = Invoke-Ssh -Server $server -Command "ssh -o ConnectTimeout=3 cfdlab-ib$($node.Node) 'nvidia-smi'"
                     if ($result) { $result | ForEach-Object { Write-Host $_ } }
                     else { Write-Host "[OFFLINE/Maintenance]" -ForegroundColor Red }
                 }
@@ -1824,16 +1909,16 @@ switch ($Command) {
         # 連線
         if ($nodeNum -eq "0") {
             Write-Color "[SSH] Connecting directly to .$serverKey..." "Cyan"
-            & $Config.PlinkPath -ssh -pw $server.Password "$($server.User)@$($server.Host)" -t "cd $($Config.RemotePath); exec bash"
+            Invoke-Ssh -Server $server -TtyCommand "cd $($Config.RemotePath); exec bash"
         } else {
             Write-Color "[SSH] Connecting via .$serverKey to ib$nodeNum..." "Cyan"
-            & $Config.PlinkPath -ssh -pw $server.Password "$($server.User)@$($server.Host)" -t "ssh -t cfdlab-ib$nodeNum 'cd $($Config.RemotePath); exec bash'"
+            Invoke-Ssh -Server $server -TtyCommand "ssh -t cfdlab-ib$nodeNum 'cd $($Config.RemotePath); exec bash'"
         }
     }
 
     "issh" {
         # 互動式 SSH 選擇器（調用 ssh-connect.ps1 -Interactive）
-        $sshScript = Join-Path $Config.LocalPath ".vscode\ssh-connect.ps1"
+        $sshScript = Join-Path $Config.LocalPath ".vscode/ssh-connect.ps1"
         if (Test-Path $sshScript) {
             & $sshScript -Interactive
         } else {
@@ -1974,14 +2059,14 @@ switch ($Command) {
                     $localPath = $file.FullPath
                     $remoteDest = "$($server.User)@$($server.Host):$($Config.RemotePath)/$($file.Path)"
                     $remoteDir = [System.IO.Path]::GetDirectoryName("$($Config.RemotePath)/$($file.Path)").Replace("\", "/")
-                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "mkdir -p '$remoteDir'" 2>$null
-                    $null = & $Config.PscpPath -pw $server.Password -q $localPath $remoteDest 2>&1
+                    Invoke-Ssh -Server $server -Command "mkdir -p '$remoteDir'"
+                    Invoke-Scp -Direction "upload" -Server $server -LocalPath $localPath -RemotePath "$($Config.RemotePath)/$($file.Path)"
                     if ($LASTEXITCODE -eq 0) { Write-Color "  [UPLOAD] $($file.Path)" "Green"; $successCount++ }
                 }
                 $deleteCount = 0
                 foreach ($f in $toDelete) {
                     $remotePath = "$($Config.RemotePath)/$f"
-                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "rm -f '$remotePath'" 2>$null
+                    Invoke-Ssh -Server $server -Command "rm -f '$remotePath'"
                     if ($LASTEXITCODE -eq 0) { Write-Color "  [DELETE] $f" "Red"; $deleteCount++ }
                 }
                 Write-Color ".87: Uploaded=$successCount | Deleted=$deleteCount" "Cyan"
@@ -2012,14 +2097,14 @@ switch ($Command) {
                     $localPath = $file.FullPath
                     $remoteDest = "$($server.User)@$($server.Host):$($Config.RemotePath)/$($file.Path)"
                     $remoteDir = [System.IO.Path]::GetDirectoryName("$($Config.RemotePath)/$($file.Path)").Replace("\", "/")
-                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "mkdir -p '$remoteDir'" 2>$null
-                    $null = & $Config.PscpPath -pw $server.Password -q $localPath $remoteDest 2>&1
+                    Invoke-Ssh -Server $server -Command "mkdir -p '$remoteDir'"
+                    Invoke-Scp -Direction "upload" -Server $server -LocalPath $localPath -RemotePath "$($Config.RemotePath)/$($file.Path)"
                     if ($LASTEXITCODE -eq 0) { Write-Color "  [UPLOAD] $($file.Path)" "Green"; $successCount++ }
                 }
                 $deleteCount = 0
                 foreach ($f in $toDelete) {
                     $remotePath = "$($Config.RemotePath)/$f"
-                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "rm -f '$remotePath'" 2>$null
+                    Invoke-Ssh -Server $server -Command "rm -f '$remotePath'"
                     if ($LASTEXITCODE -eq 0) { Write-Color "  [DELETE] $f" "Red"; $deleteCount++ }
                 }
                 Write-Color ".89: Uploaded=$successCount | Deleted=$deleteCount" "Cyan"
@@ -2050,14 +2135,14 @@ switch ($Command) {
                     $localPath = $file.FullPath
                     $remoteDest = "$($server.User)@$($server.Host):$($Config.RemotePath)/$($file.Path)"
                     $remoteDir = [System.IO.Path]::GetDirectoryName("$($Config.RemotePath)/$($file.Path)").Replace("\", "/")
-                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "mkdir -p '$remoteDir'" 2>$null
-                    $null = & $Config.PscpPath -pw $server.Password -q $localPath $remoteDest 2>&1
+                    Invoke-Ssh -Server $server -Command "mkdir -p '$remoteDir'"
+                    Invoke-Scp -Direction "upload" -Server $server -LocalPath $localPath -RemotePath "$($Config.RemotePath)/$($file.Path)"
                     if ($LASTEXITCODE -eq 0) { Write-Color "  [UPLOAD] $($file.Path)" "Green"; $successCount++ }
                 }
                 $deleteCount = 0
                 foreach ($f in $toDelete) {
                     $remotePath = "$($Config.RemotePath)/$f"
-                    & $Config.PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" "rm -f '$remotePath'" 2>$null
+                    Invoke-Ssh -Server $server -Command "rm -f '$remotePath'"
                     if ($LASTEXITCODE -eq 0) { Write-Color "  [DELETE] $f" "Red"; $deleteCount++ }
                 }
                 Write-Color ".154: Uploaded=$successCount | Deleted=$deleteCount" "Cyan"

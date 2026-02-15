@@ -1257,6 +1257,24 @@
                       "problemMatcher":  [
 
                                          ]
+                  },
+                  {
+                      "label":  "[Mac] SSH 選單 (開啟時自動)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' issh"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "new",
+                                           "focus":  true
+                                       },
+                      "problemMatcher":  [],
+                      "runOptions":  {
+                                         "runOn":  "folderOpen"
+                                     }
                   }
               ],
     "inputs":  [
@@ -1497,6 +1515,9 @@
                    {
                        "id":  "macGpuCount",
                        "type":  "pickString",
+                   },
+                   {
+                       "id":  "macServerOrAll",
                        "description":  "Mac: GPU count",
                        "options":  [
                                        {

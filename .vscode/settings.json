@@ -51,5 +51,72 @@
   "latex-workshop.view.pdf.viewer": "tab",
 
   // 終端機設定
-  "terminal.integrated.defaultProfile.windows": "PowerShell"
+  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "terminal.integrated.defaultProfile.osx": "zsh",
+  "terminal.integrated.profiles.osx": {
+    "zsh": {
+      "path": "/bin/zsh",
+      "icon": "terminal"
+    },
+    "SSH 選單 (issh + GPU)": {
+      "path": "/bin/zsh",
+      "args": ["-lc", "${workspaceFolder}/.vscode/cfdlab-mac.sh issh"],
+      "icon": "remote",
+      "color": "terminal.ansiCyan"
+    },
+    ".89 直連 (V100-32G)": {
+      "path": "/bin/zsh",
+      "args": ["-lc", "${workspaceFolder}/.vscode/cfdlab-mac.sh ssh 89:0"],
+      "icon": "vm-running",
+      "color": "terminal.ansiBlue"
+    },
+    ".87→ib2 (P100)": {
+      "path": "/bin/zsh",
+      "args": ["-lc", "${workspaceFolder}/.vscode/cfdlab-mac.sh ssh 87:2"],
+      "icon": "vm-running",
+      "color": "terminal.ansiGreen"
+    },
+    ".87→ib3 (P100)": {
+      "path": "/bin/zsh",
+      "args": ["-lc", "${workspaceFolder}/.vscode/cfdlab-mac.sh ssh 87:3"],
+      "icon": "vm-running",
+      "color": "terminal.ansiGreen"
+    },
+    ".87→ib5 (P100)": {
+      "path": "/bin/zsh",
+      "args": ["-lc", "${workspaceFolder}/.vscode/cfdlab-mac.sh ssh 87:5"],
+      "icon": "vm-running",
+      "color": "terminal.ansiGreen"
+    },
+    ".87→ib6 (V100-16G)": {
+      "path": "/bin/zsh",
+      "args": ["-lc", "${workspaceFolder}/.vscode/cfdlab-mac.sh ssh 87:6"],
+      "icon": "vm-running",
+      "color": "terminal.ansiGreen"
+    },
+    ".154→ib1 (P100)": {
+      "path": "/bin/zsh",
+      "args": ["-lc", "${workspaceFolder}/.vscode/cfdlab-mac.sh ssh 154:1"],
+      "icon": "vm-running",
+      "color": "terminal.ansiYellow"
+    },
+    ".154→ib4 (P100)": {
+      "path": "/bin/zsh",
+      "args": ["-lc", "${workspaceFolder}/.vscode/cfdlab-mac.sh ssh 154:4"],
+      "icon": "vm-running",
+      "color": "terminal.ansiYellow"
+    },
+    ".154→ib7 (P100)": {
+      "path": "/bin/zsh",
+      "args": ["-lc", "${workspaceFolder}/.vscode/cfdlab-mac.sh ssh 154:7"],
+      "icon": "vm-running",
+      "color": "terminal.ansiYellow"
+    },
+    ".154→ib9 (P100)": {
+      "path": "/bin/zsh",
+      "args": ["-lc", "${workspaceFolder}/.vscode/cfdlab-mac.sh ssh 154:9"],
+      "icon": "vm-running",
+      "color": "terminal.ansiYellow"
+    }
+  }
 }

@@ -5,7 +5,7 @@ param(
     [int]$CheckInterval = 5
 )
 
-$logFile = Join-Path $WatchPath ".vscode\vtk-renamer.log"
+$logFile = Join-Path $WatchPath ".vscode/vtk-renamer.log"
 
 function Write-Log {
     param([string]$Message)

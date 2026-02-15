@@ -9,8 +9,28 @@ param(
     [string]$PlinkPath,
     [string]$PscpPath,
     [string]$LogPath,
-    [int]$Interval = 30
+    [int]$Interval = 30,
+    [switch]$IsWindows,
+    [string]$SshOpts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
 )
+
+# ── Cross-platform SSH/SCP helpers ──────────────────────────────
+function Invoke-DaemonSsh {
+    param([string]$User, [string]$Pass, [string]$Host_, [string]$Command)
+    if ($IsWindows) {
+        return (& $PlinkPath -ssh -pw $Pass -batch "$User@$Host_" $Command 2>$null)
+    } else {
+        return (sshpass -p $Pass ssh $SshOpts.Split(' ') -o BatchMode=no "$User@$Host_" $Command 2>$null)
+    }
+}
+function Invoke-DaemonScp {
+    param([string]$Pass, [string]$Source, [string]$Dest)
+    if ($IsWindows) {
+        $null = & $PscpPath -pw $Pass -batch $Source $Dest 2>&1
+    } else {
+        $null = sshpass -p $Pass scp $SshOpts.Split(' ') $Source $Dest 2>&1
+    }
+}
 
 # Helper function to append log with proper encoding (UTF-8 without BOM)
 function Write-Log {
@@ -28,11 +48,11 @@ while ($true) {
         
         # Find all .dat, log*, .plt files in main directory (no marker logic - pure hash comparison)
         $cmd = "find $RemotePath -maxdepth 1 -type f \( -name '*.dat' -o -name 'log*' -o -name '*.plt' \) 2>/dev/null"
-        $result = & $PlinkPath -ssh -pw $ServerPass -batch "$ServerUser@$ServerHost" $cmd 2>$null
+        $result = Invoke-DaemonSsh -User $ServerUser -Pass $ServerPass -Host_ $ServerHost -Command $cmd
         
         # Also get files in result/statistics directories (include .bin and .vtk)
         $resultCmd = "find $RemotePath/result $RemotePath/statistics -type f \( -name '*.dat' -o -name '*.plt' -o -name '*.bin' -o -name '*.vtk' -o -name 'log*' \) 2>/dev/null"
-        $resultFiles = & $PlinkPath -ssh -pw $ServerPass -batch "$ServerUser@$ServerHost" $resultCmd 2>$null
+        $resultFiles = Invoke-DaemonSsh -User $ServerUser -Pass $ServerPass -Host_ $ServerHost -Command $resultCmd
         
         $allFiles = @()
         if ($result) { $allFiles += $result }
@@ -43,11 +63,11 @@ while ($true) {
             if (-not $remotefile -or $remotefile -match '\.git/' -or $remotefile -match '\.vscode/') { continue }
             
             $relativePath = $remotefile.Replace("$RemotePath/", "")
-            $localFile = Join-Path $LocalPath $relativePath.Replace("/", "\")
+            $localFile = Join-Path $LocalPath $relativePath.Replace("/", [System.IO.Path]::DirectorySeparatorChar)
             
             # Get remote file hash
             $hashCmd = "md5sum '$remotefile' 2>/dev/null | cut -d' ' -f1"
-            $remoteHash = & $PlinkPath -ssh -pw $ServerPass -batch "$ServerUser@$ServerHost" $hashCmd 2>$null
+            $remoteHash = Invoke-DaemonSsh -User $ServerUser -Pass $ServerPass -Host_ $ServerHost -Command $hashCmd
             
             if (-not $remoteHash) { continue }
             
@@ -75,7 +95,7 @@ while ($true) {
                 
                 # Download file (suppress all output)
                 $remoteUri = "$ServerUser@${ServerHost}:$remotefile"
-                $null = & $PscpPath -pw $ServerPass -batch $remoteUri $localFile 2>&1
+                Invoke-DaemonScp -Pass $ServerPass -Source $remoteUri -Dest $localFile
                 
                 Write-Log "[$timestamp] $ServerName DOWNLOADED: $relativePath"
             }

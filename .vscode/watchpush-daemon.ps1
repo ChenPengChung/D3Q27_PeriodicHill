@@ -6,8 +6,28 @@ param(
     [string]$PlinkPath,
     [string]$PscpPath,
     [string]$LogPath,
-    [int]$Interval = 10
+    [int]$Interval = 10,
+    [switch]$IsWindows,
+    [string]$SshOpts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
 )
+
+# ── Cross-platform SSH/SCP helpers ──────────────────────────────
+function Invoke-DaemonSsh {
+    param([string]$User, [string]$Pass, [string]$Host_, [string]$Command)
+    if ($IsWindows) {
+        return (& $PlinkPath -ssh -pw $Pass -batch "$User@$Host_" $Command 2>$null)
+    } else {
+        return (sshpass -p $Pass ssh $SshOpts.Split(' ') -o BatchMode=no "$User@$Host_" $Command 2>$null)
+    }
+}
+function Invoke-DaemonScp {
+    param([string]$Pass, [string]$Source, [string]$Dest)
+    if ($IsWindows) {
+        $null = & $PscpPath -pw $Pass -batch $Source $Dest 2>&1
+    } else {
+        $null = sshpass -p $Pass scp $SshOpts.Split(' ') $Source $Dest 2>&1
+    }
+}
 
 $servers = $ServersJson | ConvertFrom-Json
 # 排除規則：程式碼輸出檔案不上傳（避免覆蓋遠端正在寫入的檔案）
@@ -68,10 +88,10 @@ while ($true) {
                     # Create remote directory if needed
                     $remoteDir = [System.IO.Path]::GetDirectoryName($remoteFile).Replace("\", "/")
                     $mkdirCmd = "mkdir -p '$remoteDir' 2>/dev/null"
-                    $null = & $PlinkPath -ssh -pw $server.Password -batch "$($server.User)@$($server.Host)" $mkdirCmd 2>&1
+                    $null = Invoke-DaemonSsh -User $server.User -Pass $server.Password -Host_ $server.Host -Command $mkdirCmd
                     
                     # Upload file
-                    $null = & $PscpPath -pw $server.Password -batch $file.FullPath $remoteUri 2>&1
+                    Invoke-DaemonScp -Pass $server.Password -Source $file.FullPath -Dest $remoteUri
                 }
                 
                 Write-Log "[$timestamp] UPLOADED: $($file.Path)"

@@ -7,15 +7,40 @@ param(
     [switch]$Interactive
 )
 
+$_scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$_workspaceDir = Split-Path -Parent $_scriptDir
+$_localFolderName = Split-Path -Leaf $_workspaceDir
+$_isWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or ($IsWindows -eq $true)
+
 $Config = @{
-    PlinkPath = "C:\Program Files\PuTTY\plink.exe"
+    IsWindows = $_isWindows
+    PlinkPath = if ($_isWindows) { "C:\Program Files\PuTTY\plink.exe" } else { $null }
     Password = "1256"
     Username = "chenpengchung"
-    RemotePath = "/home/chenpengchung/D3Q27_PeriodicHill"
+    RemotePath = "/home/chenpengchung/$_localFolderName"
+    SshOpts = "-o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"
     Servers = @{
         "87"  = "140.114.58.87"
         "89"  = "140.114.58.89"
         "154" = "140.114.58.154"
+    }
+}
+
+# Cross-platform SSH wrapper
+function Invoke-SshCmd {
+    param([string]$User, [string]$Pass, [string]$Host_, [string]$Command, [switch]$Tty)
+    if ($Config.IsWindows) {
+        if ($Tty) {
+            & $Config.PlinkPath -ssh -pw $Pass "$User@$Host_" -t $Command
+        } else {
+            & $Config.PlinkPath -ssh -pw $Pass -batch "$User@$Host_" $Command 2>$null
+        }
+    } else {
+        if ($Tty) {
+            sshpass -p $Pass ssh $Config.SshOpts.Split(' ') -tt "$User@$Host_" $Command
+        } else {
+            sshpass -p $Pass ssh $Config.SshOpts.Split(' ') -o BatchMode=no "$User@$Host_" $Command 2>$null
+        }
     }
 }
 
@@ -72,18 +97,21 @@ if ($Interactive) {
     foreach ($n in $nodes) {
         $s = $n.Server; $nd = $n.Node
         $jobs += Start-Job -ScriptBlock {
-            param($PlinkPath, $User, $Pass, $IP, $NodeNum)
+            param($PlinkPath, $User, $Pass, $IP, $NodeNum, $IsWin, $SshOpts)
             try {
                 if ($NodeNum -eq "0") {
                     $cmd = "nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader"
-                    $out = & $PlinkPath -ssh -pw $Pass -batch "$User@$IP" $cmd 2>$null
                 } else {
                     $cmd = "ssh -o ConnectTimeout=5 cfdlab-ib$NodeNum 'nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader'"
+                }
+                if ($IsWin) {
                     $out = & $PlinkPath -ssh -pw $Pass -batch "$User@$IP" $cmd 2>$null
+                } else {
+                    $out = sshpass -p $Pass ssh $SshOpts.Split(' ') -o BatchMode=no "$User@$IP" $cmd 2>$null
                 }
                 if ($out) { return ($out -join "`n") } else { return "OFFLINE" }
             } catch { return "OFFLINE" }
-        } -ArgumentList $Config.PlinkPath, $Config.Username, $Config.Password, $Config.Servers[$s], $nd
+        } -ArgumentList $Config.PlinkPath, $Config.Username, $Config.Password, $Config.Servers[$s], $nd, $Config.IsWindows, $Config.SshOpts
     }
 
     # 等待所有查詢完成（最多 15 秒）
@@ -199,10 +227,10 @@ $masterIP = $Config.Servers[$serverKey]
 if ($nodeNum -eq "0") {
     # 直連模式 (如 .89)
     Write-Host "[SSH] Connecting directly to .$serverKey ($masterIP)..." -ForegroundColor Cyan
-    & $Config.PlinkPath -ssh -pw $Config.Password "$($Config.Username)@$masterIP" -t "cd $($Config.RemotePath); exec bash"
+    Invoke-SshCmd -User $Config.Username -Pass $Config.Password -Host_ $masterIP -Command "cd $($Config.RemotePath); exec bash" -Tty
 } else {
     # 跳板模式 (如 .87 ib3)
     $childNode = "cfdlab-ib$nodeNum"
     Write-Host "[SSH] Connecting via .$serverKey ($masterIP) to $childNode..." -ForegroundColor Cyan
-    & $Config.PlinkPath -ssh -pw $Config.Password "$($Config.Username)@$masterIP" -t "ssh -t $childNode 'cd $($Config.RemotePath); exec bash'"
+    Invoke-SshCmd -User $Config.Username -Pass $Config.Password -Host_ $masterIP -Command "ssh -t $childNode 'cd $($Config.RemotePath); exec bash'" -Tty
 }
