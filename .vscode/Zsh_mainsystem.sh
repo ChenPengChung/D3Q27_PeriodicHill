@@ -175,8 +175,20 @@ function format_rsync_output() {
   echo "$summary"
 }
 
-# Run rsync with Git-style formatted output
-# Args: direction(push|pull) server delete_mode
+# Classify an rsync itemize-changes flag string
+# Returns: new / deleted / modified / skip
+function classify_rsync_flags() {
+  local flags="$1"
+  case "$flags" in
+    *deleting*)    echo "deleted" ;;
+    *'++++++'*)    echo "new" ;;
+    .d*)           echo "skip" ;;
+    *)             echo "modified" ;;
+  esac
+}
+
+# Run rsync with Git-style real-time progress output
+# Args: direction(push|pull|fetch) server delete_mode
 function git_style_transfer() {
   local direction="$1"
   local server="$2"
@@ -184,51 +196,351 @@ function git_style_transfer() {
   local host
   local args=()
   local start_time
+  local is_tty=0
+
+  [[ -t 1 ]] && is_tty=1
 
   host="$(resolve_host "$server")"
   start_time="$(date +%s)"
 
-  # Build rsync args with --itemize-changes for formatted output
+  # Build rsync args
   while IFS= read -r line; do
     args+=("$line")
   done < <(build_arg_array "$direction" "$delete_mode")
-  args+=(--itemize-changes)
 
-  local src dst verb
+  local src dst action_verb
   if [[ "$direction" == "push" ]]; then
     src="${WORKSPACE_DIR}/"
     dst="${CFDLAB_USER}@${host}:${CFDLAB_REMOTE_PATH}/"
-    verb="Pushing to"
+    action_verb="Uploading"
     ensure_remote_dir "$server"
   else
     src="${CFDLAB_USER}@${host}:${CFDLAB_REMOTE_PATH}/"
     dst="${WORKSPACE_DIR}/"
-    verb="Pulling from"
+    if [[ "$direction" == "fetch" ]]; then
+      action_verb="Fetching"
+    else
+      action_verb="Downloading"
+    fi
   fi
 
-  printf '%bremote: Checking for changes...%b\n' "$CLR_DIM" "$CLR_RST"
-
-  local raw_output
-  if ! raw_output="$(rsync "${args[@]}" "$src" "$dst" 2>&1)"; then
-    printf '%b[ERROR] rsync failed for .%s%b\n' "$CLR_ERR" "$server" "$CLR_RST"
-    echo "$raw_output" >&2
-    return 1
-  fi
-
-  # Format output
-  if [[ -n "$raw_output" ]]; then
-    echo "$raw_output" | format_rsync_output
+  # ── Phase 1: dry-run to count total objects ──
+  if [[ "$is_tty" -eq 1 ]]; then
+    printf '%bremote: Enumerating objects...%b' "$CLR_DIM" "$CLR_RST"
   else
-    echo "  Already up to date."
+    printf '%bremote: Enumerating objects...%b\n' "$CLR_DIM" "$CLR_RST"
   fi
 
-  # Elapsed time
+  local dry_args=("${args[@]}" --dry-run --itemize-changes)
+  local dry_output
+  dry_output="$(rsync "${dry_args[@]}" "$src" "$dst" 2>/dev/null)" || true
+
+  local total_files=0
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local flags="${line%% *}"
+    if [[ "$flags" =~ ^[.\<\>ch\*][fdLDS] ]] || [[ "$flags" == *deleting ]]; then
+      local cls
+      cls="$(classify_rsync_flags "$flags")"
+      [[ "$cls" == "skip" ]] && continue
+      ((total_files++))
+    fi
+  done <<< "$dry_output"
+
+  if [[ "$is_tty" -eq 1 ]]; then
+    printf '\r\033[K%bremote: Enumerating objects: %d, done.%b\n' "$CLR_DIM" "$total_files" "$CLR_RST"
+  else
+    printf '%bremote: Enumerating objects: %d, done.%b\n' "$CLR_DIM" "$total_files" "$CLR_RST"
+  fi
+
+  if [[ "$total_files" -eq 0 ]]; then
+    echo "  Already up to date."
+    printf 'Transfer complete. [00:00] ✔\n'
+    return 0
+  fi
+
+  # ── Phase 1.5: compute per-file line diffs (for modified text files) ──
+  # Use temp file for key-value storage (bash 3.2 compat, no declare -A)
+  local _linestats_file
+  _linestats_file="$(mktemp /tmp/linestats.XXXXXX)"
+  local total_line_adds=0
+  local total_line_dels=0
+
+  if [[ "$is_tty" -eq 1 ]]; then
+    printf '%bremote: Computing line changes...%b' "$CLR_DIM" "$CLR_RST"
+  fi
+
+  local diff_idx=0
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local d_flags="${line%% *}"
+    if [[ "$d_flags" =~ ^[.\<\>ch\*][fdLDS] ]] || [[ "$d_flags" == *deleting ]]; then
+      local d_cls
+      d_cls="$(classify_rsync_flags "$d_flags")"
+      [[ "$d_cls" == "skip" ]] && continue
+
+      local d_path="${line#* }"
+      d_path="${d_path#./}"
+      ((diff_idx++))
+
+      if [[ "$is_tty" -eq 1 ]]; then
+        printf '\r\033[K%bremote: Computing line changes... (%d/%d) %s%b' \
+          "$CLR_DIM" "$diff_idx" "$total_files" "$d_path" "$CLR_RST"
+      fi
+
+      if [[ "$d_cls" == "modified" ]]; then
+        # Only compute diff for text files
+        if is_text_file "$d_path"; then
+          local local_file="${WORKSPACE_DIR}/${d_path}"
+          if [[ "$direction" == "push" ]]; then
+            # Push: compare local (new) vs remote (old)
+            local tmp_remote
+            tmp_remote="$(fetch_remote_to_temp "$server" "$d_path")"
+            if [[ -f "$tmp_remote" && -s "$tmp_remote" ]]; then
+              local adds=0 dels=0
+              while IFS= read -r dline; do
+                case "$dline" in
+                  +*) ((adds++)) ;;
+                  -*) ((dels++)) ;;
+                esac
+              done < <(diff -u "$tmp_remote" "$local_file" 2>/dev/null | tail -n +3 | grep -E '^\+|^-' | grep -v '^+++\|^---')
+              echo "${d_path}|+${adds}|-${dels}" >> "$_linestats_file"
+              total_line_adds=$((total_line_adds + adds))
+              total_line_dels=$((total_line_dels + dels))
+            fi
+            rm -f "$tmp_remote" 2>/dev/null
+          else
+            # Pull/Fetch: compare remote (new) vs local (old)
+            local tmp_remote
+            tmp_remote="$(fetch_remote_to_temp "$server" "$d_path")"
+            if [[ -f "$tmp_remote" && -s "$tmp_remote" && -f "$local_file" ]]; then
+              local adds=0 dels=0
+              while IFS= read -r dline; do
+                case "$dline" in
+                  +*) ((adds++)) ;;
+                  -*) ((dels++)) ;;
+                esac
+              done < <(diff -u "$local_file" "$tmp_remote" 2>/dev/null | tail -n +3 | grep -E '^\+|^-' | grep -v '^+++\|^---')
+              echo "${d_path}|+${adds}|-${dels}" >> "$_linestats_file"
+              total_line_adds=$((total_line_adds + adds))
+              total_line_dels=$((total_line_dels + dels))
+            fi
+            rm -f "$tmp_remote" 2>/dev/null
+          fi
+        fi
+      elif [[ "$d_cls" == "new" ]]; then
+        # New file: count all lines as additions (for text files)
+        if is_text_file "$d_path"; then
+          local lines_count=0
+          if [[ "$direction" == "push" ]]; then
+            local local_file="${WORKSPACE_DIR}/${d_path}"
+            [[ -f "$local_file" ]] && lines_count=$(wc -l < "$local_file" 2>/dev/null | tr -d ' ')
+          else
+            lines_count=$(ssh_batch_exec "$host" "wc -l < '${CFDLAB_REMOTE_PATH}/${d_path}'" 2>/dev/null | tr -d ' ')
+          fi
+          lines_count=${lines_count:-0}
+          echo "${d_path}|+${lines_count}|-0" >> "$_linestats_file"
+          total_line_adds=$((total_line_adds + lines_count))
+        fi
+      elif [[ "$d_cls" == "deleted" ]]; then
+        # Deleted file: count all lines as deletions (for text files)
+        if is_text_file "$d_path"; then
+          local lines_count=0
+          if [[ "$direction" == "push" ]]; then
+            lines_count=$(ssh_batch_exec "$host" "wc -l < '${CFDLAB_REMOTE_PATH}/${d_path}'" 2>/dev/null | tr -d ' ')
+          else
+            local local_file="${WORKSPACE_DIR}/${d_path}"
+            [[ -f "$local_file" ]] && lines_count=$(wc -l < "$local_file" 2>/dev/null | tr -d ' ')
+          fi
+          lines_count=${lines_count:-0}
+          echo "${d_path}|+0|-${lines_count}" >> "$_linestats_file"
+          total_line_dels=$((total_line_dels + lines_count))
+        fi
+      fi
+    fi
+  done <<< "$dry_output"
+
+  if [[ "$is_tty" -eq 1 ]]; then
+    printf '\r\033[K%bremote: Computing line changes: done.%b\n' "$CLR_DIM" "$CLR_RST"
+  else
+    printf '%bremote: Computing line changes: done.%b\n' "$CLR_DIM" "$CLR_RST"
+  fi
+
+  # ── Phase 2: real transfer with real-time progress ──
+  # Retry wrapper: up to 3 attempts
+  local max_retries=3
+  local attempt=0
+  local rsync_exit=1
+  local transfer_args=("${args[@]}" --itemize-changes)
+  local current=0
+  local new_count=0 mod_count=0 del_count=0
+  local formatted_lines=()
+  local phase2_start
+  phase2_start="$(date +%s)"
+
+  while [[ $attempt -lt $max_retries ]]; do
+    ((attempt++))
+    if [[ $attempt -gt 1 ]]; then
+      printf '%b⚠ Retry %d/%d (waiting 3s...)%b\n' "$CLR_ERR" "$attempt" "$max_retries" "$CLR_RST"
+      sleep 3
+    fi
+
+    current=0; new_count=0; mod_count=0; del_count=0
+    formatted_lines=()
+    phase2_start="$(date +%s)"
+
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      local flags="${line%% *}"
+      # Only process valid rsync itemize lines
+      if [[ "$flags" =~ ^[.\<\>ch\*][fdLDS] ]] || [[ "$flags" == *deleting ]]; then
+        local cls
+        cls="$(classify_rsync_flags "$flags")"
+        [[ "$cls" == "skip" ]] && continue
+
+        ((current++))
+        local path="${line#* }"
+        path="${path#./}"
+        local pct=$((current * 100 / total_files))
+
+        # Count by type
+        case "$cls" in
+          new)      ((new_count++)) ;;
+          deleted)  ((del_count++)) ;;
+          modified) ((mod_count++)) ;;
+        esac
+
+        # Calculate speed & ETA
+        local now_ts elapsed_so_far speed_str eta_str bar_str
+        now_ts="$(date +%s)"
+        elapsed_so_far=$((now_ts - phase2_start))
+        if [[ $elapsed_so_far -gt 0 && $current -gt 0 ]]; then
+          local files_per_sec=$(( (current * 100) / elapsed_so_far ))  # x100 for precision
+          local remaining_files=$((total_files - current))
+          local eta_s=0
+          if [[ $files_per_sec -gt 0 ]]; then
+            eta_s=$(( (remaining_files * 100) / files_per_sec ))
+          fi
+          if [[ $eta_s -ge 60 ]]; then
+            eta_str="$((eta_s / 60))m$((eta_s % 60))s"
+          else
+            eta_str="${eta_s}s"
+          fi
+          speed_str="$(printf '%.1f' "$(echo "scale=1; $current / $elapsed_so_far" | bc 2>/dev/null || echo "0")")"
+          speed_str="${speed_str} files/s"
+        else
+          eta_str="--"
+          speed_str="--"
+        fi
+
+        # Progress bar (20 chars wide)
+        if [[ "$is_tty" -eq 1 ]]; then
+          local bar_width=20
+          local filled=$((pct * bar_width / 100))
+          local empty=$((bar_width - filled))
+          bar_str=""
+          local i
+          for ((i=0; i<filled; i++)); do bar_str+="━"; done
+          for ((i=0; i<empty; i++)); do bar_str+="─"; done
+        fi
+
+        # Show real-time progress
+        if [[ "$is_tty" -eq 1 ]]; then
+          printf '\r\033[K%b%s%b %3d%% %b(%d/%d)%b %s | ⏱ %s  📁 %s' \
+            "$CLR_DIM" "$bar_str" "$CLR_RST" "$pct" \
+            "$CLR_DIM" "$current" "$total_files" "$CLR_RST" \
+            "$speed_str" "$eta_str" "$path"
+        else
+          printf '[%3d%%] (%d/%d) %s\n' "$pct" "$current" "$total_files" "$path"
+        fi
+
+        # Store formatted line for summary
+        local fmt
+        fmt="$(format_rsync_line "$line")"
+        [[ -n "$fmt" ]] && formatted_lines+=("$fmt")
+      fi
+    done < <(rsync "${transfer_args[@]}" "$src" "$dst" 2>&1)
+    rsync_exit=${PIPESTATUS[0]:-$?}
+
+    # If rsync succeeded or partial transfer with all files done, break
+    if [[ $rsync_exit -eq 0 ]] || [[ $current -ge $total_files ]]; then
+      break
+    fi
+    printf '\n%b⚠ rsync exited with code %d%b\n' "$CLR_ERR" "$rsync_exit" "$CLR_RST"
+  done
+
+  # ── Phase 3: summary ──
   local end_time elapsed_s mins secs
   end_time="$(date +%s)"
   elapsed_s=$((end_time - start_time))
   mins=$((elapsed_s / 60))
   secs=$((elapsed_s % 60))
-  printf 'Transfer complete. [%02d:%02d] ✔\n' "$mins" "$secs"
+
+  if [[ "$is_tty" -eq 1 ]]; then
+    printf '\r\033[K%b%s objects: 100%% (%d/%d), done.%b\n' \
+      "$CLR_DIM" "$action_verb" "$total_files" "$total_files" "$CLR_RST"
+  else
+    printf '%b%s objects: 100%% (%d/%d), done.%b\n' \
+      "$CLR_DIM" "$action_verb" "$total_files" "$total_files" "$CLR_RST"
+  fi
+
+  # Print formatted file list with per-file line stats
+  for l in "${formatted_lines[@]}"; do
+    # Extract path from formatted line for line stats lookup
+    local fpath=""
+    # Try to extract the path (after label text)
+    fpath="$(echo "$l" | sed 's/.*\(new file:\|modified:\|deleted:\|new dir:\|changed:\)[[:space:]]*//' | sed 's/\x1b\[[0-9;]*m//g' | tr -d '[:space:]' | head -1)"
+    # Fallback: trim ANSI codes and get last word
+    if [[ -z "$fpath" ]]; then
+      fpath="$(echo "$l" | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $NF}')"
+    fi
+
+    local stat_str=""
+    local _ls_line=""
+    if [[ -f "$_linestats_file" ]]; then
+      _ls_line="$(grep -F "${fpath}|" "$_linestats_file" | head -1)"
+    fi
+    if [[ -n "$_ls_line" ]]; then
+      local fa fd
+      fa="$(echo "$_ls_line" | sed 's/.*|+\([0-9]*\)|-.*/\1/')"
+      fd="$(echo "$_ls_line" | sed 's/.*|-\([0-9]*\)$/\1/')"
+      fa=${fa:-0}; fd=${fd:-0}
+      if [[ $fa -gt 0 && $fd -gt 0 ]]; then
+        stat_str="$(printf ' | %b+%d%b %b-%d%b' "$CLR_OK" "$fa" "$CLR_RST" "$CLR_ERR" "$fd" "$CLR_RST")"
+      elif [[ $fa -gt 0 ]]; then
+        stat_str="$(printf ' | %b+%d%b' "$CLR_OK" "$fa" "$CLR_RST")"
+      elif [[ $fd -gt 0 ]]; then
+        stat_str="$(printf ' | %b-%d%b' "$CLR_ERR" "$fd" "$CLR_RST")"
+      fi
+    fi
+    printf '%s%s\n' "$l" "$stat_str"
+  done
+
+  # Summary line (git-style with line-level stats)
+  local summary="${current} file(s) changed"
+  if [[ "$total_line_adds" -gt 0 ]]; then
+    summary+="$(printf ', %b%d insertion(+)%b' "$CLR_OK" "$total_line_adds" "$CLR_RST")"
+  fi
+  if [[ "$total_line_dels" -gt 0 ]]; then
+    summary+="$(printf ', %b%d deletion(-)%b' "$CLR_ERR" "$total_line_dels" "$CLR_RST")"
+  fi
+  # Fallback: if no line stats, show file-level counts
+  if [[ "$total_line_adds" -eq 0 && "$total_line_dels" -eq 0 ]]; then
+    [[ "$new_count" -gt 0 ]] && summary+=", ${new_count} new"
+    [[ "$del_count" -gt 0 ]] && summary+=", ${del_count} deleted"
+    [[ "$mod_count" -gt 0 ]] && summary+=", ${mod_count} modified"
+  fi
+  echo "$summary"
+
+  # Final stats: elapsed time + speed
+  local total_speed_str=""
+  if [[ $elapsed_s -gt 0 && $current -gt 0 ]]; then
+    total_speed_str=" | $(printf '%.1f' "$(echo "scale=1; $current / $elapsed_s" | bc 2>/dev/null || echo "0")") files/s"
+  fi
+  printf 'Transfer complete. [%02d:%02d]%s ✔\n' "$mins" "$secs" "$total_speed_str"
+
+  # Cleanup temp file
+  rm -f "$_linestats_file" 2>/dev/null
 }
 
 # Multi-server wrapper with color-coded separators
@@ -498,7 +810,14 @@ function push_args() {
     --exclude=*.plt
     --exclude=*.bin
     --exclude=*.vtk
+    --exclude=*.vtu
     --exclude=log*
+    --exclude=*.swp
+    --exclude=*.swo
+    --exclude=*~
+    --exclude=__pycache__/
+    --exclude=*.pyc
+    --exclude=.DS_Store
     -e
     "$rsh_cmd"
   )
@@ -523,6 +842,7 @@ function pull_args() {
     --include=*.plt
     --include=*.bin
     --include=*.vtk
+    --include=*.vtu
     --include=log*
     --exclude=*
     -e
@@ -627,7 +947,7 @@ function preview_pull_changes() {
 
 function count_change_lines() {
   local payload="$1"
-  printf '%s\n' "$payload" | awk 'NF > 0 && $1 ~ /^[<>ch\.\*]/ {c++} END{print c+0}'
+  printf '%s\n' "$payload" | awk 'NF > 0 && $1 ~ /^[<>ch\.\*]/ && $1 !~ /^\.d/ {c++} END{print c+0}'
 }
 
 function list_change_paths() {
@@ -674,6 +994,451 @@ function confirm_or_die() {
     *) die "Cancelled" ;;
   esac
 }
+
+# ========== Sync History Logging ==========
+SYNC_HISTORY_FILE="${HOME}/.sync-history.log"
+
+function log_sync_history() {
+  local action="$1"    # PUSH / PULL / FETCH
+  local server="$2"
+  local file_count="$3"
+  local adds="${4:-0}"
+  local dels="${5:-0}"
+  local timestamp
+  timestamp="$(date '+%Y-%m-%d %H:%M')"
+  printf '[%s] %s .%s: %s file(s), +%s -%s lines\n' \
+    "$timestamp" "$action" "$server" "$file_count" "$adds" "$dels" \
+    >> "$SYNC_HISTORY_FILE" 2>/dev/null || true
+}
+
+# ========== Code Diff Analysis Functions (GitHub-style) ==========
+
+# Diff configuration defaults (can be overridden by .sync-config)
+DIFF_CONTEXT_LINES=3
+DIFF_MAX_FILE_SIZE=10485760     # 10 MB
+DIFF_NEW_FILE_PREVIEW_LINES=20
+DIFF_SMALL_DATA_MAX_LINES=50
+DIFF_MAX_FILES_FULL=100
+DIFF_IGNORE_WHITESPACE=true
+SAFETY_DELETE_WARN=10
+SAFETY_LINES_WARN=1000
+
+# Load .sync-config if it exists
+SYNC_CONFIG_FILE="${WORKSPACE_DIR}/.sync-config"
+if [[ -f "$SYNC_CONFIG_FILE" ]]; then
+  # Source only known safe variables
+  while IFS='=' read -r key value; do
+    key="$(echo "$key" | tr -d '[:space:]')"
+    value="$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed 's/^"//;s/"$//')"
+    case "$key" in
+      DIFF_CONTEXT_LINES) DIFF_CONTEXT_LINES="$value" ;;
+      DIFF_MAX_FILE_SIZE) DIFF_MAX_FILE_SIZE="$value" ;;
+      DIFF_NEW_FILE_PREVIEW_LINES) DIFF_NEW_FILE_PREVIEW_LINES="$value" ;;
+      DIFF_SMALL_DATA_MAX_LINES) DIFF_SMALL_DATA_MAX_LINES="$value" ;;
+      DIFF_MAX_FILES_FULL) DIFF_MAX_FILES_FULL="$value" ;;
+      DIFF_IGNORE_WHITESPACE) DIFF_IGNORE_WHITESPACE="$value" ;;
+      SAFETY_DELETE_WARN) SAFETY_DELETE_WARN="$value" ;;
+      SAFETY_LINES_WARN) SAFETY_LINES_WARN="$value" ;;
+      SYNC_HISTORY_FILE) SYNC_HISTORY_FILE="$value" ;;
+    esac
+  done < <(grep -v '^#' "$SYNC_CONFIG_FILE" | grep -v '^$' | grep '=')
+fi
+
+# Known text extensions for full diff display
+DIFF_TEXT_EXT_PATTERN='\.(cpp|c|h|hpp|cu|cuh|py|sh|zsh|ps1|f90|f95|f03|mk|txt|md|rst|json|yaml|yml|toml)$|^Makefile$'
+
+function is_text_file() {
+  local filename="$1"
+  local base
+  base="$(basename "$filename")"
+  if echo "$base" | grep -qiE "$DIFF_TEXT_EXT_PATTERN"; then
+    return 0
+  fi
+  return 1
+}
+
+function is_binary_file() {
+  local filename="$1"
+  local base
+  base="$(basename "$filename")"
+  if echo "$base" | grep -qiE '\.(o|out|exe|bin|vtk|vtu|dat|DAT|plt|png|jpg|gif|pdf|zip|tar|gz|bz2)$'; then
+    return 0
+  fi
+  return 1
+}
+
+# Get remote file size in bytes
+function get_remote_file_size() {
+  local server="$1"
+  local filepath="$2"
+  local host
+  host="$(resolve_host "$server")"
+  ssh_batch_exec "$host" "stat -c%s '${CFDLAB_REMOTE_PATH}/${filepath}' 2>/dev/null || echo 0"
+}
+
+# Get local file size in bytes
+function get_local_file_size() {
+  local filepath="$1"
+  local full_path="${WORKSPACE_DIR}/${filepath}"
+  if [[ -f "$full_path" ]]; then
+    stat -f%z "$full_path" 2>/dev/null || stat -c%s "$full_path" 2>/dev/null || echo 0
+  else
+    echo 0
+  fi
+}
+
+# Format file size for display
+function format_size() {
+  local bytes="$1"
+  if [[ "$bytes" -ge 1073741824 ]]; then
+    printf '%.1f GB' "$(echo "scale=1; $bytes / 1073741824" | bc)"
+  elif [[ "$bytes" -ge 1048576 ]]; then
+    printf '%.1f MB' "$(echo "scale=1; $bytes / 1048576" | bc)"
+  elif [[ "$bytes" -ge 1024 ]]; then
+    printf '%.1f KB' "$(echo "scale=1; $bytes / 1024" | bc)"
+  else
+    printf '%d B' "$bytes"
+  fi
+}
+
+# Fetch remote file content to a temp file (returns temp path)
+function fetch_remote_to_temp() {
+  local server="$1"
+  local filepath="$2"
+  local host
+  local tmpfile
+  host="$(resolve_host "$server")"
+  tmpfile="$(mktemp)"
+  ssh_batch_exec "$host" "cat '${CFDLAB_REMOTE_PATH}/${filepath}'" > "$tmpfile" 2>/dev/null
+  echo "$tmpfile"
+}
+
+# Generate a unified diff between local and remote file and print GitHub-style output.
+# Returns total +lines and -lines via global variables.
+DIFF_TOTAL_ADDS=0
+DIFF_TOTAL_DELS=0
+
+function show_file_diff() {
+  local direction="$1"   # push or pull
+  local server="$2"
+  local filepath="$3"
+  local file_status="$4" # new / modified / deleted
+  local mode="${5:-full}" # full / summary / stat
+
+  local local_file="${WORKSPACE_DIR}/${filepath}"
+  local adds=0 dels=0
+  local base
+  base="$(basename "$filepath")"
+
+  # ── New file (exists only on source side) ──
+  if [[ "$file_status" == "new" ]]; then
+    if [[ "$mode" == "stat" ]]; then
+      adds=$(wc -l < "$local_file" 2>/dev/null || echo 0)
+      adds="${adds##*( )}"  # trim whitespace
+      printf '📄 %-50s \033[32m+%s\033[0m (new file)\n' "$filepath" "$adds"
+      DIFF_TOTAL_ADDS=$((DIFF_TOTAL_ADDS + adds))
+      return
+    fi
+
+    if is_text_file "$filepath"; then
+      adds=$(wc -l < "$local_file" 2>/dev/null || echo 0)
+      adds="${adds##*( )}"
+      printf '\n\033[34m📄 %s\033[0m %50s \033[32m+%s -0\033[0m (new file)\n' \
+        "$filepath" "" "$adds"
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+      printf '\033[33m@@ -0,0 +1,%s @@\033[0m\n' "$adds"
+      head -n "$DIFF_NEW_FILE_PREVIEW_LINES" "$local_file" | while IFS= read -r line; do
+        printf '\033[32m+%s\033[0m\n' "$line"
+      done
+      local total_lines
+      total_lines=$(wc -l < "$local_file" 2>/dev/null || echo 0)
+      total_lines="${total_lines##*( )}"
+      if [[ "$total_lines" -gt "$DIFF_NEW_FILE_PREVIEW_LINES" ]]; then
+        local remaining=$((total_lines - DIFF_NEW_FILE_PREVIEW_LINES))
+        printf '\033[90m... (%d more lines)\033[0m\n' "$remaining"
+      fi
+    else
+      local fsize
+      fsize=$(get_local_file_size "$filepath")
+      adds=1
+      printf '\n\033[34m📄 %s\033[0m (new file, %s)\n' "$filepath" "$(format_size "$fsize")"
+    fi
+    DIFF_TOTAL_ADDS=$((DIFF_TOTAL_ADDS + adds))
+    return
+  fi
+
+  # ── Deleted file ──
+  if [[ "$file_status" == "deleted" ]]; then
+    if [[ "$mode" == "stat" ]]; then
+      printf '📄 %-50s \033[31m(deleted)\033[0m\n' "$filepath"
+      return
+    fi
+    printf '\n\033[34m📄 %s\033[0m \033[31m(will be deleted)\033[0m\n' "$filepath"
+    return
+  fi
+
+  # ── Modified file: need actual diff ──
+  if is_binary_file "$filepath"; then
+    local local_size remote_size
+    local_size=$(get_local_file_size "$filepath")
+    remote_size=$(get_remote_file_size "$server" "$filepath")
+    printf '\n\033[34m📄 %s\033[0m (binary: %s → %s)\n' \
+      "$filepath" "$(format_size "$remote_size")" "$(format_size "$local_size")"
+    return
+  fi
+
+  if ! is_text_file "$filepath"; then
+    # Non-text, non-binary: check size
+    local fsize
+    fsize=$(get_local_file_size "$filepath")
+    if [[ "$fsize" -gt "$DIFF_MAX_FILE_SIZE" ]]; then
+      local remote_size
+      remote_size=$(get_remote_file_size "$server" "$filepath")
+      printf '\n\033[34m📄 %s\033[0m (large: %s → %s)\n' \
+        "$filepath" "$(format_size "$remote_size")" "$(format_size "$fsize")"
+      return
+    fi
+  fi
+
+  # Fetch remote file for comparison
+  local remote_tmp
+  remote_tmp="$(fetch_remote_to_temp "$server" "$filepath")"
+
+  local diff_args=(-u --label "a/$filepath" --label "b/$filepath")
+  if [[ "$DIFF_IGNORE_WHITESPACE" == "true" ]]; then
+    diff_args+=(-w)
+  fi
+
+  local diff_output
+  local old_file new_file
+  if [[ "$direction" == "push" ]]; then
+    old_file="$remote_tmp"
+    new_file="$local_file"
+  else
+    old_file="$local_file"
+    new_file="$remote_tmp"
+  fi
+
+  diff_output=$(diff "${diff_args[@]}" "$old_file" "$new_file" 2>/dev/null || true)
+
+  # Count adds/dels
+  adds=$(echo "$diff_output" | grep -c '^+[^+]' 2>/dev/null || echo 0)
+  dels=$(echo "$diff_output" | grep -c '^-[^-]' 2>/dev/null || echo 0)
+
+  DIFF_TOTAL_ADDS=$((DIFF_TOTAL_ADDS + adds))
+  DIFF_TOTAL_DELS=$((DIFF_TOTAL_DELS + dels))
+
+  if [[ "$mode" == "stat" ]]; then
+    printf '📄 %-50s \033[32m+%s\033[0m \033[31m-%s\033[0m\n' "$filepath" "$adds" "$dels"
+    rm -f "$remote_tmp"
+    return
+  fi
+
+  # GitHub-style header
+  printf '\n\033[34m📄 %s\033[0m %50s \033[32m+%s\033[0m \033[31m-%s\033[0m\n' \
+    "$filepath" "" "$adds" "$dels"
+  printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+
+  if [[ -z "$diff_output" ]]; then
+    printf '\033[90m  (no content changes — whitespace only?)\033[0m\n'
+    rm -f "$remote_tmp"
+    return
+  fi
+
+  # Print diff with colors (skip first 2 header lines from unified diff as we print our own)
+  local line_no=0
+  local in_small_data=0
+  local small_data_lines=0
+  echo "$diff_output" | while IFS= read -r line; do
+    ((line_no++))
+    # Skip unified diff header lines (--- a/... and +++ b/...)
+    [[ "$line_no" -le 2 ]] && continue
+
+    # For non-text files, limit output
+    if ! is_text_file "$filepath"; then
+      ((small_data_lines++))
+      if [[ "$small_data_lines" -gt "$DIFF_SMALL_DATA_MAX_LINES" ]]; then
+        printf '\033[90m... (truncated, showing first %d diff lines)\033[0m\n' "$DIFF_SMALL_DATA_MAX_LINES"
+        break
+      fi
+    fi
+
+    case "$line" in
+      @@*)
+        printf '\033[33m%s\033[0m\n' "$line"
+        ;;
+      +*)
+        printf '\033[32m%s\033[0m\n' "$line"
+        ;;
+      -*)
+        printf '\033[31m%s\033[0m\n' "$line"
+        ;;
+      *)
+        printf '\033[90m%s\033[0m\n' "$line"
+        ;;
+    esac
+  done
+
+  rm -f "$remote_tmp"
+}
+
+# Full code diff analysis for a server before push/pull/fetch
+# Args: direction server [mode] 
+#   mode: full (default), summary, stat, no-diff
+# Outputs: colored diff to stdout
+# Sets: DIFF_TOTAL_ADDS, DIFF_TOTAL_DELS, DIFF_FILE_COUNT
+# Returns: 0 if user confirms (or no confirm needed), 1 if cancelled
+DIFF_FILE_COUNT=0
+
+function analyze_code_diff() {
+  local direction="$1"
+  local server="$2"
+  local mode="${3:-full}"
+  local confirm="${4:-false}"
+
+  DIFF_TOTAL_ADDS=0
+  DIFF_TOTAL_DELS=0
+  DIFF_FILE_COUNT=0
+
+  if [[ "$mode" == "no-diff" ]]; then
+    return 0
+  fi
+
+  local host
+  host="$(resolve_host "$server")"
+
+  printf '\n\033[1m🔍 Analyzing changes before %s...\033[0m\n' "$direction"
+  printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+
+  # Get changed files from rsync dry-run
+  local preview_raw=""
+  if [[ "$direction" == "push" ]]; then
+    preview_raw="$(preview_push_changes "$server" 2>/dev/null)" || {
+      printf '\033[31m[ERROR] Failed to enumerate changes\033[0m\n'
+      return 0
+    }
+  else
+    local dm="keep"
+    [[ "$direction" == "fetch" ]] && dm="delete"
+    preview_raw="$(preview_pull_changes "$server" "$dm" 2>/dev/null)" || {
+      printf '\033[31m[ERROR] Failed to enumerate changes\033[0m\n'
+      return 0
+    }
+  fi
+
+  # Parse rsync itemize output into arrays
+  local new_files=() modified_files=() deleted_files=()
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local flags="${line%% *}"
+    local path="${line#* }"
+    path="${path#./}"
+    [[ -z "$path" || "$path" == "." || "$path" == "./" ]] && continue
+
+    local cls
+    cls="$(classify_rsync_flags "$flags")"
+    case "$cls" in
+      new) new_files+=("$path") ;;
+      deleted) deleted_files+=("$path") ;;
+      modified) modified_files+=("$path") ;;
+      skip) ;; # directories, ignore
+    esac
+  done <<< "$preview_raw"
+
+  local total_new=${#new_files[@]}
+  local total_mod=${#modified_files[@]}
+  local total_del=${#deleted_files[@]}
+  local total_files=$((total_new + total_mod + total_del))
+  DIFF_FILE_COUNT=$total_files
+
+  if [[ "$total_files" -eq 0 ]]; then
+    printf '\n  Already up to date.\n\n'
+    return 0
+  fi
+
+  # ── Changes Summary ──
+  printf '\n\033[1m📊 Changes Summary:\033[0m\n'
+  [[ "$total_mod" -gt 0 ]] && printf '   📝 Modified: %d files\n' "$total_mod"
+  [[ "$total_new" -gt 0 ]] && printf '   ✨ New: %d files\n' "$total_new"
+  [[ "$total_del" -gt 0 ]] && printf '   🗑️  Deleted: %d files\n' "$total_del"
+  printf '\n'
+
+  # ── Safety warnings ──
+  if [[ "$total_del" -ge "$SAFETY_DELETE_WARN" ]]; then
+    printf '\033[31m⚠️  WARNING: %d files will be deleted!\033[0m\n' "$total_del"
+  fi
+
+  # If too many files, show only summary
+  if [[ "$total_files" -gt "$DIFF_MAX_FILES_FULL" ]]; then
+    printf '\033[90m(Too many files (%d) for detailed diff — showing stat only)\033[0m\n\n' "$total_files"
+    mode="stat"
+  fi
+
+  # ── Per-file diff ──
+  if [[ "$mode" != "summary" ]]; then
+    # Modified files
+    for filepath in "${modified_files[@]}"; do
+      show_file_diff "$direction" "$server" "$filepath" "modified" "$mode"
+    done
+
+    # New files
+    for filepath in "${new_files[@]}"; do
+      show_file_diff "$direction" "$server" "$filepath" "new" "$mode"
+    done
+
+    # Deleted files
+    for filepath in "${deleted_files[@]}"; do
+      show_file_diff "$direction" "$server" "$filepath" "deleted" "$mode"
+    done
+  fi
+
+  # ── Code Changes Statistics ──
+  printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+  printf '\033[1m📊 Code Changes Statistics:\033[0m\n'
+  [[ "$DIFF_TOTAL_ADDS" -gt 0 ]] && printf '   📈 Lines added: %d (+)\n' "$DIFF_TOTAL_ADDS"
+  [[ "$DIFF_TOTAL_DELS" -gt 0 ]] && printf '   📉 Lines removed: %d (-)\n' "$DIFF_TOTAL_DELS"
+  local net=$((DIFF_TOTAL_ADDS - DIFF_TOTAL_DELS))
+  printf '   📐 Net change: %+d lines\n' "$net"
+
+  if [[ "$((DIFF_TOTAL_ADDS + DIFF_TOTAL_DELS))" -ge "$SAFETY_LINES_WARN" ]]; then
+    printf '\n\033[33m⚠️  Large change: %d total line changes\033[0m\n' "$((DIFF_TOTAL_ADDS + DIFF_TOTAL_DELS))"
+  fi
+
+  # ── File type breakdown ──
+  # Group by extension
+  local -A ext_files ext_adds ext_dels
+  for filepath in "${modified_files[@]}" "${new_files[@]}"; do
+    local ext="${filepath##*.}"
+    [[ "$filepath" == *.* ]] || ext="(no ext)"
+    ext=".${ext}"
+    ext_files["$ext"]=$(( ${ext_files["$ext"]:-0} + 1 ))
+  done
+  if [[ ${#ext_files[@]} -gt 0 ]]; then
+    printf '\n   📁 Changed files by type:\n'
+    for ext in "${!ext_files[@]}"; do
+      printf '      %s: %d file(s)\n' "$ext" "${ext_files[$ext]}"
+    done
+  fi
+
+  printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+
+  # ── Confirmation ──
+  if [[ "$confirm" == "true" ]]; then
+    printf '\033[33m⚠️  Review changes above before %s\033[0m\n' "$direction"
+    if [[ ! -t 0 ]] || [[ "$CFDLAB_ASSUME_YES" == "1" ]]; then
+      return 0
+    fi
+    read -r -p "Continue with $direction? [Y/n]: " ans
+    case "$ans" in
+      n|N|no|NO) printf 'Cancelled.\n'; return 1 ;;
+      *) return 0 ;;
+    esac
+  fi
+
+  return 0
+}
+
+# ========== End Code Diff Analysis ==========
 
 function watch_pid_file() {
   case "$1" in
@@ -864,6 +1629,21 @@ Core (same names as Windows):
   diff87, diff89, diff154, diffall
   log87, log89, log154
 
+Code Diff Analysis (GitHub-style):
+  sync-diff [server]     - 僅比較差異，不同步
+  sync-diff-summary [s]  - 快速摘要（僅統計）
+  sync-diff-file <file>  - 檢視特定檔案差異
+  sync-log [lines]       - 查看同步歷史記錄
+  sync-stop              - 停止所有背景同步任務
+
+Diff options (for push/pull/fetch):
+  --no-diff              - 跳過差異分析，直接傳輸
+  --diff-summary         - 僅顯示統計摘要
+  --diff-stat            - diffstat 風格統計
+  --diff-full            - 完整差異（預設）
+  --force                - 跳過確認和差異分析
+  --quick                - 同 --no-diff
+
 Extra node helpers:
   ssh [87:3], run [87:3] [gpu], jobs [87:3], kill [87:3]
 
@@ -880,11 +1660,14 @@ Optional environment:
   CFDLAB_ASSUME_YES=1          (skip confirmations for reset/clone/sync/fullsync)
 
 Examples:
-  ./.vscode/Zsh_mainsystem.sh diff
-  ./.vscode/Zsh_mainsystem.sh push
-  ./.vscode/Zsh_mainsystem.sh watchpush all 10
-  ./.vscode/Zsh_mainsystem.sh watchpull status
-  ./.vscode/Zsh_mainsystem.sh vtkrename
+  mobaxterm push                  # 顯示差異 → 確認 → 上傳
+  mobaxterm push --no-diff        # 直接上傳不顯示差異
+  mobaxterm push --diff-stat 87   # 僅統計後上傳到 .87
+  mobaxterm pull --quick          # 快速下載不分析
+  mobaxterm sync-diff 87          # 僅查看 .87 的差異
+  mobaxterm sync-diff-file main.cu  # 查看特定檔案差異
+  mobaxterm sync-log              # 查看同步歷史
+  mobaxterm sync-stop             # 停止所有背景任務
 EOF
 }
 
@@ -1401,38 +2184,106 @@ function cmd_log() {
 
 function cmd_pull_like() {
   local mode="$1"
-  local server
-  local delete_mode
+  shift
+  local diff_mode="full"
+  local confirm="false"
+  local positional=()
 
-  server="$(normalize_server "${2:-87}")"
+  # Parse options
+  for arg in "$@"; do
+    case "$arg" in
+      --no-diff)       diff_mode="no-diff" ;;
+      --diff-summary)  diff_mode="summary" ;;
+      --diff-stat)     diff_mode="stat" ;;
+      --diff-full)     diff_mode="full" ;;
+      --force)         confirm="false"; diff_mode="no-diff" ;;
+      --quick)         diff_mode="no-diff" ;;
+      *)               positional+=("$arg") ;;
+    esac
+  done
+
+  local server
+  server="$(normalize_server "${positional[0]:-87}")"
+  local delete_mode
   if [[ "$mode" == "fetch" ]]; then
     delete_mode="delete"
   else
     delete_mode="keep"
   fi
 
+  # Show diff analysis before transfer (manual commands only)
+  if [[ "$diff_mode" != "no-diff" ]]; then
+    if ! analyze_code_diff "$mode" "$server" "$diff_mode" "$confirm"; then
+      return 1
+    fi
+  fi
+
   multi_server_run "$mode" "$server" "$delete_mode"
+
+  # Log to history
+  log_sync_history "$(echo "$mode" | tr '[:lower:]' '[:upper:]')" "$server" "${DIFF_FILE_COUNT:-0}" "${DIFF_TOTAL_ADDS:-0}" "${DIFF_TOTAL_DELS:-0}"
 }
 
 function cmd_push_like() {
   local mode="$1"
-  local target
-  local delete_mode
+  shift
+  local diff_mode="full"
+  local confirm="true"  # push defaults to confirm
+  local positional=()
 
-  target="$(parse_server_or_all "${2:-all}")"
-  # Match Windows behavior: push also deletes remote-only source files
-  # (rsync exclusions ensure result/log/data files are never deleted)
-  delete_mode="delete"
+  # Parse options
+  for arg in "$@"; do
+    case "$arg" in
+      --no-diff)       diff_mode="no-diff"; confirm="false" ;;
+      --diff-summary)  diff_mode="summary" ;;
+      --diff-stat)     diff_mode="stat" ;;
+      --diff-full)     diff_mode="full" ;;
+      --force)         confirm="false"; diff_mode="no-diff" ;;
+      --quick)         diff_mode="no-diff"; confirm="false" ;;
+      *)               positional+=("$arg") ;;
+    esac
+  done
+
+  local target
+  target="$(parse_server_or_all "${positional[0]:-all}")"
+  local delete_mode="delete"
   if [[ "$mode" == "push-keep" ]]; then
     delete_mode="keep"
   fi
 
+  # Show diff analysis before transfer
+  if [[ "$diff_mode" != "no-diff" ]]; then
+    # For push, show diff on the first target server
+    local first_server
+    first_server="$(each_target_server "$target" | head -1)"
+    if ! analyze_code_diff push "$first_server" "$diff_mode" "$confirm"; then
+      return 1
+    fi
+  fi
+
   multi_server_run push "$target" "$delete_mode"
+
+  # Log to history
+  local first_server
+  first_server="$(each_target_server "$target" | head -1)"
+  log_sync_history PUSH "$first_server" "${DIFF_FILE_COUNT:-0}" "${DIFF_TOTAL_ADDS:-0}" "${DIFF_TOTAL_DELS:-0}"
 }
 
 function cmd_diff() {
+  local diff_mode="full"
+  local positional=()
+
+  for arg in "$@"; do
+    case "$arg" in
+      --summary)  diff_mode="summary" ;;
+      --stat)     diff_mode="stat" ;;
+      --full)     diff_mode="full" ;;
+      *)          positional+=("$arg") ;;
+    esac
+  done
+
   local target
-  target="$(parse_server_or_all "${1:-all}")"
+  target="$(parse_server_or_all "${positional[0]:-all}")"
 
   local servers=()
   local total=0
@@ -1455,22 +2306,12 @@ function cmd_diff() {
     printf '%b══════════════════════════════════════════════════%b\n' "$color" "$CLR_RST"
 
     echo ""
-    printf '%b--- Push preview (local → remote) ---%b\n' "$CLR_BOLD" "$CLR_RST"
-    local push_raw
-    if push_raw="$(preview_push_changes "$server")"; then
-      echo "$push_raw" | format_rsync_output
-    else
-      printf '%b[ERROR] push preview failed%b\n' "$CLR_ERR" "$CLR_RST"
-    fi
+    printf '%b--- Push diff (local → remote) ---%b\n' "$CLR_BOLD" "$CLR_RST"
+    analyze_code_diff push "$server" "$diff_mode" false
 
     echo ""
-    printf '%b--- Pull preview (remote → local) ---%b\n' "$CLR_BOLD" "$CLR_RST"
-    local pull_raw
-    if pull_raw="$(preview_pull_changes "$server" keep)"; then
-      echo "$pull_raw" | format_rsync_output
-    else
-      printf '%b[ERROR] pull preview failed%b\n' "$CLR_ERR" "$CLR_RST"
-    fi
+    printf '%b--- Pull diff (remote → local) ---%b\n' "$CLR_BOLD" "$CLR_RST"
+    analyze_code_diff pull "$server" "$diff_mode" false
     echo ""
   done
 }
@@ -1569,7 +2410,7 @@ function cmd_autopull() {
 
   if [[ "$count" -gt 0 ]]; then
     echo "[AUTOPULL] ${server}: ${count} changes"
-    run_pull "$server" keep
+    git_style_transfer pull "$server" keep
   else
     echo "[AUTOPULL] ${server}: no changes"
   fi
@@ -1589,7 +2430,7 @@ function cmd_autofetch() {
 
   if [[ "$count" -gt 0 ]]; then
     echo "[AUTOFETCH] ${server}: ${count} changes"
-    run_pull "$server" delete
+    git_style_transfer fetch "$server" delete
   else
     echo "[AUTOFETCH] ${server}: no changes"
   fi
@@ -1612,7 +2453,7 @@ function cmd_autopush() {
 
     if [[ "$count" -gt 0 ]]; then
       echo "[AUTOPUSH] ${server}: ${count} changes"
-      run_push "$server" delete
+      git_style_transfer push "$server" delete
     else
       echo "[AUTOPUSH] ${server}: no changes"
     fi
@@ -1653,15 +2494,81 @@ function cmd_clone() {
     "${WORKSPACE_DIR}/"
 }
 
+# ========== New Diff / Sync Commands ==========
+
+function cmd_sync_diff() {
+  local diff_mode="full"
+  local positional=()
+
+  for arg in "$@"; do
+    case "$arg" in
+      --summary) diff_mode="summary" ;;
+      --stat)    diff_mode="stat" ;;
+      --full)    diff_mode="full" ;;
+      *)         positional+=("$arg") ;;
+    esac
+  done
+
+  local server
+  server="$(normalize_server "${positional[0]:-87}")"
+  printf '\033[1m🔄 Comparing local ↔ .%s (no transfer)\033[0m\n' "$server"
+
+  echo ""
+  printf '\033[1m=== Push direction (local → remote) ===\033[0m\n'
+  analyze_code_diff push "$server" "$diff_mode" false
+
+  echo ""
+  printf '\033[1m=== Pull direction (remote → local) ===\033[0m\n'
+  analyze_code_diff pull "$server" "$diff_mode" false
+}
+
+function cmd_sync_diff_file() {
+  local filename="${1:?Usage: sync-diff-file <filename> [server]}"
+  local server
+  server="$(normalize_server "${2:-87}")"
+
+  printf '\033[1m📄 Diff for: %s (vs .%s)\033[0m\n' "$filename" "$server"
+
+  local local_file="${WORKSPACE_DIR}/${filename}"
+  if [[ ! -f "$local_file" ]]; then
+    printf '\033[31m[ERROR] Local file not found: %s\033[0m\n' "$filename"
+    return 1
+  fi
+
+  DIFF_TOTAL_ADDS=0
+  DIFF_TOTAL_DELS=0
+  show_file_diff push "$server" "$filename" "modified" "full"
+}
+
+function cmd_sync_log() {
+  local lines="${1:-30}"
+  if [[ ! -f "$SYNC_HISTORY_FILE" ]]; then
+    echo "No sync history yet."
+    return
+  fi
+  printf '\033[1m📝 Sync History (last %d entries):\033[0m\n' "$lines"
+  tail -n "$lines" "$SYNC_HISTORY_FILE"
+}
+
+function cmd_sync_stop() {
+  echo "Stopping all background sync daemons..."
+  stop_daemon push 2>/dev/null || true
+  stop_daemon pull 2>/dev/null || true
+  stop_daemon fetch 2>/dev/null || true
+  echo "All sync daemons stopped."
+}
+
+# ========== End New Diff / Sync Commands ==========
+
 function cmd_sync() {
   cmd_diff all
   confirm_or_die "Push local source changes to both servers?"
-  cmd_push_like push all
+  cmd_push_like push all --no-diff
 }
 
 function cmd_fullsync() {
   confirm_or_die "Push + delete remote-only source files on both servers?"
-  cmd_push_like push-sync all
+  cmd_push_like push-sync all --no-diff
 }
 
 function cmd_watch_generic() {
@@ -1769,7 +2676,7 @@ function main() {
   esac
 
   case "$cmd" in
-    add|autofetch|autofetch87|autofetch89|autofetch154|autopull|autopull87|autopull89|autopull154|autopush|autopush87|autopush89|autopush154|autopushall|bgstatus|check|clone|delete|diff|diff87|diff89|diff154|diffall|fetch|fetch154|fetch87|fetch89|fullsync|issynced|log|log87|log89|log154|pull|pull154|pull87|pull89|push|push87|push89|push154|pushall|reset|status|sync|syncstatus|vtkrename|watch|watchfetch|watchpull|watchpush)
+    add|autofetch|autofetch87|autofetch89|autofetch154|autopull|autopull87|autopull89|autopull154|autopush|autopush87|autopush89|autopush154|autopushall|bgstatus|check|clone|delete|diff|diff87|diff89|diff154|diffall|fetch|fetch154|fetch87|fetch89|fullsync|issynced|log|log87|log89|log154|pull|pull154|pull87|pull89|push|push87|push89|push154|pushall|reset|status|sync|sync-diff|sync-diff-summary|sync-diff-file|sync-log|sync-stop|syncstatus|vtkrename|watch|watchfetch|watchpull|watchpush)
       require_cmd rsync
       ;;
   esac
@@ -1813,13 +2720,18 @@ function main() {
     pull89) cmd_pull_like pull 89 ;;
     pull154) cmd_pull_like pull 154 ;;
     push) cmd_push_like push "$@" ;;
-    push87) cmd_push_like push 87 ;;
-    push89) cmd_push_like push 89 ;;
-    push154) cmd_push_like push 154 ;;
-    pushall) cmd_push_like push all ;;
+    push87) cmd_push_like push 87 "$@" ;;
+    push89) cmd_push_like push 89 "$@" ;;
+    push154) cmd_push_like push 154 "$@" ;;
+    pushall) cmd_push_like push all "$@" ;;
     reset) cmd_reset "$@" ;;
     status) cmd_status "$@" ;;
     sync) cmd_sync ;;
+    sync-diff) cmd_sync_diff "$@" ;;
+    sync-diff-summary) cmd_sync_diff --summary "$@" ;;
+    sync-diff-file) cmd_sync_diff_file "$@" ;;
+    sync-log) cmd_sync_log "$@" ;;
+    sync-stop) cmd_sync_stop ;;
     syncstatus) cmd_syncstatus "$@" ;;
     vtkrename) cmd_vtkrename "$@" ;;
     watch) cmd_watch "$@" ;;

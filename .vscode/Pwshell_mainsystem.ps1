@@ -95,7 +95,8 @@ $script:Config = @{
     SshPassword = "1256"
     SshOpts = "-o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"
     # 排除的檔案，例如 .git 和 .vscode 設定檔等
-    ExcludePatterns = @(".git/*", ".vscode/*", "a.out", "*.o", "*.exe")
+    ExcludePatterns = @(".git/*", ".vscode/*", "a.out", "*.o", "*.exe",
+        "*.swp", "*.swo", "*~", "__pycache__/*", "*.pyc", ".DS_Store", "*.vtu")
     # 同步的副檔名
     SyncExtensions = @("*")
     SyncAll = $true  # 同步所有類型的檔案
@@ -141,8 +142,9 @@ function Invoke-Ssh {
 function Invoke-Scp {
     <#
     .SYNOPSIS
-    Cross-platform SCP wrapper. Direction: "upload" or "download".
+    Cross-platform SCP wrapper with retry logic. Direction: "upload" or "download".
     On Windows uses pscp, on macOS/Linux uses sshpass+scp.
+    Retries up to 3 times on failure with 3-second backoff.
     #>
     param(
         [string]$Direction,      # "upload" or "download"
@@ -150,23 +152,31 @@ function Invoke-Scp {
         [string]$LocalPath,
         [string]$RemotePath      # e.g. user@host:/path or just /remote/path
     )
-    if ($Config.IsWindows) {
-        if ($Direction -eq "upload") {
-            $remoteDest = "$($Server.User)@$($Server.Host):$RemotePath"
-            $null = & $Config.PscpPath -pw $Server.Password -q $LocalPath $remoteDest 2>&1
+    $maxRetries = 3
+    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+        if ($Config.IsWindows) {
+            if ($Direction -eq "upload") {
+                $remoteDest = "$($Server.User)@$($Server.Host):$RemotePath"
+                $null = & $Config.PscpPath -pw $Server.Password -q -p $LocalPath $remoteDest 2>&1
+            } else {
+                $remoteSrc = "$($Server.User)@$($Server.Host):$RemotePath"
+                $null = & $Config.PscpPath -pw $Server.Password -q -p $remoteSrc $LocalPath 2>&1
+            }
         } else {
-            $remoteSrc = "$($Server.User)@$($Server.Host):$RemotePath"
-            $null = & $Config.PscpPath -pw $Server.Password -q $remoteSrc $LocalPath 2>&1
+            # macOS/Linux: use sshpass + scp (-p preserves mtime/permissions)
+            $sshOpts = $Config.SshOpts
+            if ($Direction -eq "upload") {
+                $remoteDest = "$($Server.User)@$($Server.Host):$RemotePath"
+                $null = sshpass -p $Server.Password scp $sshOpts.Split(' ') -q -p $LocalPath $remoteDest 2>&1
+            } else {
+                $remoteSrc = "$($Server.User)@$($Server.Host):$RemotePath"
+                $null = sshpass -p $Server.Password scp $sshOpts.Split(' ') -q -p $remoteSrc $LocalPath 2>&1
+            }
         }
-    } else {
-        # macOS/Linux: use sshpass + scp
-        $sshOpts = $Config.SshOpts
-        if ($Direction -eq "upload") {
-            $remoteDest = "$($Server.User)@$($Server.Host):$RemotePath"
-            $null = sshpass -p $Server.Password scp $sshOpts.Split(' ') -q $LocalPath $remoteDest 2>&1
-        } else {
-            $remoteSrc = "$($Server.User)@$($Server.Host):$RemotePath"
-            $null = sshpass -p $Server.Password scp $sshOpts.Split(' ') -q $remoteSrc $LocalPath 2>&1
+        if ($LASTEXITCODE -eq 0) { return }
+        if ($attempt -lt $maxRetries) {
+            Write-Host "  ⚠ SCP failed (attempt $attempt/$maxRetries), retrying in 3s..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 3
         }
     }
 }
@@ -297,7 +307,7 @@ function Get-RemoteFiles {
     param([hashtable]$Server)
     
     # 排除 .git 和 .vscode 目錄
-    $excludeGrep = "grep -v '/.git/' | grep -v '/.vscode/'"
+    $excludeGrep = "grep -v '/.git/' | grep -v '/.vscode/' | grep -v '\.o$' | grep -v '\.swp$' | grep -v '\.swo$' | grep -v '~$' | grep -v '__pycache__' | grep -v '\.pyc$' | grep -v '\.DS_Store' | grep -v '\.vtu$'"
     $cmd = "find $($Config.RemotePath) -type f -exec md5sum {} \; 2>/dev/null | $excludeGrep"
     $result = Invoke-Ssh -Server $Server -Command $cmd
     
@@ -388,16 +398,946 @@ function Show-CompareResults {
     Write-Color "`nStats: Same=$($Results.Same.Count) | New=$($Results.New.Count) | Modified=$($Results.Modified.Count) | RemoteOnly=$($Results.Deleted.Count)" "Cyan"
 }
 
+# ========== Git-style Progress Transfer Functions ==========
+
+function Get-ServerEmoji {
+    param([string]$Name)
+    switch ($Name) {
+        ".87"  { "🟢" }
+        ".89"  { "🔵" }
+        ".154" { "🟡" }
+        default { "⚪" }
+    }
+}
+
+function Get-ServerColor {
+    param([string]$Name)
+    switch ($Name) {
+        ".87"  { "Green" }
+        ".89"  { "Blue" }
+        ".154" { "Yellow" }
+        default { "White" }
+    }
+}
+
+function Write-TransferHeader {
+    param([hashtable]$Server, [string]$Verb, [int]$Index = 1, [int]$Total = 1)
+    $color = Get-ServerColor $Server.Name
+    $emoji = Get-ServerEmoji $Server.Name
+    Write-Host "══════════════════════════════════════════════════" -ForegroundColor $color
+    Write-Host " [$Index/$Total] $emoji $Verb $($Server.Name) ($($Server.Host))" -ForegroundColor $color
+    Write-Host "══════════════════════════════════════════════════" -ForegroundColor $color
+}
+
+function Format-ProgressLine {
+    <# Build a progress line with bar, %, count, speed, ETA, and filename #>
+    param(
+        [string]$Verb, [int]$Pct, [int]$Current, [int]$Total,
+        [string]$FileName, [datetime]$PhaseStart, [bool]$IsInteractive
+    )
+    # Progress bar (20 chars)
+    $barWidth = 20
+    $filled = [math]::Floor($Pct * $barWidth / 100)
+    $empty = $barWidth - $filled
+    $bar = ("━" * $filled) + ("─" * $empty)
+
+    # Speed & ETA
+    $elapsed = ((Get-Date) - $PhaseStart).TotalSeconds
+    $speedStr = "--"
+    $etaStr = "--"
+    if ($elapsed -gt 0 -and $Current -gt 0) {
+        $fps = $Current / $elapsed
+        $speedStr = "{0:F1} files/s" -f $fps
+        $remaining = $Total - $Current
+        if ($fps -gt 0) {
+            $etaSec = [math]::Ceiling($remaining / $fps)
+            if ($etaSec -ge 60) {
+                $etaStr = "{0}m{1}s" -f [math]::Floor($etaSec / 60), ($etaSec % 60)
+            } else {
+                $etaStr = "${etaSec}s"
+            }
+        }
+    }
+
+    # Truncate filename if too long
+    $maxNameLen = 30
+    $shortName = if ($FileName.Length -gt $maxNameLen) { "..." + $FileName.Substring($FileName.Length - $maxNameLen + 3) } else { $FileName }
+
+    if ($IsInteractive) {
+        return "`r$bar $($Pct.ToString().PadLeft(3))% ($Current/$Total) $speedStr | ⏱ $etaStr  📁 $shortName".PadRight(100)
+    } else {
+        return "[$($Pct.ToString().PadLeft(3))%] ($Current/$Total) $FileName"
+    }
+}
+
+function Write-TransferSummary {
+    <# Print final stats line #>
+    param([datetime]$StartTime, [int]$FileCount)
+    $elapsed = (Get-Date) - $StartTime
+    $speedStr = ""
+    if ($elapsed.TotalSeconds -gt 0 -and $FileCount -gt 0) {
+        $fps = $FileCount / $elapsed.TotalSeconds
+        $speedStr = " | {0:F1} files/s" -f $fps
+    }
+    Write-Host ("Transfer complete. [{0:mm\:ss}]{1} ✔" -f $elapsed, $speedStr)
+}
+
+# ========== Sync History Logging ==========
+$script:SyncHistoryFile = Join-Path $HOME ".sync-history.log"
+
+function Write-SyncHistory {
+    param([string]$Action, [string]$ServerName, [int]$FileCount, [int]$Adds, [int]$Dels)
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm"
+    $entry = "[$timestamp] ${Action} ${ServerName}: $FileCount file(s), +$Adds -$Dels lines"
+    try { Add-Content -Path $script:SyncHistoryFile -Value $entry -ErrorAction Stop } catch {}
+}
+
+# ========== Code Diff Analysis Functions (GitHub-style) ==========
+
+# Diff configuration
+$script:DiffConfig = @{
+    ContextLines = 3
+    MaxFileSize = 10485760        # 10 MB
+    NewFilePreviewLines = 20
+    SmallDataMaxLines = 50
+    MaxFilesFull = 100
+    IgnoreWhitespace = $true
+    SafetyDeleteWarn = 10
+    SafetyLinesWarn = 1000
+}
+
+# Load .sync-config if exists
+$_syncConfigPath = Join-Path $Config.LocalPath ".sync-config"
+if (Test-Path $_syncConfigPath) {
+    Get-Content $_syncConfigPath | Where-Object { $_ -match '^\s*(\w+)\s*=\s*(.+)$' -and $_ -notmatch '^\s*#' } | ForEach-Object {
+        $key = $Matches[1].Trim()
+        $val = $Matches[2].Trim().Trim('"')
+        switch ($key) {
+            'DIFF_CONTEXT_LINES'          { $script:DiffConfig.ContextLines = [int]$val }
+            'DIFF_MAX_FILE_SIZE'          { $script:DiffConfig.MaxFileSize = [int]$val }
+            'DIFF_NEW_FILE_PREVIEW_LINES' { $script:DiffConfig.NewFilePreviewLines = [int]$val }
+            'DIFF_SMALL_DATA_MAX_LINES'   { $script:DiffConfig.SmallDataMaxLines = [int]$val }
+            'DIFF_MAX_FILES_FULL'         { $script:DiffConfig.MaxFilesFull = [int]$val }
+            'DIFF_IGNORE_WHITESPACE'      { $script:DiffConfig.IgnoreWhitespace = ($val -eq 'true') }
+            'SAFETY_DELETE_WARN'          { $script:DiffConfig.SafetyDeleteWarn = [int]$val }
+            'SAFETY_LINES_WARN'           { $script:DiffConfig.SafetyLinesWarn = [int]$val }
+            'SYNC_HISTORY_FILE'           { $script:SyncHistoryFile = $val }
+        }
+    }
+}
+
+# Text file extensions for full diff
+$script:TextExtensions = @(".cpp",".c",".h",".hpp",".cu",".cuh",".py",".sh",".zsh",".ps1",
+    ".f90",".f95",".f03",".mk",".txt",".md",".rst",".json",".yaml",".yml",".toml")
+
+function Test-TextFile {
+    param([string]$FileName)
+    $base = [System.IO.Path]::GetFileName($FileName)
+    if ($base -eq "Makefile") { return $true }
+    $ext = [System.IO.Path]::GetExtension($FileName).ToLower()
+    return ($ext -in $script:TextExtensions)
+}
+
+function Test-BinaryFile {
+    param([string]$FileName)
+    $ext = [System.IO.Path]::GetExtension($FileName).ToLower()
+    return ($ext -in @(".o",".out",".exe",".bin",".vtk",".vtu",".dat",".plt",".png",".jpg",".gif",".pdf",".zip",".tar",".gz",".bz2"))
+}
+
+function Format-FileSize {
+    param([long]$Bytes)
+    if ($Bytes -ge 1GB) { return "{0:F1} GB" -f ($Bytes / 1GB) }
+    if ($Bytes -ge 1MB) { return "{0:F1} MB" -f ($Bytes / 1MB) }
+    if ($Bytes -ge 1KB) { return "{0:F1} KB" -f ($Bytes / 1KB) }
+    return "$Bytes B"
+}
+
+function Get-RemoteFileContent {
+    param([hashtable]$Server, [string]$RelativePath)
+    $cmd = "cat '$($Config.RemotePath)/$RelativePath'"
+    $result = Invoke-Ssh -Server $Server -Command $cmd
+    return $result
+}
+
+function Get-RemoteFileSize {
+    param([hashtable]$Server, [string]$RelativePath)
+    $cmd = "stat -c%s '$($Config.RemotePath)/$RelativePath' 2>/dev/null || echo 0"
+    $result = Invoke-Ssh -Server $Server -Command $cmd
+    if ($result) { return [long]($result | Select-Object -First 1) }
+    return 0
+}
+
+# Show diff for a single file — returns hashtable { Adds; Dels }
+function Show-FileDiff {
+    param(
+        [string]$Direction,     # push or pull
+        [hashtable]$Server,
+        [string]$FilePath,
+        [string]$FileStatus,    # new / modified / deleted
+        [string]$Mode           # full / summary / stat
+    )
+    $localFile = Join-Path $Config.LocalPath ($FilePath.Replace("/", [System.IO.Path]::DirectorySeparatorChar))
+    $adds = 0; $dels = 0
+
+    # ── New file ──
+    if ($FileStatus -eq "new") {
+        if ($Mode -eq "stat") {
+            if (Test-Path $localFile) { $adds = (Get-Content $localFile -ErrorAction SilentlyContinue | Measure-Object).Count }
+            Write-Host ("📄 {0,-50} " -f $FilePath) -NoNewline -ForegroundColor Blue
+            Write-Host "+$adds" -ForegroundColor Green -NoNewline
+            Write-Host " (new file)"
+            return @{ Adds = $adds; Dels = 0 }
+        }
+        if (Test-TextFile $FilePath) {
+            if (Test-Path $localFile) {
+                $lines = Get-Content $localFile -ErrorAction SilentlyContinue
+                $adds = ($lines | Measure-Object).Count
+            }
+            Write-Host ""
+            Write-Host "📄 $FilePath" -ForegroundColor Blue -NoNewline
+            Write-Host "  +$adds -0 (new file)" -ForegroundColor Green
+            Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+            Write-Host "@@ -0,0 +1,$adds @@" -ForegroundColor Yellow
+            $preview = $lines | Select-Object -First $script:DiffConfig.NewFilePreviewLines
+            foreach ($l in $preview) { Write-Host "+$l" -ForegroundColor Green }
+            if ($adds -gt $script:DiffConfig.NewFilePreviewLines) {
+                $remaining = $adds - $script:DiffConfig.NewFilePreviewLines
+                Write-Host "... ($remaining more lines)" -ForegroundColor DarkGray
+            }
+        } else {
+            $fsize = if (Test-Path $localFile) { (Get-Item $localFile).Length } else { 0 }
+            Write-Host ""
+            Write-Host "📄 $FilePath (new file, $(Format-FileSize $fsize))" -ForegroundColor Blue
+            $adds = 1
+        }
+        return @{ Adds = $adds; Dels = 0 }
+    }
+
+    # ── Deleted file ──
+    if ($FileStatus -eq "deleted") {
+        if ($Mode -eq "stat") {
+            Write-Host ("📄 {0,-50} " -f $FilePath) -NoNewline -ForegroundColor Blue
+            Write-Host "(deleted)" -ForegroundColor Red
+            return @{ Adds = 0; Dels = 0 }
+        }
+        Write-Host ""
+        Write-Host "📄 $FilePath" -ForegroundColor Blue -NoNewline
+        Write-Host " (will be deleted)" -ForegroundColor Red
+        return @{ Adds = 0; Dels = 0 }
+    }
+
+    # ── Modified file ──
+    if (Test-BinaryFile $FilePath) {
+        $localSize = if (Test-Path $localFile) { (Get-Item $localFile).Length } else { 0 }
+        $remoteSize = Get-RemoteFileSize -Server $Server -RelativePath $FilePath
+        Write-Host ""
+        Write-Host "📄 $FilePath" -ForegroundColor Blue -NoNewline
+        Write-Host " (binary: $(Format-FileSize $remoteSize) → $(Format-FileSize $localSize))" -ForegroundColor DarkGray
+        return @{ Adds = 0; Dels = 0 }
+    }
+
+    if (-not (Test-TextFile $FilePath)) {
+        $fsize = if (Test-Path $localFile) { (Get-Item $localFile).Length } else { 0 }
+        if ($fsize -gt $script:DiffConfig.MaxFileSize) {
+            $remoteSize = Get-RemoteFileSize -Server $Server -RelativePath $FilePath
+            Write-Host ""
+            Write-Host "📄 $FilePath" -ForegroundColor Blue -NoNewline
+            Write-Host " (large: $(Format-FileSize $remoteSize) → $(Format-FileSize $fsize))" -ForegroundColor DarkGray
+            return @{ Adds = 0; Dels = 0 }
+        }
+    }
+
+    # Fetch remote content for comparison
+    $remoteContent = Get-RemoteFileContent -Server $Server -RelativePath $FilePath
+    if (-not $remoteContent) { $remoteContent = @() }
+    $localContent = if (Test-Path $localFile) { Get-Content $localFile -ErrorAction SilentlyContinue } else { @() }
+    if (-not $localContent) { $localContent = @() }
+
+    # Determine old vs new based on direction
+    if ($Direction -eq "push") {
+        $oldContent = $remoteContent; $newContent = $localContent
+    } else {
+        $oldContent = $localContent; $newContent = $remoteContent
+    }
+
+    # Write to temp files and run diff
+    $tmpOld = [System.IO.Path]::GetTempFileName()
+    $tmpNew = [System.IO.Path]::GetTempFileName()
+    try {
+        $oldContent | Set-Content -Path $tmpOld -Encoding UTF8 -ErrorAction Stop
+        $newContent | Set-Content -Path $tmpNew -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        if (Test-Path $tmpOld) { Remove-Item $tmpOld -Force }
+        if (Test-Path $tmpNew) { Remove-Item $tmpNew -Force }
+        return @{ Adds = 0; Dels = 0 }
+    }
+
+    $diffArgs = @("-u", "--label", "a/$FilePath", "--label", "b/$FilePath")
+    if ($script:DiffConfig.IgnoreWhitespace) { $diffArgs += "-w" }
+    $diffArgs += @($tmpOld, $tmpNew)
+
+    $diffOutput = $null
+    try { $diffOutput = & diff @diffArgs 2>$null } catch {}
+
+    Remove-Item $tmpOld, $tmpNew -Force -ErrorAction SilentlyContinue
+
+    if (-not $diffOutput) {
+        if ($Mode -eq "stat") {
+            Write-Host ("📄 {0,-50} " -f $FilePath) -NoNewline -ForegroundColor Blue
+            Write-Host "(whitespace only)" -ForegroundColor DarkGray
+        }
+        return @{ Adds = 0; Dels = 0 }
+    }
+
+    # Count +/- lines
+    foreach ($line in $diffOutput) {
+        if ($line -match '^\+[^+]') { $adds++ }
+        elseif ($line -match '^\-[^-]') { $dels++ }
+    }
+
+    if ($Mode -eq "stat") {
+        Write-Host ("📄 {0,-50} " -f $FilePath) -NoNewline -ForegroundColor Blue
+        Write-Host "+$adds" -ForegroundColor Green -NoNewline
+        Write-Host " -$dels" -ForegroundColor Red
+        return @{ Adds = $adds; Dels = $dels }
+    }
+
+    # Full diff output
+    Write-Host ""
+    Write-Host "📄 $FilePath" -ForegroundColor Blue -NoNewline
+    Write-Host ("  +$adds" ) -ForegroundColor Green -NoNewline
+    Write-Host " -$dels" -ForegroundColor Red
+    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+
+    $lineNo = 0
+    $dataLines = 0
+    $isText = Test-TextFile $FilePath
+    foreach ($line in $diffOutput) {
+        $lineNo++
+        if ($lineNo -le 2) { continue }  # Skip --- +++ headers
+
+        if (-not $isText) {
+            $dataLines++
+            if ($dataLines -gt $script:DiffConfig.SmallDataMaxLines) {
+                Write-Host "... (truncated, showing first $($script:DiffConfig.SmallDataMaxLines) diff lines)" -ForegroundColor DarkGray
+                break
+            }
+        }
+
+        if ($line -match '^@@') { Write-Host $line -ForegroundColor Yellow }
+        elseif ($line -match '^\+')  { Write-Host $line -ForegroundColor Green }
+        elseif ($line -match '^\-')  { Write-Host $line -ForegroundColor Red }
+        else { Write-Host $line -ForegroundColor DarkGray }
+    }
+
+    return @{ Adds = $adds; Dels = $dels }
+}
+
+# Full code diff analysis for a server before push/pull/fetch
+# Returns $true if user confirms (or no confirm needed), $false if cancelled
+function Invoke-CodeDiffAnalysis {
+    param(
+        [string]$Direction,     # push / pull / fetch
+        [hashtable]$Server,
+        [string]$Mode = "full", # full / summary / stat / no-diff
+        [bool]$Confirm = $false
+    )
+
+    if ($Mode -eq "no-diff") { return $true }
+
+    Write-Host ""
+    Write-Host "🔍 Analyzing changes before $Direction..." -ForegroundColor White
+    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+
+    # Get changed files
+    $results = Compare-Files -Server $Server -Silent
+    $newFiles = @(); $modifiedFiles = @(); $deletedFiles = @()
+
+    if ($Direction -eq "push") {
+        $newFiles = @($results.New)
+        $modifiedFiles = @($results.Modified)
+        $deletedFiles = @($results.Deleted) # remote-only → will be deleted on remote
+    } else {
+        $newFiles = @($results.Deleted)      # remote-only → new for local
+        $modifiedFiles = @($results.Modified)
+        $deletedFiles = @($results.New)      # local-only → deleted in fetch
+        if ($Direction -eq "pull") { $deletedFiles = @() } # pull doesn't delete
+    }
+
+    $totalNew = $newFiles.Count
+    $totalMod = $modifiedFiles.Count
+    $totalDel = $deletedFiles.Count
+    $totalFiles = $totalNew + $totalMod + $totalDel
+    $script:DiffFileCount = $totalFiles
+
+    if ($totalFiles -eq 0) {
+        Write-Host ""
+        Write-Host "  Already up to date." -ForegroundColor DarkGray
+        Write-Host ""
+        return $true
+    }
+
+    # Changes Summary
+    Write-Host ""
+    Write-Host "📊 Changes Summary:" -ForegroundColor White
+    if ($totalMod -gt 0) { Write-Host "   📝 Modified: $totalMod files" }
+    if ($totalNew -gt 0) { Write-Host "   ✨ New: $totalNew files" }
+    if ($totalDel -gt 0) { Write-Host "   🗑️  Deleted: $totalDel files" }
+    Write-Host ""
+
+    # Safety warnings
+    if ($totalDel -ge $script:DiffConfig.SafetyDeleteWarn) {
+        Write-Host "⚠️  WARNING: $totalDel files will be deleted!" -ForegroundColor Red
+    }
+
+    if ($totalFiles -gt $script:DiffConfig.MaxFilesFull) {
+        Write-Host "(Too many files ($totalFiles) — showing stat only)" -ForegroundColor DarkGray
+        Write-Host ""
+        $Mode = "stat"
+    }
+
+    $totalAdds = 0; $totalDels = 0
+
+    if ($Mode -ne "summary") {
+        foreach ($fp in $modifiedFiles) {
+            $r = Show-FileDiff -Direction $Direction -Server $Server -FilePath $fp -FileStatus "modified" -Mode $Mode
+            if ($r) { $totalAdds += $r.Adds; $totalDels += $r.Dels }
+        }
+        foreach ($fp in $newFiles) {
+            $r = Show-FileDiff -Direction $Direction -Server $Server -FilePath $fp -FileStatus "new" -Mode $Mode
+            if ($r) { $totalAdds += $r.Adds; $totalDels += $r.Dels }
+        }
+        foreach ($fp in $deletedFiles) {
+            $r = Show-FileDiff -Direction $Direction -Server $Server -FilePath $fp -FileStatus "deleted" -Mode $Mode
+            if ($r) { $totalAdds += $r.Adds; $totalDels += $r.Dels }
+        }
+    }
+
+    $script:DiffTotalAdds = $totalAdds
+    $script:DiffTotalDels = $totalDels
+
+    # Code Changes Statistics
+    Write-Host ""
+    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+    Write-Host "📊 Code Changes Statistics:" -ForegroundColor White
+    if ($totalAdds -gt 0) { Write-Host "   📈 Lines added: $totalAdds (+)" }
+    if ($totalDels -gt 0) { Write-Host "   📉 Lines removed: $totalDels (-)" }
+    $net = $totalAdds - $totalDels
+    Write-Host ("   📐 Net change: {0:+#;-#;0} lines" -f $net)
+
+    if (($totalAdds + $totalDels) -ge $script:DiffConfig.SafetyLinesWarn) {
+        Write-Host ""
+        Write-Host "⚠️  Large change: $($totalAdds + $totalDels) total line changes" -ForegroundColor Yellow
+    }
+
+    # File type breakdown
+    $extGroups = @{}
+    foreach ($fp in ($modifiedFiles + $newFiles)) {
+        $ext = [System.IO.Path]::GetExtension($fp)
+        if (-not $ext) { $ext = "(no ext)" }
+        if ($extGroups.ContainsKey($ext)) { $extGroups[$ext]++ } else { $extGroups[$ext] = 1 }
+    }
+    if ($extGroups.Count -gt 0) {
+        Write-Host ""
+        Write-Host "   📁 Changed files by type:"
+        foreach ($ext in $extGroups.Keys | Sort-Object) {
+            Write-Host "      ${ext}: $($extGroups[$ext]) file(s)"
+        }
+    }
+    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+
+    # Confirmation
+    if ($Confirm) {
+        Write-Host "⚠️  Review changes above before $Direction" -ForegroundColor Yellow
+        $answer = Read-Host "Continue with ${Direction}? [Y/n]"
+        if ($answer -in @("n","N","no","NO")) {
+            Write-Host "Cancelled."
+            return $false
+        }
+    }
+    return $true
+}
+
+# ========== Diff Option Parsing Helper ==========
+
+function Parse-DiffOptions {
+    param([string[]]$Args_)
+    $result = @{
+        DiffMode = "full"
+        Confirm  = $false
+        Positional = @()
+    }
+    foreach ($a in $Args_) {
+        switch ($a) {
+            "--no-diff"       { $result.DiffMode = "no-diff"; $result.Confirm = $false }
+            "--diff-summary"  { $result.DiffMode = "summary" }
+            "--diff-stat"     { $result.DiffMode = "stat" }
+            "--diff-full"     { $result.DiffMode = "full" }
+            "--force"         { $result.Confirm = $false; $result.DiffMode = "no-diff" }
+            "--quick"         { $result.DiffMode = "no-diff"; $result.Confirm = $false }
+            default           { $result.Positional += $a }
+        }
+    }
+    return $result
+}
+
+# ========== End Code Diff Analysis ==========
+
+# ========== Per-file Line Diff Stats (computed before transfer) ==========
+
+function Compute-FileLineDiffs {
+    <#
+    .SYNOPSIS Compute per-file line additions/deletions for transfer summary.
+    Returns hashtable: @{ "filepath" = @{Adds=N; Dels=M}; ... ; _TotalAdds=N; _TotalDels=M }
+    #>
+    param(
+        [hashtable]$Server,
+        [string]$Direction,           # push / pull / fetch
+        [string[]]$NewFiles,
+        [string[]]$ModifiedFiles,
+        [string[]]$DeletedFiles
+    )
+
+    $stats = @{ _TotalAdds = 0; _TotalDels = 0 }
+    $host_ = $Server.Host
+    $total = $NewFiles.Count + $ModifiedFiles.Count + $DeletedFiles.Count
+    $idx = 0
+
+    foreach ($fp in $ModifiedFiles) {
+        $idx++
+        if (-not (Test-TextFile $fp)) { continue }
+
+        try {
+            $localPath = Join-Path $Config.LocalPath ($fp.Replace("/", [System.IO.Path]::DirectorySeparatorChar))
+            $remoteContent = Get-RemoteFileContent -Server $Server -RemotePath $fp
+
+            if ($remoteContent -and (Test-Path $localPath)) {
+                $tmpRemote = [System.IO.Path]::GetTempFileName()
+                $tmpLocal = $localPath
+                [System.IO.File]::WriteAllText($tmpRemote, ($remoteContent -join "`n"))
+
+                if ($Direction -eq "push") {
+                    # Push: local is new, remote is old
+                    $diffOutput = diff -u $tmpRemote $tmpLocal 2>$null
+                } else {
+                    # Pull/Fetch: remote is new, local is old
+                    $diffOutput = diff -u $tmpLocal $tmpRemote 2>$null
+                }
+
+                $adds = 0; $dels = 0
+                if ($diffOutput) {
+                    foreach ($dline in ($diffOutput | Select-Object -Skip 2)) {
+                        if ($dline -match '^\+' -and $dline -notmatch '^\+\+\+') { $adds++ }
+                        elseif ($dline -match '^-' -and $dline -notmatch '^---') { $dels++ }
+                    }
+                }
+                $stats[$fp] = @{ Adds = $adds; Dels = $dels }
+                $stats._TotalAdds += $adds
+                $stats._TotalDels += $dels
+
+                Remove-Item $tmpRemote -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+    }
+
+    foreach ($fp in $NewFiles) {
+        if (-not (Test-TextFile $fp)) { continue }
+        try {
+            if ($Direction -eq "push") {
+                $localPath = Join-Path $Config.LocalPath ($fp.Replace("/", [System.IO.Path]::DirectorySeparatorChar))
+                if (Test-Path $localPath) {
+                    $lc = (Get-Content $localPath -ErrorAction Stop).Count
+                    $stats[$fp] = @{ Adds = $lc; Dels = 0 }
+                    $stats._TotalAdds += $lc
+                }
+            } else {
+                $lc = Invoke-Ssh -Server $Server -Command "wc -l < '${($Config.RemotePath)}/${fp}'" 2>$null
+                $lc = [int]($lc -replace '\D','')
+                if ($lc -gt 0) {
+                    $stats[$fp] = @{ Adds = $lc; Dels = 0 }
+                    $stats._TotalAdds += $lc
+                }
+            }
+        } catch {}
+    }
+
+    foreach ($fp in $DeletedFiles) {
+        if (-not (Test-TextFile $fp)) { continue }
+        try {
+            if ($Direction -eq "push") {
+                $lc = Invoke-Ssh -Server $Server -Command "wc -l < '${($Config.RemotePath)}/${fp}'" 2>$null
+                $lc = [int]($lc -replace '\D','')
+            } else {
+                $localPath = Join-Path $Config.LocalPath ($fp.Replace("/", [System.IO.Path]::DirectorySeparatorChar))
+                $lc = if (Test-Path $localPath) { (Get-Content $localPath -ErrorAction Stop).Count } else { 0 }
+            }
+            if ($lc -gt 0) {
+                $stats[$fp] = @{ Adds = 0; Dels = $lc }
+                $stats._TotalDels += $lc
+            }
+        } catch {}
+    }
+
+    return $stats
+}
+
+function Format-LineStatSuffix {
+    param([hashtable]$Stats, [string]$FilePath)
+    if ($Stats.ContainsKey($FilePath)) {
+        $a = $Stats[$FilePath].Adds; $d = $Stats[$FilePath].Dels
+        $parts = @()
+        if ($a -gt 0) { $parts += "+$a" }
+        if ($d -gt 0) { $parts += "-$d" }
+        if ($parts.Count -gt 0) { return " | $($parts -join ' ')" }
+    }
+    return ""
+}
+
+# ========== End Per-file Line Diff Stats ==========
+
+function Invoke-GitStylePush {
+    <#
+    .SYNOPSIS Git-style push with real-time progress for a single server.
+    #>
+    param(
+        [hashtable]$Server,
+        [switch]$DeleteRemoteExtras
+    )
+    $startTime = Get-Date
+    $isInteractive = ($Host.Name -eq 'ConsoleHost') -and [Environment]::UserInteractive
+
+    # Phase 1: Enumerate objects
+    if ($isInteractive) {
+        Write-Host "remote: Enumerating objects..." -ForegroundColor DarkGray -NoNewline
+    } else {
+        Write-Host "remote: Enumerating objects..." -ForegroundColor DarkGray
+    }
+
+    $results = Compare-Files -Server $Server -Silent
+    $toUpload = @()
+    $toUpload += $results.New
+    $toUpload += $results.Modified
+    $toDelete = @()
+    if ($DeleteRemoteExtras) { $toDelete += $results.Deleted }
+    $totalFiles = $toUpload.Count + $toDelete.Count
+
+    if ($isInteractive) {
+        Write-Host "`rremote: Enumerating objects: $totalFiles, done.       " -ForegroundColor DarkGray
+    } else {
+        Write-Host "remote: Enumerating objects: $totalFiles, done." -ForegroundColor DarkGray
+    }
+
+    if ($totalFiles -eq 0) {
+        Write-Host "  Already up to date."
+        $elapsed = (Get-Date) - $startTime
+        Write-Host ("Transfer complete. [{0:mm\:ss}] ✔" -f $elapsed)
+        return
+    }
+
+    # Phase 1.5: Compute per-file line diffs
+    Write-Host "remote: Computing line changes..." -ForegroundColor DarkGray -NoNewline
+    $lineStats = Compute-FileLineDiffs -Server $Server -Direction "push" `
+        -NewFiles @($results.New) -ModifiedFiles @($results.Modified) -DeletedFiles @($toDelete)
+    Write-Host "`rremote: Computing line changes: done.       " -ForegroundColor DarkGray
+
+    # Phase 2: Transfer with progress
+    $localFiles = Get-LocalFiles
+    $localHash = @{}
+    foreach ($f in $localFiles) { $localHash[$f.Path] = $f }
+    $current = 0
+    $newCount = 0; $modCount = 0; $delCount = 0
+    $successCount = 0
+    $formattedLines = @()
+    $phaseStart = Get-Date
+
+    Ensure-RemoteDir $Server
+
+    foreach ($path in $toUpload) {
+        $current++
+        $file = $localHash[$path]
+        if (-not $file) { continue }
+        $pct = [math]::Floor($current * 100 / $totalFiles)
+
+        $line = Format-ProgressLine -Verb "Uploading" -Pct $pct -Current $current -Total $totalFiles -FileName $path -PhaseStart $phaseStart -IsInteractive $isInteractive
+        if ($isInteractive) { Write-Host $line -NoNewline } else { Write-Host $line }
+
+        # Create remote directory
+        $remoteDir = [System.IO.Path]::GetDirectoryName("$($Config.RemotePath)/$($file.Path)").Replace("\", "/")
+        Invoke-Ssh -Server $Server -Command "mkdir -p '$remoteDir'" | Out-Null
+
+        # Upload
+        Invoke-Scp -Direction "upload" -Server $Server -LocalPath $file.FullPath -RemotePath "$($Config.RemotePath)/$($file.Path)"
+        if ($LASTEXITCODE -eq 0) { $successCount++ }
+
+        # Classify
+        $suffix = Format-LineStatSuffix -Stats $lineStats -FilePath $path
+        if ($path -in $results.New) {
+            $newCount++
+            $formattedLines += @{ Text = "  new file:   $path$suffix"; Color = "Green" }
+        } else {
+            $modCount++
+            $formattedLines += @{ Text = "  modified:  $path$suffix"; Color = "White" }
+        }
+    }
+
+    foreach ($f in $toDelete) {
+        $current++
+        $pct = [math]::Floor($current * 100 / $totalFiles)
+
+        $line = Format-ProgressLine -Verb "Uploading" -Pct $pct -Current $current -Total $totalFiles -FileName "DELETE $f" -PhaseStart $phaseStart -IsInteractive $isInteractive
+        if ($isInteractive) { Write-Host $line -NoNewline } else { Write-Host $line }
+
+        $remotePath = "$($Config.RemotePath)/$f"
+        Invoke-Ssh -Server $Server -Command "rm -f '$remotePath'" | Out-Null
+        $delCount++
+        $suffix = Format-LineStatSuffix -Stats $lineStats -FilePath $f
+        $formattedLines += @{ Text = "  deleted:    $f$suffix"; Color = "Red" }
+    }
+
+    # Phase 3: Summary
+    if ($isInteractive) {
+        Write-Host ("`rUploading objects: 100% ($totalFiles/$totalFiles), done.".PadRight(100)) -ForegroundColor DarkGray
+    } else {
+        Write-Host "Uploading objects: 100% ($totalFiles/$totalFiles), done." -ForegroundColor DarkGray
+    }
+
+    foreach ($entry in $formattedLines) {
+        Write-Host $entry.Text -ForegroundColor $entry.Color
+    }
+
+    $totalAdds = if ($lineStats.ContainsKey('_TotalAdds')) { $lineStats['_TotalAdds'] } else { 0 }
+    $totalDels = if ($lineStats.ContainsKey('_TotalDels')) { $lineStats['_TotalDels'] } else { 0 }
+    $summary = "$totalFiles file(s) changed"
+    if ($totalAdds -gt 0) { $summary += ", $totalAdds insertion(+)" }
+    if ($totalDels -gt 0) { $summary += ", $totalDels deletion(-)" }
+    Write-Host $summary
+
+    Write-TransferSummary -StartTime $startTime -FileCount $current
+
+    # Cleanup empty directories
+    $cleanupCmd = "find $($Config.RemotePath) -type d -empty ! -path '*/.git/*' -delete 2>/dev/null"
+    Invoke-Ssh -Server $Server -Command $cleanupCmd | Out-Null
+}
+
+function Invoke-GitStylePull {
+    <#
+    .SYNOPSIS Git-style pull with real-time progress for a single server.
+    #>
+    param(
+        [hashtable]$Server
+    )
+    $startTime = Get-Date
+    $isInteractive = ($Host.Name -eq 'ConsoleHost') -and [Environment]::UserInteractive
+
+    # Phase 1: Enumerate
+    if ($isInteractive) {
+        Write-Host "remote: Enumerating objects..." -ForegroundColor DarkGray -NoNewline
+    } else {
+        Write-Host "remote: Enumerating objects..." -ForegroundColor DarkGray
+    }
+
+    $results = Compare-Files -Server $Server -Silent
+    $toDownload = @()
+    $toDownload += $results.Deleted    # remote-only → download
+    $toDownload += $results.Modified   # content differs → download
+    $totalFiles = $toDownload.Count
+
+    if ($isInteractive) {
+        Write-Host "`rremote: Enumerating objects: $totalFiles, done.       " -ForegroundColor DarkGray
+    } else {
+        Write-Host "remote: Enumerating objects: $totalFiles, done." -ForegroundColor DarkGray
+    }
+
+    if ($totalFiles -eq 0) {
+        Write-Host "  Already up to date."
+        $elapsed = (Get-Date) - $startTime
+        Write-Host ("Transfer complete. [{0:mm\:ss}] ✔" -f $elapsed)
+        return
+    }
+
+    # Phase 1.5: Compute per-file line diffs
+    Write-Host "remote: Computing line changes..." -ForegroundColor DarkGray -NoNewline
+    $lineStats = Compute-FileLineDiffs -Server $Server -Direction "pull" `
+        -NewFiles @($results.Deleted) -ModifiedFiles @($results.Modified) -DeletedFiles @()
+    Write-Host "`rremote: Computing line changes: done.       " -ForegroundColor DarkGray
+
+    # Phase 2: Download with progress
+    $current = 0; $newCount = 0; $modCount = 0
+    $formattedLines = @()
+    $phaseStart = Get-Date
+
+    foreach ($relativePath in $toDownload) {
+        $current++
+        $pct = [math]::Floor($current * 100 / $totalFiles)
+
+        $line = Format-ProgressLine -Verb "Downloading" -Pct $pct -Current $current -Total $totalFiles -FileName $relativePath -PhaseStart $phaseStart -IsInteractive $isInteractive
+        if ($isInteractive) { Write-Host $line -NoNewline } else { Write-Host $line }
+
+        $remotePath = "$($Config.RemotePath)/$relativePath"
+        $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", [System.IO.Path]::DirectorySeparatorChar))
+        $localDir = Split-Path $localPath -Parent
+        if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Path $localDir -Force | Out-Null }
+
+        Invoke-Scp -Direction "download" -Server $Server -LocalPath $localPath -RemotePath $remotePath
+
+        $suffix = Format-LineStatSuffix -Stats $lineStats -FilePath $relativePath
+        if ($relativePath -in $results.Deleted) {
+            $newCount++
+            $formattedLines += @{ Text = "  new file:   $relativePath$suffix"; Color = "Green" }
+        } else {
+            $modCount++
+            $formattedLines += @{ Text = "  modified:  $relativePath$suffix"; Color = "White" }
+        }
+    }
+
+    # Phase 3: Summary
+    if ($isInteractive) {
+        Write-Host ("`rDownloading objects: 100% ($totalFiles/$totalFiles), done.".PadRight(100)) -ForegroundColor DarkGray
+    } else {
+        Write-Host "Downloading objects: 100% ($totalFiles/$totalFiles), done." -ForegroundColor DarkGray
+    }
+
+    foreach ($entry in $formattedLines) {
+        Write-Host $entry.Text -ForegroundColor $entry.Color
+    }
+
+    $totalAdds = if ($lineStats.ContainsKey('_TotalAdds')) { $lineStats['_TotalAdds'] } else { 0 }
+    $totalDels = if ($lineStats.ContainsKey('_TotalDels')) { $lineStats['_TotalDels'] } else { 0 }
+    $summary = "$totalFiles file(s) changed"
+    if ($totalAdds -gt 0) { $summary += ", $totalAdds insertion(+)" }
+    if ($totalDels -gt 0) { $summary += ", $totalDels deletion(-)" }
+    Write-Host $summary
+
+    Write-TransferSummary -StartTime $startTime -FileCount $current
+}
+
+function Invoke-GitStyleFetch {
+    <#
+    .SYNOPSIS Git-style fetch (download + delete local extras) with real-time progress.
+    #>
+    param(
+        [hashtable]$Server
+    )
+    $startTime = Get-Date
+    $isInteractive = ($Host.Name -eq 'ConsoleHost') -and [Environment]::UserInteractive
+
+    # Phase 1: Enumerate
+    if ($isInteractive) {
+        Write-Host "remote: Enumerating objects..." -ForegroundColor DarkGray -NoNewline
+    } else {
+        Write-Host "remote: Enumerating objects..." -ForegroundColor DarkGray
+    }
+
+    $results = Compare-Files -Server $Server -Silent
+    $toDownload = @($results.Deleted) + @($results.Modified) | Where-Object { $_ }
+    $toDelete = @($results.New) | Where-Object { $_ }
+    if (-not $toDownload) { $toDownload = @() }
+    if (-not $toDelete) { $toDelete = @() }
+    $totalFiles = $toDownload.Count + $toDelete.Count
+
+    if ($isInteractive) {
+        Write-Host "`rremote: Enumerating objects: $totalFiles, done.       " -ForegroundColor DarkGray
+    } else {
+        Write-Host "remote: Enumerating objects: $totalFiles, done." -ForegroundColor DarkGray
+    }
+
+    if ($totalFiles -eq 0) {
+        Write-Host "  Already up to date."
+        $elapsed = (Get-Date) - $startTime
+        Write-Host ("Transfer complete. [{0:mm\:ss}] ✔" -f $elapsed)
+        return
+    }
+
+    # Phase 1.5: Compute per-file line diffs
+    Write-Host "remote: Computing line changes..." -ForegroundColor DarkGray -NoNewline
+    $lineStats = Compute-FileLineDiffs -Server $Server -Direction "pull" `
+        -NewFiles @($results.Deleted) -ModifiedFiles @($results.Modified) -DeletedFiles @($toDelete)
+    Write-Host "`rremote: Computing line changes: done.       " -ForegroundColor DarkGray
+
+    # Phase 2: Transfer with progress
+    $current = 0; $newCount = 0; $modCount = 0; $delCount = 0
+    $formattedLines = @()
+    $phaseStart = Get-Date
+
+    foreach ($relativePath in $toDownload) {
+        $current++
+        $pct = [math]::Floor($current * 100 / $totalFiles)
+
+        $line = Format-ProgressLine -Verb "Fetching" -Pct $pct -Current $current -Total $totalFiles -FileName $relativePath -PhaseStart $phaseStart -IsInteractive $isInteractive
+        if ($isInteractive) { Write-Host $line -NoNewline } else { Write-Host $line }
+
+        $remotePath = "$($Config.RemotePath)/$relativePath"
+        $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", [System.IO.Path]::DirectorySeparatorChar))
+        $localDir = Split-Path $localPath -Parent
+        if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Path $localDir -Force | Out-Null }
+
+        Invoke-Scp -Direction "download" -Server $Server -LocalPath $localPath -RemotePath $remotePath
+
+        $suffix = Format-LineStatSuffix -Stats $lineStats -FilePath $relativePath
+        if ($relativePath -in $results.Deleted) {
+            $newCount++
+            $formattedLines += @{ Text = "  new file:   $relativePath$suffix"; Color = "Green" }
+        } else {
+            $modCount++
+            $formattedLines += @{ Text = "  modified:  $relativePath$suffix"; Color = "White" }
+        }
+    }
+
+    foreach ($relativePath in $toDelete) {
+        $current++
+        $pct = [math]::Floor($current * 100 / $totalFiles)
+
+        $line = Format-ProgressLine -Verb "Fetching" -Pct $pct -Current $current -Total $totalFiles -FileName "DELETE $relativePath" -PhaseStart $phaseStart -IsInteractive $isInteractive
+        if ($isInteractive) { Write-Host $line -NoNewline } else { Write-Host $line }
+
+        $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", [System.IO.Path]::DirectorySeparatorChar))
+        if (Test-Path $localPath) { Remove-Item $localPath -Force }
+        $delCount++
+        $suffix = Format-LineStatSuffix -Stats $lineStats -FilePath $relativePath
+        $formattedLines += @{ Text = "  deleted:    $relativePath$suffix"; Color = "Red" }
+    }
+
+    # Phase 3: Summary
+    if ($isInteractive) {
+        Write-Host ("`rFetching objects: 100% ($totalFiles/$totalFiles), done.".PadRight(100)) -ForegroundColor DarkGray
+    } else {
+        Write-Host "Fetching objects: 100% ($totalFiles/$totalFiles), done." -ForegroundColor DarkGray
+    }
+
+    foreach ($entry in $formattedLines) {
+        Write-Host $entry.Text -ForegroundColor $entry.Color
+    }
+
+    $totalAdds = if ($lineStats.ContainsKey('_TotalAdds')) { $lineStats['_TotalAdds'] } else { 0 }
+    $totalDels = if ($lineStats.ContainsKey('_TotalDels')) { $lineStats['_TotalDels'] } else { 0 }
+    $summary = "$totalFiles file(s) changed"
+    if ($totalAdds -gt 0) { $summary += ", $totalAdds insertion(+)" }
+    if ($totalDels -gt 0) { $summary += ", $totalDels deletion(-)" }
+    Write-Host $summary
+
+    Write-TransferSummary -StartTime $startTime -FileCount $current
+}
+
+# ========== End Git-style Progress Functions ==========
+
 # Command handlers
 switch ($Command) {
     # ===== Git-like Commands =====
     
-    # git diff - 比較本地與遠端差異
+    # git diff - 比較本地與遠端差異 (GitHub-style code diff)
     { $_ -in "diff", "check" } {
-        Write-Color "[DIFF] Comparing local vs remote..." "Magenta"
+        $opts = Parse-DiffOptions -Args_ $Arguments
+        $diffMode = $opts.DiffMode
+        # check if --summary/--stat/--full was passed directly
+        foreach ($a in $Arguments) {
+            switch ($a) {
+                "--summary" { $diffMode = "summary" }
+                "--stat"    { $diffMode = "stat" }
+                "--full"    { $diffMode = "full" }
+            }
+        }
         foreach ($server in $Config.Servers) {
-            $results = Compare-Files -Server $server
-            Show-CompareResults -Results $results -ServerName $server.Name
+            Invoke-CodeDiffAnalysis -Direction "push" -Server $server -Mode $diffMode -Confirm $false
         }
     }
     
@@ -451,101 +1391,45 @@ switch ($Command) {
     }
     
     "push" {
-        Write-Color "[PUSH] Syncing changes to remote servers..." "Magenta"
-        
-        $localFiles = Get-LocalFiles
-        $localHash = @{}
-        foreach ($f in $localFiles) { $localHash[$f.Path] = $f }
-        
+        $opts = Parse-DiffOptions -Args_ $Arguments
+        $opts.Confirm = $true  # push defaults to confirm
+        $idx = 0
+        $total = $Config.Servers.Count
         foreach ($server in $Config.Servers) {
-            Write-Color "`nPushing to $($server.Name) ($($server.Host))..." "Cyan"
-            
-            # 比較差異
-            $results = Compare-Files -Server $server -Silent
-            $toUpload = @()
-            $toUpload += $results.New
-            $toUpload += $results.Modified
-            $toDelete = $results.Deleted
-            
-            if ($toUpload.Count -eq 0 -and $toDelete.Count -eq 0) {
-                Write-Color "  [OK] Already synced, nothing to push" "Green"
-                continue
-            }
-            
-            # 上傳/同步檔案
-            $successCount = 0
-            $failCount = 0
-            
-            foreach ($path in $toUpload) {
-                $file = $localHash[$path]
-                if (-not $file) { continue }
-                
-                $localPath = $file.FullPath
-                $remoteDest = "$($server.User)@$($server.Host):$($Config.RemotePath)/$($file.Path)"
-                
-                $remoteDir = [System.IO.Path]::GetDirectoryName("$($Config.RemotePath)/$($file.Path)").Replace("\", "/")
-                Invoke-Ssh -Server $server -Command "mkdir -p '$remoteDir'"
-                
-                Invoke-Scp -Direction "upload" -Server $server -LocalPath $localPath -RemotePath "$($Config.RemotePath)/$($file.Path)"
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Color "  [UPLOAD] $($file.Path)" "Green"
-                    $successCount++
-                }
-                else {
-                    Write-Color "  [FAIL] $($file.Path)" "Red"
-                    $failCount++
+            $idx++
+            # Run diff analysis before transfer
+            if ($opts.DiffMode -ne "no-diff") {
+                if (-not (Invoke-CodeDiffAnalysis -Direction "push" -Server $server -Mode $opts.DiffMode -Confirm $opts.Confirm)) {
+                    Write-Color "[PUSH] Cancelled for $($server.Name)" "Yellow"
+                    continue
                 }
             }
-            
-            # 刪除遠端多餘檔案
-            $deleteCount = 0
-            foreach ($f in $toDelete) {
-                $remotePath = "$($Config.RemotePath)/$f"
-                Invoke-Ssh -Server $server -Command "rm -f '$remotePath'"
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Color "  [DELETE] $f" "Red"
-                    $deleteCount++
-                }
-            }
-            
-            Write-Color "`n$($server.Name): Uploaded=$successCount | Deleted=$deleteCount | Failed=$failCount" "Cyan"
-            
-            # 清除遠端空目錄（排除 .git）
-            $cleanupCmd = "find $($Config.RemotePath) -type d -empty ! -path '*/.git/*' -delete 2>/dev/null"
-            Invoke-Ssh -Server $server -Command $cleanupCmd
+            Write-TransferHeader -Server $server -Verb "Push" -Index $idx -Total $total
+            Invoke-GitStylePush -Server $server -DeleteRemoteExtras
+            Write-SyncHistory -Action "PUSH" -ServerName $server.Name -FileCount $script:DiffFileCount -Adds $script:DiffTotalAdds -Dels $script:DiffTotalDels
         }
-        
-        Write-Color "`nPush completed!" "Green"
     }
     
     "pull" {
-        Write-Color "[PULL] Downloading from remote (no delete)..." "Magenta"
-        $targetServer = $null
-        if ($Arguments -and $Arguments.Count -gt 0) {
-            $serverArg = $Arguments[0]
+        $opts = Parse-DiffOptions -Args_ $Arguments
+        $targetServer = $Config.Servers[0]
+        foreach ($posArg in $opts.Positional) {
             foreach ($s in $Config.Servers) {
-                if ($s.Name -eq $serverArg -or $s.Name -eq ".$serverArg" -or $serverArg -like "*$($s.Name)*") {
+                if ($posArg -eq $s.Name -or $posArg -eq $s.Name.TrimStart('.') -or $posArg -eq ".$($s.Name.TrimStart('.'))") {
                     $targetServer = $s; break
                 }
             }
         }
-        if (-not $targetServer) { $targetServer = $Config.Servers[0] }
-        Write-Color "`nPulling from $($targetServer.Name)..." "Cyan"
-        $results = Compare-Files -Server $targetServer -Silent
-        $toDownload = @(); $toDownload += $results.Deleted; $toDownload += $results.Modified
-        if ($toDownload.Count -eq 0) { Write-Color "  [OK] Nothing to pull" "Green" }
-        else {
-            $pullCount = 0
-            foreach ($relativePath in $toDownload) {
-                $remotePath = "$($Config.RemotePath)/$relativePath"
-                $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", "\"))
-                $localDir = Split-Path $localPath -Parent
-                if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Path $localDir -Force | Out-Null }
-                Invoke-Scp -Direction "download" -Server $targetServer -LocalPath $localPath -RemotePath $remotePath
-                if ($LASTEXITCODE -eq 0) { Write-Color "  [DOWNLOAD] $relativePath" "Green"; $pullCount++ }
+        # Run diff analysis before transfer
+        if ($opts.DiffMode -ne "no-diff") {
+            if (-not (Invoke-CodeDiffAnalysis -Direction "pull" -Server $targetServer -Mode $opts.DiffMode -Confirm $opts.Confirm)) {
+                Write-Color "[PULL] Cancelled" "Yellow"
+                return
             }
-            Write-Color "`nDownloaded=$pullCount" "Cyan"
         }
+        Write-TransferHeader -Server $targetServer -Verb "Pull"
+        Invoke-GitStylePull -Server $targetServer
+        Write-SyncHistory -Action "PULL" -ServerName $targetServer.Name -FileCount $script:DiffFileCount -Adds $script:DiffTotalAdds -Dels $script:DiffTotalDels
     }
     
     "pull87" {
@@ -558,120 +1442,29 @@ switch ($Command) {
     
     # git fetch - 從遠端下載並刪除本地多餘檔案 (sync local to remote)
     "fetch" {
-
-        $targetServer = $null
-
-        if ($Arguments -and $Arguments.Count -gt 0) {
-
-            $serverArg = $Arguments[0]
-
-            $targetServer = $Config.Servers | Where-Object { $_.Name -eq $serverArg -or $_.Host -like "*$serverArg*" } | Select-Object -First 1
-
-        }
-
-        if (-not $targetServer) { $targetServer = $Config.Servers[0] }
-
-        
-
-        Write-Color "[FETCH] Syncing from remote (with delete)..." "Magenta"
-
-        Write-Color "Server: $($targetServer.Name) ($($targetServer.Host))" "Cyan"
-
-        
-
-        $results = Compare-Files -Server $targetServer
-
-        $toDownload = @($results.Deleted) + @($results.Modified) | Where-Object { $_ }
-
-        $toDelete = @($results.New) | Where-Object { $_ }
-
-        
-
-        # Download files from remote
-
-        if ($toDownload.Count -gt 0) {
-
-            Write-Color "Downloading $($toDownload.Count) file(s)..." "Yellow"
-
-            foreach ($file in $toDownload) {
-
-                $remotePath = "$($Config.RemotePath)/$file"
-
-                $localPath = Join-Path $Config.LocalPath $file
-
-                $localDir = Split-Path $localPath -Parent
-
-                if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Path $localDir -Force | Out-Null }
-
-                Invoke-Scp -Direction "download" -Server $targetServer -LocalPath $localPath -RemotePath $remotePath
-
-                if ($LASTEXITCODE -eq 0) {
-
-                    Write-Color "  Downloaded: $file" "Green"
-
-                } else {
-
-                    Write-Color "  [FAIL] $file" "Red"
-
+        $opts = Parse-DiffOptions -Args_ $Arguments
+        $targetServer = $Config.Servers[0]
+        foreach ($posArg in $opts.Positional) {
+            foreach ($s in $Config.Servers) {
+                if ($posArg -eq $s.Name -or $posArg -eq $s.Name.TrimStart('.') -or $posArg -eq ".$($s.Name.TrimStart('.'))") {
+                    $targetServer = $s; break
                 }
-
             }
-
         }
-
-        
-
-        # Delete local files not on remote
-
-        if ($toDelete.Count -gt 0) {
-
-            Write-Color "Deleting $($toDelete.Count) local file(s) not on remote..." "Red"
-
-            foreach ($file in $toDelete) {
-
-                $localPath = Join-Path $Config.LocalPath $file
-
-                if (Test-Path $localPath) {
-
-                    Remove-Item $localPath -Force
-
-                    Write-Color "  Deleted: $file" "Red"
-
-                }
-
+        # Run diff analysis before transfer
+        if ($opts.DiffMode -ne "no-diff") {
+            if (-not (Invoke-CodeDiffAnalysis -Direction "fetch" -Server $targetServer -Mode $opts.DiffMode -Confirm $opts.Confirm)) {
+                Write-Color "[FETCH] Cancelled" "Yellow"
+                return
             }
-
         }
-
-        
-
-        if ($toDownload.Count -eq 0 -and $toDelete.Count -eq 0) {
-
-            Write-Color "Local is in sync with remote." "Green"
-
-        } else {
-
-            Write-Color "Fetch complete: $($toDownload.Count) downloaded, $($toDelete.Count) deleted" "Green"
-
-        }
-
+        Write-TransferHeader -Server $targetServer -Verb "Fetch"
+        Invoke-GitStyleFetch -Server $targetServer
+        Write-SyncHistory -Action "FETCH" -ServerName $targetServer.Name -FileCount $script:DiffFileCount -Adds $script:DiffTotalAdds -Dels $script:DiffTotalDels
     }
 
-    
-
-    "fetch87" {
-
-        & $PSCommandPath fetch 87
-
-    }
-
-    
-
-    "fetch154" {
-
-        & $PSCommandPath fetch 154
-
-    }
+    "fetch87" { & $PSCommandPath fetch 87 }
+    "fetch154" { & $PSCommandPath fetch 154 }
     # git log - 查看遠端 log 檔案
     "log" {
         Write-Color "[LOG] Fetching remote log files..." "Magenta"
@@ -800,7 +1593,7 @@ switch ($Command) {
         Write-Host ""
         $confirm = Read-Host "Proceed with push? (y/n)"
         if ($confirm -eq "y" -or $confirm -eq "Y") {
-            & $PSCommandPath push
+            & $PSCommandPath push --no-diff
         }
     }
     
@@ -887,20 +1680,21 @@ switch ($Command) {
     
     "autopush" {
         # Quick auto-push: check and push if needed (no interaction)
-        $hasChanges = $false
-        foreach ($server in $Config.Servers) {
-            $results = Compare-Files -Server $server -Silent
-            if ($results.New.Count -gt 0 -or $results.Modified.Count -gt 0) {
-                $hasChanges = $true
-                break
+        $targetServers = $Config.Servers  # Default: all servers
+        if ($Arguments.Count -gt 0) {
+            $arg = $Arguments[0]
+            foreach ($s in $Config.Servers) {
+                if ($arg -eq $s.Name -or $arg -eq $s.Name.TrimStart('.')) {
+                    $targetServers = @($s); break
+                }
             }
         }
-        if ($hasChanges) {
-            Write-Color "[AUTO] Changes detected, pushing..." "Cyan"
-            & $PSCommandPath push
-        }
-        else {
-            Write-Color "[AUTO] No changes" "Green"
+        $idx = 0
+        $total = $targetServers.Count
+        foreach ($server in $targetServers) {
+            $idx++
+            Write-TransferHeader -Server $server -Verb "Push (auto)" -Index $idx -Total $total
+            Invoke-GitStylePush -Server $server
         }
     }
     
@@ -1177,7 +1971,7 @@ switch ($Command) {
     
     "fullsync" {
         Write-Color "[FULLSYNC] Push + Reset (make remote match local exactly)" "Magenta"
-        & $PSCommandPath push
+        & $PSCommandPath push --no-diff
         Write-Host ""
         & $PSCommandPath reset
     }
@@ -1497,43 +2291,14 @@ switch ($Command) {
         $targetServer = $Config.Servers[0]  # Default to .87
         if ($Arguments.Count -gt 0) {
             $arg = $Arguments[0]
-            if ($arg -eq ".154" -or $arg -eq "154") {
-                $targetServer = $Config.Servers | Where-Object { $_.Name -eq ".154" }
-            }
-            elseif ($arg -eq ".87" -or $arg -eq "87") {
-                $targetServer = $Config.Servers | Where-Object { $_.Name -eq ".87" }
-            }
-        }
-        
-        $results = Compare-Files -Server $targetServer -Silent
-        # 只下載遠端有的檔案，不刪除本地檔案
-        $toDownload = @()
-        $toDownload += $results.Deleted   # 遠端有本地沒有
-        $toDownload += $results.Modified  # 遠端有更新
-        
-        if ($toDownload.Count -gt 0) {
-            Write-Color "[AUTOPULL] $($toDownload.Count) files to download from $($targetServer.Name)" "Cyan"
-            $pullCount = 0
-            foreach ($relativePath in $toDownload) {
-                $remotePath = "$($Config.RemotePath)/$relativePath"
-                $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", "\"))
-                $localDir = Split-Path $localPath -Parent
-                
-                if (-not (Test-Path $localDir)) { 
-                    New-Item -ItemType Directory -Path $localDir -Force | Out-Null 
-                }
-                
-                Invoke-Scp -Direction "download" -Server $targetServer -LocalPath $localPath -RemotePath $remotePath
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Color "  [DOWNLOAD] $relativePath" "Green"
-                    $pullCount++
+            foreach ($s in $Config.Servers) {
+                if ($arg -eq $s.Name -or $arg -eq $s.Name.TrimStart('.')) {
+                    $targetServer = $s; break
                 }
             }
-            Write-Color "[AUTOPULL] Downloaded $pullCount files" "Cyan"
         }
-        else {
-            Write-Color "[AUTOPULL] $($targetServer.Name) - No new files" "Green"
-        }
+        Write-TransferHeader -Server $targetServer -Verb "Pull (auto)"
+        Invoke-GitStylePull -Server $targetServer
     }
     
     "autofetch" {
@@ -1541,58 +2306,14 @@ switch ($Command) {
         $targetServer = $Config.Servers[0]  # Default to .87
         if ($Arguments.Count -gt 0) {
             $arg = $Arguments[0]
-            if ($arg -eq ".154" -or $arg -eq "154") {
-                $targetServer = $Config.Servers | Where-Object { $_.Name -eq ".154" }
-            }
-            elseif ($arg -eq ".87" -or $arg -eq "87") {
-                $targetServer = $Config.Servers | Where-Object { $_.Name -eq ".87" }
-            }
-        }
-        
-        $results = Compare-Files -Server $targetServer -Silent
-        $toDownload = @($results.Deleted) + @($results.Modified) | Where-Object { $_ }
-        $toDelete = @($results.New) | Where-Object { $_ }
-        
-        $hasChanges = $false
-        
-        # Download from remote
-        if ($toDownload.Count -gt 0) {
-            $hasChanges = $true
-            Write-Color "[AUTOFETCH] Downloading $($toDownload.Count) files from $($targetServer.Name)" "Cyan"
-            foreach ($relativePath in $toDownload) {
-                $remotePath = "$($Config.RemotePath)/$relativePath"
-                $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", "\"))
-                $localDir = Split-Path $localPath -Parent
-                
-                if (-not (Test-Path $localDir)) { 
-                    New-Item -ItemType Directory -Path $localDir -Force | Out-Null 
-                }
-                
-                Invoke-Scp -Direction "download" -Server $targetServer -LocalPath $localPath -RemotePath $remotePath
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Color "  [DOWNLOAD] $relativePath" "Green"
+            foreach ($s in $Config.Servers) {
+                if ($arg -eq $s.Name -or $arg -eq $s.Name.TrimStart('.')) {
+                    $targetServer = $s; break
                 }
             }
         }
-        
-        # Delete local files not on remote
-        if ($toDelete.Count -gt 0) {
-            $hasChanges = $true
-            Write-Color "[AUTOFETCH] Deleting $($toDelete.Count) local files not on remote" "Red"
-            foreach ($relativePath in $toDelete) {
-                $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", "\"))
-                if (Test-Path $localPath) {
-                    Remove-Item $localPath -Force
-                    Write-Color "  [DELETE] $relativePath" "Red"
-                }
-            }
-        }
-        
-        if (-not $hasChanges) {
-            Write-Color "[AUTOFETCH] $($targetServer.Name) - Already in sync" "Green"
-        } else {
-            Write-Color "[AUTOFETCH] Complete: $($toDownload.Count) downloaded, $($toDelete.Count) deleted" "Cyan"
-        }
+        Write-TransferHeader -Server $targetServer -Verb "Fetch (auto)"
+        Invoke-GitStyleFetch -Server $targetServer
     }
     
     "vtkrename" {
@@ -2013,143 +2734,59 @@ switch ($Command) {
     # diff 別名
     "diff87" {
         $server = $Config.Servers | Where-Object { $_.Name -eq ".87" }
-        if ($server) {
-            $results = Compare-Files -Server $server
-            Show-CompareResults -Results $results -ServerName $server.Name
-        }
+        if ($server) { Invoke-CodeDiffAnalysis -Direction "push" -Server $server -Mode "full" -Confirm $false }
     }
     "diff89" {
         $server = $Config.Servers | Where-Object { $_.Name -eq ".89" }
-        if ($server) {
-            $results = Compare-Files -Server $server
-            Show-CompareResults -Results $results -ServerName $server.Name
-        }
+        if ($server) { Invoke-CodeDiffAnalysis -Direction "push" -Server $server -Mode "full" -Confirm $false }
     }
     "diff154" {
         $server = $Config.Servers | Where-Object { $_.Name -eq ".154" }
-        if ($server) {
-            $results = Compare-Files -Server $server
-            Show-CompareResults -Results $results -ServerName $server.Name
-        }
+        if ($server) { Invoke-CodeDiffAnalysis -Direction "push" -Server $server -Mode "full" -Confirm $false }
     }
     "diffall" { & $PSCommandPath diff }
 
     # push 別名
     "push87" {
-        Write-Color "[PUSH] Pushing to .87 only..." "Magenta"
+        $opts = Parse-DiffOptions -Args_ $Arguments
+        $opts.Confirm = $true
         $server = $Config.Servers | Where-Object { $_.Name -eq ".87" }
-        if ($server) {
-            $localFiles = Get-LocalFiles
-            $localHash = @{}
-            foreach ($f in $localFiles) { $localHash[$f.Path] = $f }
-
-            $results = Compare-Files -Server $server -Silent
-            $toUpload = @()
-            $toUpload += $results.New
-            $toUpload += $results.Modified
-            $toDelete = $results.Deleted
-
-            if ($toUpload.Count -eq 0 -and $toDelete.Count -eq 0) {
-                Write-Color "  [OK] Already synced" "Green"
-            } else {
-                $successCount = 0
-                foreach ($path in $toUpload) {
-                    $file = $localHash[$path]
-                    if (-not $file) { continue }
-                    $localPath = $file.FullPath
-                    $remoteDest = "$($server.User)@$($server.Host):$($Config.RemotePath)/$($file.Path)"
-                    $remoteDir = [System.IO.Path]::GetDirectoryName("$($Config.RemotePath)/$($file.Path)").Replace("\", "/")
-                    Invoke-Ssh -Server $server -Command "mkdir -p '$remoteDir'"
-                    Invoke-Scp -Direction "upload" -Server $server -LocalPath $localPath -RemotePath "$($Config.RemotePath)/$($file.Path)"
-                    if ($LASTEXITCODE -eq 0) { Write-Color "  [UPLOAD] $($file.Path)" "Green"; $successCount++ }
-                }
-                $deleteCount = 0
-                foreach ($f in $toDelete) {
-                    $remotePath = "$($Config.RemotePath)/$f"
-                    Invoke-Ssh -Server $server -Command "rm -f '$remotePath'"
-                    if ($LASTEXITCODE -eq 0) { Write-Color "  [DELETE] $f" "Red"; $deleteCount++ }
-                }
-                Write-Color ".87: Uploaded=$successCount | Deleted=$deleteCount" "Cyan"
+        if ($opts.DiffMode -ne "no-diff") {
+            if (-not (Invoke-CodeDiffAnalysis -Direction "push" -Server $server -Mode $opts.DiffMode -Confirm $opts.Confirm)) {
+                Write-Color "[PUSH] Cancelled" "Yellow"; return
             }
         }
+        Write-TransferHeader -Server $server -Verb "Push"
+        Invoke-GitStylePush -Server $server -DeleteRemoteExtras
+        Write-SyncHistory -Action "PUSH" -ServerName $server.Name -FileCount $script:DiffFileCount -Adds $script:DiffTotalAdds -Dels $script:DiffTotalDels
     }
     "push89" {
-        Write-Color "[PUSH] Pushing to .89 only..." "Magenta"
+        $opts = Parse-DiffOptions -Args_ $Arguments
+        $opts.Confirm = $true
         $server = $Config.Servers | Where-Object { $_.Name -eq ".89" }
-        if ($server) {
-            $localFiles = Get-LocalFiles
-            $localHash = @{}
-            foreach ($f in $localFiles) { $localHash[$f.Path] = $f }
-
-            $results = Compare-Files -Server $server -Silent
-            $toUpload = @()
-            $toUpload += $results.New
-            $toUpload += $results.Modified
-            $toDelete = $results.Deleted
-
-            if ($toUpload.Count -eq 0 -and $toDelete.Count -eq 0) {
-                Write-Color "  [OK] Already synced" "Green"
-            } else {
-                $successCount = 0
-                foreach ($path in $toUpload) {
-                    $file = $localHash[$path]
-                    if (-not $file) { continue }
-                    $localPath = $file.FullPath
-                    $remoteDest = "$($server.User)@$($server.Host):$($Config.RemotePath)/$($file.Path)"
-                    $remoteDir = [System.IO.Path]::GetDirectoryName("$($Config.RemotePath)/$($file.Path)").Replace("\", "/")
-                    Invoke-Ssh -Server $server -Command "mkdir -p '$remoteDir'"
-                    Invoke-Scp -Direction "upload" -Server $server -LocalPath $localPath -RemotePath "$($Config.RemotePath)/$($file.Path)"
-                    if ($LASTEXITCODE -eq 0) { Write-Color "  [UPLOAD] $($file.Path)" "Green"; $successCount++ }
-                }
-                $deleteCount = 0
-                foreach ($f in $toDelete) {
-                    $remotePath = "$($Config.RemotePath)/$f"
-                    Invoke-Ssh -Server $server -Command "rm -f '$remotePath'"
-                    if ($LASTEXITCODE -eq 0) { Write-Color "  [DELETE] $f" "Red"; $deleteCount++ }
-                }
-                Write-Color ".89: Uploaded=$successCount | Deleted=$deleteCount" "Cyan"
+        if ($opts.DiffMode -ne "no-diff") {
+            if (-not (Invoke-CodeDiffAnalysis -Direction "push" -Server $server -Mode $opts.DiffMode -Confirm $opts.Confirm)) {
+                Write-Color "[PUSH] Cancelled" "Yellow"; return
             }
         }
+        Write-TransferHeader -Server $server -Verb "Push"
+        Invoke-GitStylePush -Server $server -DeleteRemoteExtras
+        Write-SyncHistory -Action "PUSH" -ServerName $server.Name -FileCount $script:DiffFileCount -Adds $script:DiffTotalAdds -Dels $script:DiffTotalDels
     }
     "push154" {
-        Write-Color "[PUSH] Pushing to .154 only..." "Magenta"
+        $opts = Parse-DiffOptions -Args_ $Arguments
+        $opts.Confirm = $true
         $server = $Config.Servers | Where-Object { $_.Name -eq ".154" }
-        if ($server) {
-            $localFiles = Get-LocalFiles
-            $localHash = @{}
-            foreach ($f in $localFiles) { $localHash[$f.Path] = $f }
-
-            $results = Compare-Files -Server $server -Silent
-            $toUpload = @()
-            $toUpload += $results.New
-            $toUpload += $results.Modified
-            $toDelete = $results.Deleted
-
-            if ($toUpload.Count -eq 0 -and $toDelete.Count -eq 0) {
-                Write-Color "  [OK] Already synced" "Green"
-            } else {
-                $successCount = 0
-                foreach ($path in $toUpload) {
-                    $file = $localHash[$path]
-                    if (-not $file) { continue }
-                    $localPath = $file.FullPath
-                    $remoteDest = "$($server.User)@$($server.Host):$($Config.RemotePath)/$($file.Path)"
-                    $remoteDir = [System.IO.Path]::GetDirectoryName("$($Config.RemotePath)/$($file.Path)").Replace("\", "/")
-                    Invoke-Ssh -Server $server -Command "mkdir -p '$remoteDir'"
-                    Invoke-Scp -Direction "upload" -Server $server -LocalPath $localPath -RemotePath "$($Config.RemotePath)/$($file.Path)"
-                    if ($LASTEXITCODE -eq 0) { Write-Color "  [UPLOAD] $($file.Path)" "Green"; $successCount++ }
-                }
-                $deleteCount = 0
-                foreach ($f in $toDelete) {
-                    $remotePath = "$($Config.RemotePath)/$f"
-                    Invoke-Ssh -Server $server -Command "rm -f '$remotePath'"
-                    if ($LASTEXITCODE -eq 0) { Write-Color "  [DELETE] $f" "Red"; $deleteCount++ }
-                }
-                Write-Color ".154: Uploaded=$successCount | Deleted=$deleteCount" "Cyan"
+        if ($opts.DiffMode -ne "no-diff") {
+            if (-not (Invoke-CodeDiffAnalysis -Direction "push" -Server $server -Mode $opts.DiffMode -Confirm $opts.Confirm)) {
+                Write-Color "[PUSH] Cancelled" "Yellow"; return
             }
         }
+        Write-TransferHeader -Server $server -Verb "Push"
+        Invoke-GitStylePush -Server $server -DeleteRemoteExtras
+        Write-SyncHistory -Action "PUSH" -ServerName $server.Name -FileCount $script:DiffFileCount -Adds $script:DiffTotalAdds -Dels $script:DiffTotalDels
     }
-    "pushall" { & $PSCommandPath push }
+    "pushall" { & $PSCommandPath push @Arguments }
 
     # autopull 別名
     "autopull87" { & $PSCommandPath autopull .87 }
@@ -2167,12 +2804,105 @@ switch ($Command) {
     "autopush154" { & $PSCommandPath autopush .154 }
     "autopushall" { & $PSCommandPath autopush }
 
+    # ===== Code Diff Analysis Commands =====
+
+    "sync-diff" {
+        # Standalone diff (no transfer)
+        $diffMode = "full"
+        $positional = @()
+        foreach ($a in $Arguments) {
+            switch ($a) {
+                "--summary" { $diffMode = "summary" }
+                "--stat"    { $diffMode = "stat" }
+                "--full"    { $diffMode = "full" }
+                default     { $positional += $a }
+            }
+        }
+        $targetServer = $Config.Servers[0]
+        if ($positional.Count -gt 0) {
+            foreach ($s in $Config.Servers) {
+                $pa = $positional[0]
+                if ($pa -eq $s.Name -or $pa -eq $s.Name.TrimStart('.') -or $pa -eq ".$($s.Name.TrimStart('.'))") {
+                    $targetServer = $s; break
+                }
+            }
+        }
+        Invoke-CodeDiffAnalysis -Direction "push" -Server $targetServer -Mode $diffMode -Confirm $false
+    }
+
+    "sync-diff-summary" {
+        $targetServer = $Config.Servers[0]
+        if ($Arguments -and $Arguments.Count -gt 0) {
+            foreach ($s in $Config.Servers) {
+                $pa = $Arguments[0]
+                if ($pa -eq $s.Name -or $pa -eq $s.Name.TrimStart('.') -or $pa -eq ".$($s.Name.TrimStart('.'))") {
+                    $targetServer = $s; break
+                }
+            }
+        }
+        Invoke-CodeDiffAnalysis -Direction "push" -Server $targetServer -Mode "summary" -Confirm $false
+    }
+
+    "sync-diff-file" {
+        # Show diff for a single file
+        if (-not $Arguments -or $Arguments.Count -lt 1) {
+            Write-Color "Usage: mobaxterm sync-diff-file <file> [server]" "Yellow"
+            return
+        }
+        $filePath = $Arguments[0]
+        $targetServer = $Config.Servers[0]
+        if ($Arguments.Count -gt 1) {
+            foreach ($s in $Config.Servers) {
+                $pa = $Arguments[1]
+                if ($pa -eq $s.Name -or $pa -eq $s.Name.TrimStart('.') -or $pa -eq ".$($s.Name.TrimStart('.'))") {
+                    $targetServer = $s; break
+                }
+            }
+        }
+        Show-FileDiff -Direction "push" -Server $targetServer -FilePath $filePath -FileStatus "modified" -Mode "full"
+    }
+
+    "sync-log" {
+        # Show sync history
+        $histFile = $script:SyncHistoryFile
+        if (-not $histFile) { $histFile = Join-Path $HOME ".sync-history.log" }
+        if (Test-Path $histFile) {
+            $lines = if ($Arguments -and $Arguments[0] -match '^\d+$') { [int]$Arguments[0] } else { 30 }
+            Write-Color "=== Sync History (last $lines entries) ===" "Cyan"
+            Get-Content $histFile -Tail $lines | ForEach-Object { Write-Host $_ }
+        } else {
+            Write-Color "No sync history found." "Yellow"
+        }
+    }
+
+    "sync-stop" {
+        # Stop all daemon processes
+        Write-Color "[SYNC-STOP] Stopping all daemons..." "Yellow"
+        foreach ($svcName in @("watchpush", "watchpull", "watchfetch", "vtk-renamer")) {
+            $pidFile = Join-Path $Config.LocalPath ".vscode/$svcName.pid"
+            if (Test-Path $pidFile) {
+                $pids = Get-Content $pidFile -ErrorAction SilentlyContinue
+                foreach ($p in $pids) {
+                    if ($p -match '^\d+$') {
+                        $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+                        if ($proc) {
+                            Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
+                            Write-Color "  Stopped $svcName (PID: $p)" "Green"
+                        }
+                    }
+                }
+                Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Write-Color "[SYNC-STOP] All daemons stopped." "Green"
+    }
+
     default {
         Write-Host ""
         Write-Host "MobaXterm Sync Commands (Git-like)" -ForegroundColor Cyan
         Write-Host "===================================" -ForegroundColor Cyan
         Write-Host ""
-        Write-Host "Usage: mobaxterm <command>" -ForegroundColor White
+        Write-Host "Usage: mobaxterm <command> [options]" -ForegroundColor White
         Write-Host ""
         Write-Host "=== Sync Command Summary ===" -ForegroundColor Yellow
         Write-Host "  FETCH series: Download + DELETE local (sync local to remote)" -ForegroundColor Red
@@ -2202,6 +2932,23 @@ switch ($Command) {
         Write-Host "  autopush87/89/154/all - Shorthand aliases"
         Write-Host "  watchpush        - Background auto-upload"
         Write-Host ""
+        Write-Host "Code Diff Analysis:" -ForegroundColor Yellow
+        Write-Host "  sync-diff [server]       - Show code diff (no transfer)"
+        Write-Host "  sync-diff --summary      - File list only (no code)"
+        Write-Host "  sync-diff --stat         - File + line counts"
+        Write-Host "  sync-diff-summary [srv]  - Quick summary"
+        Write-Host "  sync-diff-file <file>    - Single file diff"
+        Write-Host "  sync-log [N]             - Show sync history (last N)"
+        Write-Host "  sync-stop                - Stop all daemons"
+        Write-Host ""
+        Write-Host "Diff Options (for push/pull/fetch):" -ForegroundColor Yellow
+        Write-Host "  --no-diff       - Skip diff analysis"
+        Write-Host "  --diff-summary  - Show summary only"
+        Write-Host "  --diff-stat     - Show file statistics"
+        Write-Host "  --diff-full     - Full code diff (default)"
+        Write-Host "  --force         - Skip diff + no confirm"
+        Write-Host "  --quick         - Same as --force"
+        Write-Host ""
         Write-Host "GPU Status:" -ForegroundColor Yellow
         Write-Host "  gpus             - GPU status overview (all servers)"
         Write-Host "  gpu [89|87|154]  - Detailed GPU status (nvidia-smi)"
@@ -2215,7 +2962,7 @@ switch ($Command) {
         Write-Host ""
         Write-Host "Status & Info:" -ForegroundColor Yellow
         Write-Host "  status           - Show sync status"
-        Write-Host "  diff             - Compare local vs remote"
+        Write-Host "  diff             - Compare local vs remote (code diff)"
         Write-Host "  diff87/diff89/diff154/diffall - Diff specific server"
         Write-Host "  log [server]     - View remote log files"
         Write-Host "  log87/log89/log154 - Log from specific server"
@@ -2245,13 +2992,16 @@ switch ($Command) {
         Write-Host "  .154:1/4/7/9 - Via .154 to ib1/4/7/9"
         Write-Host ""
         Write-Host "Examples:" -ForegroundColor Yellow
-        Write-Host "  mobaxterm gpus        # Check all GPU status"
-        Write-Host "  mobaxterm ssh 89:0    # SSH to .89 directly"
-        Write-Host "  mobaxterm issh        # Interactive SSH menu"
-        Write-Host "  mobaxterm run 87:3 4  # Compile & run with 4 GPUs"
-        Write-Host "  mobaxterm jobs 87:3   # Check running jobs"
-        Write-Host "  mobaxterm pull89      # Pull from .89"
-        Write-Host "  mobaxterm push        # Push to all servers"
+        Write-Host "  mobaxterm push87              # Push with code diff + confirm"
+        Write-Host "  mobaxterm push87 --quick      # Push immediately, no diff"
+        Write-Host "  mobaxterm push --diff-summary  # Push with summary only"
+        Write-Host "  mobaxterm sync-diff 87        # Show diff for .87 (no transfer)"
+        Write-Host "  mobaxterm sync-diff-file main.cu  # Diff single file"
+        Write-Host "  mobaxterm sync-log            # Show sync history"
+        Write-Host "  mobaxterm gpus                # Check all GPU status"
+        Write-Host "  mobaxterm ssh 89:0            # SSH to .89 directly"
+        Write-Host "  mobaxterm issh                # Interactive SSH menu"
+        Write-Host "  mobaxterm run 87:3 4          # Compile & run with 4 GPUs"
         Write-Host ""
     }
 }

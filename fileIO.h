@@ -13,7 +13,7 @@ using namespace std ;
 void wirte_ASCII_of_str(char * str, FILE *file);
 
 /*第一段:創建資料夾*/
-//PreCheckDir輔助檔案1 
+//PreCheckDir函數式的輔助函數1 
 void ExistOrCreateDir(const char* doc) {
     //步驟一:創立資料夾 
 	std::string path(doc);// path 是 C++ string 物件
@@ -52,7 +52,7 @@ void PreCheckDir() {
 //result系列輔助函數1.
 void result_writebin(double* arr_h, const char *fname, const int myid){
     // 組合檔案路徑
-    ostringstream oss;
+    ostringstream oss;//輸出整數轉字串資料流
     oss << "./result/" << fname << "_" << myid << ".bin";
     string path = oss.str();
 
@@ -82,9 +82,8 @@ void result_readbin(double *arr_h, const char *folder, const char *fname, const 
     file.read(reinterpret_cast<char*>(arr_h), sizeof(double) * NX6 * NZ6 * NYD6);
     file.close();
 }
-//result系列主函數1.
+//result系列主函數1.(寫檔案)
 void result_writebin_velocityandf() {
-    ///////////////////////////////////////////////////////////////////////////////
     // 輸出 Paraview VTK (最終結果，分 GPU 子域輸出)
     ostringstream oss;
     oss << "./result/velocity_" << myid << "_Final.vtk";
@@ -141,7 +140,7 @@ void result_writebin_velocityandf() {
         result_writebin(fh_p[q], fname.str().c_str(), myid);
     }
 }
-//result系列主函數2.
+//result系列主函數2.(讀檔案)
 void result_readbin_velocityandf()
 {
     PreCheckDir();
@@ -316,7 +315,7 @@ void statistics_readbin_stress() {
 	//statistics_readbin(OMEGA_Z, "OMEGA_Z", myid);
 	CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }
-/*第四段:逐步輸出可視化VTK檔案*/
+/*第四段:每1000步輸出可視化VTK檔案*/
 // 合併所有 GPU 結果，輸出單一 VTK 檔案 (Paraview)
 void fileIO_velocity_vtk_merged(int step) {
     // 每個 GPU 內部有效區域的 y 層數 (不含 ghost)
@@ -457,6 +456,5 @@ void fileIO_velocity_vtk_merged(int step) {
     
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }
-
 
 #endif
