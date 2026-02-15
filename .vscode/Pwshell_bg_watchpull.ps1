@@ -1,4 +1,5 @@
-# WatchPull Daemon - Standalone background process
+# WatchPull Daemon - Standalone background process (download + delete local extras)
+# Downloads from remote AND deletes local files not on remote (mirrors remote exactly)
 param(
     [string]$LocalPath,
     [string]$RemotePath,
@@ -40,14 +41,14 @@ function Write-Log {
 }
 
 # Write startup message
-Write-Log "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $ServerName DAEMON STARTED (Interval: ${Interval}s)"
+Write-Log "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $ServerName DAEMON STARTED (Interval: ${Interval}s, WITH DELETE)"
 
 while ($true) {
     try {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         
-        # Find all .dat, log*, .plt files in main directory (no marker logic - pure hash comparison)
-        $cmd = "find $RemotePath -maxdepth 1 -type f \( -name '*.dat' -o -name 'log*' -o -name '*.plt' \) 2>/dev/null"
+        # Find all .dat, log*, .plt, .bin, .vtk files in main directory (no marker logic - pure hash comparison)
+        $cmd = "find $RemotePath -maxdepth 1 -type f \( -name '*.dat' -o -name 'log*' -o -name '*.plt' -o -name '*.bin' -o -name '*.vtk' \) 2>/dev/null"
         $result = Invoke-DaemonSsh -User $ServerUser -Pass $ServerPass -Host_ $ServerHost -Command $cmd
         
         # Also get files in result/statistics directories (include .bin and .vtk)
@@ -58,6 +59,14 @@ while ($true) {
         if ($result) { $allFiles += $result }
         if ($resultFiles) { $allFiles += $resultFiles }
         $allFiles = $allFiles | Sort-Object -Unique
+        
+        # Build set of remote relative paths (for delete comparison)
+        $remoteSet = @{}
+        foreach ($remotefile in $allFiles) {
+            if (-not $remotefile -or $remotefile -match '\.git/' -or $remotefile -match '\.vscode/') { continue }
+            $relativePath = $remotefile.Replace("$RemotePath/", "")
+            $remoteSet[$relativePath] = $remotefile
+        }
         
         foreach ($remotefile in $allFiles) {
             if (-not $remotefile -or $remotefile -match '\.git/' -or $remotefile -match '\.vscode/') { continue }
@@ -98,6 +107,40 @@ while ($true) {
                 Invoke-DaemonScp -Pass $ServerPass -Source $remoteUri -Dest $localFile
                 
                 Write-Log "[$timestamp] $ServerName DOWNLOADED: $relativePath"
+            }
+        }
+        
+        # Pull: Delete local files not on remote (mirror remote exactly)
+        # Check main directory
+        $localFiles = @()
+        $localFiles += Get-ChildItem -Path $LocalPath -File -ErrorAction SilentlyContinue | Where-Object { 
+            $_.Name -match '\.(dat|DAT|plt|bin|vtk)$' -or $_.Name -match '^log'
+        }
+        
+        # Check result and statistics directories
+        $resultPath = Join-Path $LocalPath "result"
+        $statsPath = Join-Path $LocalPath "statistics"
+        if (Test-Path $resultPath) {
+            $localFiles += Get-ChildItem -Path $resultPath -File -Recurse -ErrorAction SilentlyContinue | Where-Object { 
+                $_.Name -match '\.(dat|DAT|plt|bin|vtk)$' -or $_.Name -match '^log'
+            }
+        }
+        if (Test-Path $statsPath) {
+            $localFiles += Get-ChildItem -Path $statsPath -File -Recurse -ErrorAction SilentlyContinue | Where-Object { 
+                $_.Name -match '\.(dat|DAT|plt|bin|vtk)$' -or $_.Name -match '^log'
+            }
+        }
+        
+        foreach ($localFile in $localFiles) {
+            $relativePath = $localFile.FullName.Replace($LocalPath, "").TrimStart([System.IO.Path]::DirectorySeparatorChar).Replace("\", "/")
+            
+            # Skip .git and .vscode
+            if ($relativePath -match '\.git/' -or $relativePath -match '\.vscode/') { continue }
+            
+            # If not in remote set, delete it
+            if (-not $remoteSet.ContainsKey($relativePath)) {
+                Remove-Item $localFile.FullName -Force
+                Write-Log "[$timestamp] $ServerName DELETED: $relativePath (not on remote)"
             }
         }
     }

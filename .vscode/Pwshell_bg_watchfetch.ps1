@@ -1,5 +1,5 @@
-# WatchFetch Daemon - Standalone background process with delete capability
-# Downloads from remote AND deletes local files not on remote (sync local to match remote exactly)
+# WatchFetch Daemon - Standalone background process (download only, no delete)
+# Downloads from remote WITHOUT deleting local files (preserves local-only files)
 param(
     [string]$LocalPath,
     [string]$RemotePath,
@@ -44,14 +44,14 @@ function Write-Log {
 $includePatterns = @("*.dat", "log*", "*.plt", "*.bin", "*.vtk")
 
 # Write startup message
-Write-Log "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $ServerName WATCHFETCH DAEMON STARTED (Interval: ${Interval}s, WITH DELETE)"
+Write-Log "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $ServerName WATCHFETCH DAEMON STARTED (Interval: ${Interval}s, NO DELETE)"
 
 while ($true) {
     try {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         
         # Get remote files (main directory)
-        $cmd = "find $RemotePath -maxdepth 1 -type f \( -name '*.dat' -o -name 'log*' -o -name '*.plt' \) 2>/dev/null"
+        $cmd = "find $RemotePath -maxdepth 1 -type f \( -name '*.dat' -o -name 'log*' -o -name '*.plt' -o -name '*.bin' -o -name '*.vtk' \) 2>/dev/null"
         $result = Invoke-DaemonSsh -User $ServerUser -Pass $ServerPass -Host_ $ServerHost -Command $cmd
         
         # Get files in result/statistics directories
@@ -112,38 +112,7 @@ while ($true) {
             }
         }
         
-        # Delete local files not on remote
-        # Check main directory
-        $localFiles = Get-ChildItem -Path $LocalPath -File | Where-Object { 
-            $_.Name -match '\.(dat|plt|bin|vtk)$' -or $_.Name -match '^log'
-        }
-        
-        # Check result and statistics directories
-        $resultPath = Join-Path $LocalPath "result"
-        $statsPath = Join-Path $LocalPath "statistics"
-        if (Test-Path $resultPath) {
-            $localFiles += Get-ChildItem -Path $resultPath -File -Recurse | Where-Object { 
-                $_.Name -match '\.(dat|plt|bin|vtk)$' -or $_.Name -match '^log'
-            }
-        }
-        if (Test-Path $statsPath) {
-            $localFiles += Get-ChildItem -Path $statsPath -File -Recurse | Where-Object { 
-                $_.Name -match '\.(dat|plt|bin|vtk)$' -or $_.Name -match '^log'
-            }
-        }
-        
-        foreach ($localFile in $localFiles) {
-            $relativePath = $localFile.FullName.Replace($LocalPath, "").TrimStart([System.IO.Path]::DirectorySeparatorChar).Replace("\", "/")
-            
-            # Skip .git and .vscode
-            if ($relativePath -match '\.git/' -or $relativePath -match '\.vscode/') { continue }
-            
-            # If not in remote set, delete it
-            if (-not $remoteSet.ContainsKey($relativePath)) {
-                Remove-Item $localFile.FullName -Force
-                Write-Log "[$timestamp] $ServerName DELETED: $relativePath (not on remote)"
-            }
-        }
+        # Fetch: NO deletion of local-only files (preserve local extras)
     }
     catch {
         Write-Log "[$timestamp] $ServerName ERROR: $_"

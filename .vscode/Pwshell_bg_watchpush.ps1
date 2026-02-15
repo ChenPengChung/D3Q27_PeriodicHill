@@ -1,4 +1,5 @@
-# WatchPush Daemon - Standalone background process
+# WatchPush Daemon - Standalone background process (upload + delete remote extras)
+# Uploads to remote AND deletes remote files not present locally (mirrors local exactly)
 param(
     [string]$LocalPath,
     [string]$RemotePath,
@@ -49,14 +50,15 @@ function Write-Log {
 }
 
 # Write startup message
-Write-Log "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] DAEMON STARTED (Interval: ${Interval}s)"
+Write-Log "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] DAEMON STARTED (Interval: ${Interval}s, WITH DELETE)"
 
 while ($true) {
     try {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         
-        # Get all local files
+        # Get all local files (build current local set)
         $changedFiles = @()
+        $localSet = @{}
         Get-ChildItem -Path $LocalPath -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
             $relativePath = $_.FullName.Substring($LocalPath.Length + 1).Replace("\", "/")
             
@@ -67,6 +69,7 @@ while ($true) {
             }
             
             if (-not $exclude) {
+                $localSet[$relativePath] = $true
                 try {
                     $currentHash = (Get-FileHash $_.FullName -Algorithm MD5 -ErrorAction Stop).Hash
                     if (-not $lastHashes.ContainsKey($relativePath) -or $lastHashes[$relativePath] -ne $currentHash) {
@@ -95,6 +98,30 @@ while ($true) {
                 }
                 
                 Write-Log "[$timestamp] UPLOADED: $($file.Path)"
+            }
+        }
+        
+        # Push: Delete remote files not present locally (mirror local exactly)
+        foreach ($server in $servers) {
+            # Get remote file list (source code files only, matching exclude patterns)
+            $findCmd = "find $RemotePath -type f ! -path '*/.git/*' ! -path '*/.vscode/*' ! -path '*/result/*' ! -path '*/backup/*' ! -path '*/statistics/*' ! -name '*.dat' ! -name '*.DAT' ! -name '*.o' ! -name '*.exe' ! -name '*.plt' ! -name '*.bin' ! -name '*.vtk' ! -name '*.vtu' ! -name 'a.out' ! -name 'log*' ! -name '*.swp' ! -name '*.swo' ! -name '*~' ! -name '*.pyc' ! -name '.DS_Store' 2>/dev/null"
+            $remoteFiles = Invoke-DaemonSsh -User $server.User -Pass $server.Password -Host_ $server.Host -Command $findCmd
+            
+            if ($remoteFiles) {
+                foreach ($remotefile in $remoteFiles) {
+                    if (-not $remotefile) { continue }
+                    $relativePath = $remotefile.Replace("$RemotePath/", "")
+                    # If remote file not in local set, delete it from remote
+                    if (-not $localSet.ContainsKey($relativePath)) {
+                        $rmCmd = "rm -f '$remotefile' 2>/dev/null"
+                        $null = Invoke-DaemonSsh -User $server.User -Pass $server.Password -Host_ $server.Host -Command $rmCmd
+                        Write-Log "[$timestamp] DELETED on $($server.Host): $relativePath (not in local)"
+                    }
+                }
+                
+                # Clean up empty directories
+                $cleanupCmd = "find $RemotePath -type d -empty ! -path '*/.git/*' -delete 2>/dev/null"
+                $null = Invoke-DaemonSsh -User $server.User -Pass $server.Password -Host_ $server.Host -Command $cleanupCmd
             }
         }
     }

@@ -2205,7 +2205,7 @@ function cmd_pull_like() {
   local server
   server="$(normalize_server "${positional[0]:-87}")"
   local delete_mode
-  if [[ "$mode" == "fetch" ]]; then
+  if [[ "$mode" == "pull" ]]; then
     delete_mode="delete"
   else
     delete_mode="keep"
@@ -2402,7 +2402,7 @@ function cmd_autopull() {
   local count
 
   server="$(normalize_server "${1:-87}")"
-  if ! preview="$(preview_pull_changes "$server" keep)"; then
+  if ! preview="$(preview_pull_changes "$server" delete)"; then
     echo "[AUTOPULL] ${server}: preview failed"
     return 1
   fi
@@ -2410,7 +2410,7 @@ function cmd_autopull() {
 
   if [[ "$count" -gt 0 ]]; then
     echo "[AUTOPULL] ${server}: ${count} changes"
-    git_style_transfer pull "$server" keep
+    git_style_transfer pull "$server" delete
   else
     echo "[AUTOPULL] ${server}: no changes"
   fi
@@ -2422,7 +2422,7 @@ function cmd_autofetch() {
   local count
 
   server="$(normalize_server "${1:-87}")"
-  if ! preview="$(preview_pull_changes "$server" delete)"; then
+  if ! preview="$(preview_pull_changes "$server" keep)"; then
     echo "[AUTOFETCH] ${server}: preview failed"
     return 1
   fi
@@ -2430,7 +2430,7 @@ function cmd_autofetch() {
 
   if [[ "$count" -gt 0 ]]; then
     echo "[AUTOFETCH] ${server}: ${count} changes"
-    git_style_transfer fetch "$server" delete
+    git_style_transfer fetch "$server" keep
   else
     echo "[AUTOFETCH] ${server}: no changes"
   fi

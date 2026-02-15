@@ -760,8 +760,8 @@ function Invoke-CodeDiffAnalysis {
     } else {
         $newFiles = @($results.Deleted)      # remote-only → new for local
         $modifiedFiles = @($results.Modified)
-        $deletedFiles = @($results.New)      # local-only → deleted in fetch
-        if ($Direction -eq "pull") { $deletedFiles = @() } # pull doesn't delete
+        $deletedFiles = @($results.New)      # local-only → will be deleted
+        if ($Direction -eq "fetch") { $deletedFiles = @() } # fetch doesn't delete
     }
 
     $totalNew = $newFiles.Count
@@ -1121,7 +1121,115 @@ function Invoke-GitStylePush {
 
 function Invoke-GitStylePull {
     <#
-    .SYNOPSIS Git-style pull with real-time progress for a single server.
+    .SYNOPSIS Git-style pull (download + delete local extras) with real-time progress for a single server.
+    #>
+    param(
+        [hashtable]$Server
+    )
+    $startTime = Get-Date
+    $isInteractive = ($Host.Name -eq 'ConsoleHost') -and [Environment]::UserInteractive
+
+    # Phase 1: Enumerate
+    if ($isInteractive) {
+        Write-Host "remote: Enumerating objects..." -ForegroundColor DarkGray -NoNewline
+    } else {
+        Write-Host "remote: Enumerating objects..." -ForegroundColor DarkGray
+    }
+
+    $results = Compare-Files -Server $Server -Silent
+    $toDownload = @($results.Deleted) + @($results.Modified) | Where-Object { $_ }
+    $toDelete = @($results.New) | Where-Object { $_ }   # local-only → delete from local
+    if (-not $toDownload) { $toDownload = @() }
+    if (-not $toDelete) { $toDelete = @() }
+    $totalFiles = $toDownload.Count + $toDelete.Count
+
+    if ($isInteractive) {
+        Write-Host "`rremote: Enumerating objects: $totalFiles, done.       " -ForegroundColor DarkGray
+    } else {
+        Write-Host "remote: Enumerating objects: $totalFiles, done." -ForegroundColor DarkGray
+    }
+
+    if ($totalFiles -eq 0) {
+        Write-Host "  Already up to date."
+        $elapsed = (Get-Date) - $startTime
+        Write-Host ("Transfer complete. [{0:mm\:ss}] ✔" -f $elapsed)
+        return
+    }
+
+    # Phase 1.5: Compute per-file line diffs
+    Write-Host "remote: Computing line changes..." -ForegroundColor DarkGray -NoNewline
+    $lineStats = Compute-FileLineDiffs -Server $Server -Direction "pull" `
+        -NewFiles @($results.Deleted) -ModifiedFiles @($results.Modified) -DeletedFiles @($toDelete)
+    Write-Host "`rremote: Computing line changes: done.       " -ForegroundColor DarkGray
+
+    # Phase 2: Download with progress
+    $current = 0; $newCount = 0; $modCount = 0; $delCount = 0
+    $formattedLines = @()
+    $phaseStart = Get-Date
+
+    foreach ($relativePath in $toDownload) {
+        $current++
+        $pct = [math]::Floor($current * 100 / $totalFiles)
+
+        $line = Format-ProgressLine -Verb "Pulling" -Pct $pct -Current $current -Total $totalFiles -FileName $relativePath -PhaseStart $phaseStart -IsInteractive $isInteractive
+        if ($isInteractive) { Write-Host $line -NoNewline } else { Write-Host $line }
+
+        $remotePath = "$($Config.RemotePath)/$relativePath"
+        $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", [System.IO.Path]::DirectorySeparatorChar))
+        $localDir = Split-Path $localPath -Parent
+        if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Path $localDir -Force | Out-Null }
+
+        Invoke-Scp -Direction "download" -Server $Server -LocalPath $localPath -RemotePath $remotePath
+
+        $suffix = Format-LineStatSuffix -Stats $lineStats -FilePath $relativePath
+        if ($relativePath -in $results.Deleted) {
+            $newCount++
+            $formattedLines += @{ Text = "  new file:   $relativePath$suffix"; Color = "Green" }
+        } else {
+            $modCount++
+            $formattedLines += @{ Text = "  modified:  $relativePath$suffix"; Color = "White" }
+        }
+    }
+
+    # Phase 2.5: Delete local-only files (pull = mirror remote)
+    foreach ($relativePath in $toDelete) {
+        $current++
+        $pct = [math]::Floor($current * 100 / $totalFiles)
+
+        $line = Format-ProgressLine -Verb "Pulling" -Pct $pct -Current $current -Total $totalFiles -FileName "DELETE $relativePath" -PhaseStart $phaseStart -IsInteractive $isInteractive
+        if ($isInteractive) { Write-Host $line -NoNewline } else { Write-Host $line }
+
+        $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", [System.IO.Path]::DirectorySeparatorChar))
+        if (Test-Path $localPath) { Remove-Item $localPath -Force }
+        $delCount++
+        $suffix = Format-LineStatSuffix -Stats $lineStats -FilePath $relativePath
+        $formattedLines += @{ Text = "  deleted:    $relativePath$suffix"; Color = "Red" }
+    }
+
+    # Phase 3: Summary
+    if ($isInteractive) {
+        Write-Host ("`rPulling objects: 100% ($totalFiles/$totalFiles), done.".PadRight(100)) -ForegroundColor DarkGray
+    } else {
+        Write-Host "Pulling objects: 100% ($totalFiles/$totalFiles), done." -ForegroundColor DarkGray
+    }
+
+    foreach ($entry in $formattedLines) {
+        Write-Host $entry.Text -ForegroundColor $entry.Color
+    }
+
+    $totalAdds = if ($lineStats.ContainsKey('_TotalAdds')) { $lineStats['_TotalAdds'] } else { 0 }
+    $totalDels = if ($lineStats.ContainsKey('_TotalDels')) { $lineStats['_TotalDels'] } else { 0 }
+    $summary = "$totalFiles file(s) changed"
+    if ($totalAdds -gt 0) { $summary += ", $totalAdds insertion(+)" }
+    if ($totalDels -gt 0) { $summary += ", $totalDels deletion(-)" }
+    Write-Host $summary
+
+    Write-TransferSummary -StartTime $startTime -FileCount $current
+}
+
+function Invoke-GitStyleFetch {
+    <#
+    .SYNOPSIS Git-style fetch (download only, preserve local extras) with real-time progress.
     #>
     param(
         [hashtable]$Server
@@ -1161,101 +1269,8 @@ function Invoke-GitStylePull {
         -NewFiles @($results.Deleted) -ModifiedFiles @($results.Modified) -DeletedFiles @()
     Write-Host "`rremote: Computing line changes: done.       " -ForegroundColor DarkGray
 
-    # Phase 2: Download with progress
+    # Phase 2: Download with progress (no deletion — fetch preserves local-only files)
     $current = 0; $newCount = 0; $modCount = 0
-    $formattedLines = @()
-    $phaseStart = Get-Date
-
-    foreach ($relativePath in $toDownload) {
-        $current++
-        $pct = [math]::Floor($current * 100 / $totalFiles)
-
-        $line = Format-ProgressLine -Verb "Downloading" -Pct $pct -Current $current -Total $totalFiles -FileName $relativePath -PhaseStart $phaseStart -IsInteractive $isInteractive
-        if ($isInteractive) { Write-Host $line -NoNewline } else { Write-Host $line }
-
-        $remotePath = "$($Config.RemotePath)/$relativePath"
-        $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", [System.IO.Path]::DirectorySeparatorChar))
-        $localDir = Split-Path $localPath -Parent
-        if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Path $localDir -Force | Out-Null }
-
-        Invoke-Scp -Direction "download" -Server $Server -LocalPath $localPath -RemotePath $remotePath
-
-        $suffix = Format-LineStatSuffix -Stats $lineStats -FilePath $relativePath
-        if ($relativePath -in $results.Deleted) {
-            $newCount++
-            $formattedLines += @{ Text = "  new file:   $relativePath$suffix"; Color = "Green" }
-        } else {
-            $modCount++
-            $formattedLines += @{ Text = "  modified:  $relativePath$suffix"; Color = "White" }
-        }
-    }
-
-    # Phase 3: Summary
-    if ($isInteractive) {
-        Write-Host ("`rDownloading objects: 100% ($totalFiles/$totalFiles), done.".PadRight(100)) -ForegroundColor DarkGray
-    } else {
-        Write-Host "Downloading objects: 100% ($totalFiles/$totalFiles), done." -ForegroundColor DarkGray
-    }
-
-    foreach ($entry in $formattedLines) {
-        Write-Host $entry.Text -ForegroundColor $entry.Color
-    }
-
-    $totalAdds = if ($lineStats.ContainsKey('_TotalAdds')) { $lineStats['_TotalAdds'] } else { 0 }
-    $totalDels = if ($lineStats.ContainsKey('_TotalDels')) { $lineStats['_TotalDels'] } else { 0 }
-    $summary = "$totalFiles file(s) changed"
-    if ($totalAdds -gt 0) { $summary += ", $totalAdds insertion(+)" }
-    if ($totalDels -gt 0) { $summary += ", $totalDels deletion(-)" }
-    Write-Host $summary
-
-    Write-TransferSummary -StartTime $startTime -FileCount $current
-}
-
-function Invoke-GitStyleFetch {
-    <#
-    .SYNOPSIS Git-style fetch (download + delete local extras) with real-time progress.
-    #>
-    param(
-        [hashtable]$Server
-    )
-    $startTime = Get-Date
-    $isInteractive = ($Host.Name -eq 'ConsoleHost') -and [Environment]::UserInteractive
-
-    # Phase 1: Enumerate
-    if ($isInteractive) {
-        Write-Host "remote: Enumerating objects..." -ForegroundColor DarkGray -NoNewline
-    } else {
-        Write-Host "remote: Enumerating objects..." -ForegroundColor DarkGray
-    }
-
-    $results = Compare-Files -Server $Server -Silent
-    $toDownload = @($results.Deleted) + @($results.Modified) | Where-Object { $_ }
-    $toDelete = @($results.New) | Where-Object { $_ }
-    if (-not $toDownload) { $toDownload = @() }
-    if (-not $toDelete) { $toDelete = @() }
-    $totalFiles = $toDownload.Count + $toDelete.Count
-
-    if ($isInteractive) {
-        Write-Host "`rremote: Enumerating objects: $totalFiles, done.       " -ForegroundColor DarkGray
-    } else {
-        Write-Host "remote: Enumerating objects: $totalFiles, done." -ForegroundColor DarkGray
-    }
-
-    if ($totalFiles -eq 0) {
-        Write-Host "  Already up to date."
-        $elapsed = (Get-Date) - $startTime
-        Write-Host ("Transfer complete. [{0:mm\:ss}] ✔" -f $elapsed)
-        return
-    }
-
-    # Phase 1.5: Compute per-file line diffs
-    Write-Host "remote: Computing line changes..." -ForegroundColor DarkGray -NoNewline
-    $lineStats = Compute-FileLineDiffs -Server $Server -Direction "pull" `
-        -NewFiles @($results.Deleted) -ModifiedFiles @($results.Modified) -DeletedFiles @($toDelete)
-    Write-Host "`rremote: Computing line changes: done.       " -ForegroundColor DarkGray
-
-    # Phase 2: Transfer with progress
-    $current = 0; $newCount = 0; $modCount = 0; $delCount = 0
     $formattedLines = @()
     $phaseStart = Get-Date
 
@@ -1281,20 +1296,6 @@ function Invoke-GitStyleFetch {
             $modCount++
             $formattedLines += @{ Text = "  modified:  $relativePath$suffix"; Color = "White" }
         }
-    }
-
-    foreach ($relativePath in $toDelete) {
-        $current++
-        $pct = [math]::Floor($current * 100 / $totalFiles)
-
-        $line = Format-ProgressLine -Verb "Fetching" -Pct $pct -Current $current -Total $totalFiles -FileName "DELETE $relativePath" -PhaseStart $phaseStart -IsInteractive $isInteractive
-        if ($isInteractive) { Write-Host $line -NoNewline } else { Write-Host $line }
-
-        $localPath = Join-Path $Config.LocalPath ($relativePath.Replace("/", [System.IO.Path]::DirectorySeparatorChar))
-        if (Test-Path $localPath) { Remove-Item $localPath -Force }
-        $delCount++
-        $suffix = Format-LineStatSuffix -Stats $lineStats -FilePath $relativePath
-        $formattedLines += @{ Text = "  deleted:    $relativePath$suffix"; Color = "Red" }
     }
 
     # Phase 3: Summary
@@ -1694,7 +1695,7 @@ switch ($Command) {
         foreach ($server in $targetServers) {
             $idx++
             Write-TransferHeader -Server $server -Verb "Push (auto)" -Index $idx -Total $total
-            Invoke-GitStylePush -Server $server
+            Invoke-GitStylePush -Server $server -DeleteRemoteExtras
         }
     }
     
