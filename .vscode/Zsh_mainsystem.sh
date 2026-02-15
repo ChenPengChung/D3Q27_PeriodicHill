@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ========== Auto-setup 'mobaxterm' alias ==========
 # This will add alias to your shell profile if not already added
 function auto_setup_alias() {
-  local script_path="$SCRIPT_DIR/cfdlab-mac.sh"
+  local script_path="$SCRIPT_DIR/Zsh_mainsystem.sh"
   local shell_profile=""
 
   # Determine shell profile
@@ -880,84 +880,18 @@ Optional environment:
   CFDLAB_ASSUME_YES=1          (skip confirmations for reset/clone/sync/fullsync)
 
 Examples:
-  ./.vscode/cfdlab-mac.sh diff
-  ./.vscode/cfdlab-mac.sh push
-  ./.vscode/cfdlab-mac.sh watchpush all 10
-  ./.vscode/cfdlab-mac.sh watchpull status
-  ./.vscode/cfdlab-mac.sh vtkrename
+  ./.vscode/Zsh_mainsystem.sh diff
+  ./.vscode/Zsh_mainsystem.sh push
+  ./.vscode/Zsh_mainsystem.sh watchpush all 10
+  ./.vscode/Zsh_mainsystem.sh watchpull status
+  ./.vscode/Zsh_mainsystem.sh vtkrename
 EOF
 }
 
-# ── 互動式 SSH：終端內顯示即時 GPU 狀態 + 選擇節點 ──
+# ── 互動式 SSH：上方選單 (即時) + 下方 GPU 狀態 (按 Enter 載入) ──
 function cmd_issh() {
   local mode="${1:-switch}"   # switch | reconnect
 
-  echo ""
-  echo "  🔍 正在查詢所有節點 GPU 狀態 ..."
-  echo ""
-
-  # ---------- 並行查詢所有節點 GPU 狀態 ----------
-  local tmpdir
-  tmpdir="$(mktemp -d)"
-
-  # .89 直連 — 查詢 memory.used + memory.total + utilization
-  ( sshpass -p "$CFDLAB_PASSWORD" \
-      ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
-      "${CFDLAB_USER}@140.114.58.89" \
-      "nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader" \
-      2>/dev/null > "$tmpdir/89_0" || echo "OFFLINE" > "$tmpdir/89_0"
-  ) &
-
-  # .87 的 ib2,ib3,ib5,ib6
-  for n in 2 3 5 6; do
-    ( ssh_batch_exec "140.114.58.87" \
-        "ssh -o ConnectTimeout=5 cfdlab-ib${n} 'nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader'" \
-        2>/dev/null > "$tmpdir/87_${n}" || echo "OFFLINE" > "$tmpdir/87_${n}"
-    ) &
-  done
-
-  # .154 的 ib1,ib4,ib7,ib9
-  for n in 1 4 7 9; do
-    ( ssh_batch_exec "140.114.58.154" \
-        "ssh -o ConnectTimeout=5 cfdlab-ib${n} 'nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader'" \
-        2>/dev/null > "$tmpdir/154_${n}" || echo "OFFLINE" > "$tmpdir/154_${n}"
-    ) &
-  done
-
-  wait   # 等待所有背景查詢完成
-
-  # ---------- 輔助函式 ----------
-  # 解析 nvidia-smi 輸出 → 產生每顆 GPU 的視覺指示 + 統計
-  # 輸出格式: "dots|free|total"  例如 "🟢🔴🟢🟢🔴🟢🟢🟢|5|8"
-  _parse_gpus() {
-    local file="$1"
-    if [[ ! -s "$file" ]] || grep -q "OFFLINE" "$file" 2>/dev/null; then
-      echo "OFFLINE|0|0"
-      return
-    fi
-    local total=0 free=0
-    local dots=""
-    while IFS=',' read -r _idx mem_used mem_total util; do
-      [[ -z "$_idx" ]] && continue
-      util="${util//[^0-9]/}"
-      mem_used="${mem_used//[^0-9]/}"
-      [[ -z "$util" ]] && continue
-      ((total++))
-      if (( util < 10 && mem_used < 100 )); then
-        ((free++))
-        dots="${dots}🟢"
-      else
-        dots="${dots}🔴"
-      fi
-    done < "$file"
-    if [[ "$total" -eq 0 ]]; then
-      echo "OFFLINE|0|0"
-    else
-      echo "${dots}|${free}|${total}"
-    fi
-  }
-
-  # ---------- 組裝選單資料 ----------
   # 節點定義: "server:node:label:gpu_type"
   local -a NODES=(
     "89:0:.89  直連:V100-32G"
@@ -970,73 +904,156 @@ function cmd_issh() {
     "154:7:.154→ib7:P100-16G"
     "154:9:.154→ib9:P100-16G"
   )
+  local total=${#NODES[@]}
 
-  local -a menu_combos=()
-  local -a rows=()
-  local idx=0
-
-  for entry in "${NODES[@]}"; do
-    local srv="${entry%%:*}"              # 89
-    local rest="${entry#*:}"
-    local nd="${rest%%:*}"                 # 0
-    rest="${rest#*:}"
-    local label="${rest%%:*}"             # .89  直連
-    local gtype="${rest##*:}"             # V100-32G
-
-    local result
-    result="$(_parse_gpus "$tmpdir/${srv}_${nd}")"
-    local dots="${result%%|*}"
-    local tmp="${result#*|}"
-    local nfree="${tmp%%|*}"
-    local ntotal="${tmp##*|}"
-
-    ((idx++))
-    menu_combos+=("${srv}:${nd}")
-
-    # 組合一行顯示
-    local status_str
-    if [[ "$dots" == "OFFLINE" ]]; then
-      status_str="⬛⬛⬛⬛⬛⬛⬛⬛  OFFLINE"
-    else
-      status_str="${dots}  ${nfree}/${ntotal}"
+  # 解析 nvidia-smi 輸出 → "dots|free|total"
+  _parse_gpus() {
+    local file="$1"
+    if [[ ! -s "$file" ]] || grep -q "OFFLINE" "$file" 2>/dev/null; then
+      echo "OFFLINE|0|0"; return
     fi
+    local total_g=0 free_g=0 dots=""
+    while IFS=',' read -r _idx mem_used mem_total util; do
+      [[ -z "$_idx" ]] && continue
+      util="${util//[^0-9]/}"; mem_used="${mem_used//[^0-9]/}"
+      [[ -z "$util" ]] && continue
+      ((total_g++))
+      if (( util < 10 && mem_used < 100 )); then
+        ((free_g++)); dots="${dots}🟢"
+      else
+        dots="${dots}🔴"
+      fi
+    done < "$file"
+    [[ "$total_g" -eq 0 ]] && echo "OFFLINE|0|0" || echo "${dots}|${free_g}|${total_g}"
+  }
 
-    rows+=("$(printf ' %d) %-11s %-8s  %s' "$idx" "$label" "$gtype" "$status_str")")
+  # ══════════════════════════════════════════════════
+  # ① 立即顯示選單 (上方)
+  # ══════════════════════════════════════════════════
+  echo ""
+  echo " ╔═══════════════════════════════════════╗"
+  echo " ║       🖥  SSH 節點選擇                ║"
+  echo " ╠═══╤═══════════╤═════════════════════╣"
+  local idx=0
+  for entry in "${NODES[@]}"; do
+    local rest="${entry#*:}"; rest="${rest#*:}"
+    local label="${rest%%:*}"; local gtype="${rest##*:}"
+    ((idx++))
+    printf " ║ %d │ %-9s │ %-8s            ║\n" "$idx" "$label" "$gtype"
+  done
+  echo " ╠═══╧═══════════╧═════════════════════╣"
+  echo " ║ 0 │ 取消                             ║"
+  echo " ╚═══╧═════════════════════════════════╝"
+  echo ""
+  echo "  💡 輸入編號 → 立即連線"
+  echo "     按 Enter → 先查看 GPU 使用狀態再選"
+  echo ""
+
+  # ══════════════════════════════════════════════════
+  # ② 背景啟動 GPU 查詢 (不阻塞選單)
+  # ══════════════════════════════════════════════════
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  ( sshpass -p "$CFDLAB_PASSWORD" \
+      ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+      "${CFDLAB_USER}@140.114.58.89" \
+      "nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader" \
+      2>/dev/null > "$tmpdir/89_0" || echo "OFFLINE" > "$tmpdir/89_0"
+  ) &
+  for n in 2 3 5 6; do
+    ( ssh_batch_exec "140.114.58.87" \
+        "ssh -o ConnectTimeout=5 cfdlab-ib${n} 'nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader'" \
+        2>/dev/null > "$tmpdir/87_${n}" || echo "OFFLINE" > "$tmpdir/87_${n}"
+    ) &
+  done
+  for n in 1 4 7 9; do
+    ( ssh_batch_exec "140.114.58.154" \
+        "ssh -o ConnectTimeout=5 cfdlab-ib${n} 'nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader'" \
+        2>/dev/null > "$tmpdir/154_${n}" || echo "OFFLINE" > "$tmpdir/154_${n}"
+    ) &
   done
 
+  # ══════════════════════════════════════════════════
+  # ③ 等待使用者輸入
+  # ══════════════════════════════════════════════════
+  local choice
+  read -rp "  選擇 [1-${total}]: " choice
+
+  # 使用者按 Enter (空白) → 等待 GPU 查完 → 顯示狀態 → 再選
+  if [[ -z "$choice" ]]; then
+    echo ""
+    echo "  ⏳ 正在查詢 GPU 狀態..."
+    wait
+
+    echo ""
+    echo " ── GPU 使用狀況 (僅供參考) ────────────────────"
+    printf "  %-11s %-8s  %-24s %s\n" "Server" "GPU" "0 1 2 3 4 5 6 7" "Free"
+    printf "  %-11s %-8s  %-24s %s\n" "───────────" "────────" "────────────────────" "────"
+
+    for entry in "${NODES[@]}"; do
+      local srv="${entry%%:*}"
+      local rest="${entry#*:}"; local nd="${rest%%:*}"
+      rest="${rest#*:}"; local label="${rest%%:*}"; local gtype="${rest##*:}"
+
+      local result; result="$(_parse_gpus "$tmpdir/${srv}_${nd}")"
+      local dots="${result%%|*}"
+      local tmp="${result#*|}"; local nfree="${tmp%%|*}"; local ntotal="${tmp##*|}"
+
+      if [[ "$dots" == "OFFLINE" ]]; then
+        printf '  %-11s %-8s  ⬛⬛⬛⬛⬛⬛⬛⬛  OFFLINE\n' "$label" "$gtype"
+      else
+        printf '  %-11s %-8s  %s  %s/%s\n' "$label" "$gtype" "$dots" "$nfree" "$ntotal"
+      fi
+    done
+    echo "  ─────────── ──────── ──────────────────── ────"
+    echo ""
+    echo " 🟢=閒置  🔴=使用中  ⬛=離線"
+    echo ""
+
+    read -rp "  請參考上方選單輸入編號 [1-${total}, 0=取消]: " choice
+  fi
+
+  # 背景任務清理
   rm -rf "$tmpdir"
 
-  # ---------- 顯示選單 ----------
-  # 表頭
-  echo " ##  Server      GPU       0 1 2 3 4 5 6 7   Free"
-  echo " ── ─────────── ──────── ──────────────────── ────"
-  for row in "${rows[@]}"; do
-    echo "$row"
-  done
-  echo " ── ─────────── ──────── ──────────────────── ────"
-  echo "  0) 取消"
-  echo ""
-
-  # 圖例
-  echo " 🟢=閒置  🔴=使用中  ⬛=離線"
-  echo ""
-
-  local choice
-  read -rp "選擇 [1-${idx}]: " choice
-
+  # ══════════════════════════════════════════════════
+  # ④ 處理選擇
+  # ══════════════════════════════════════════════════
   if [[ -z "$choice" ]] || [[ "$choice" == "0" ]]; then
     echo "已取消。"
     return 0
   fi
 
-  if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > idx )); then
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > total )); then
     die "無效的選擇: $choice"
   fi
 
-  local combo="${menu_combos[$((choice-1))]}"
+  local selected="${NODES[$((choice-1))]}"
+  local combo_srv="${selected%%:*}"
+  local combo_rest="${selected#*:}"
+  local combo_nd="${combo_rest%%:*}"
+  local combo="${combo_srv}:${combo_nd}"
+
   echo ""
   note "連線到: ${combo}"
   cmd_ssh "$combo"
+}
+
+# ── VS Code QuickPick 模式：從 tasks.json 的 input:sshNodePicker 接收選擇 ──
+function cmd_issh_quick() {
+  local combo="${1:-}"
+  if [[ -z "$combo" || "$combo" == "gpus" ]]; then
+    # 使用者選了「先查 GPU 再選」→ 顯示 GPU 狀態 → 進入終端選單
+    cmd_gpus
+    echo ""
+    echo "  📋 請參考上方 GPU 狀態，選擇節點連線："
+    echo ""
+    cmd_issh
+  else
+    # 使用者在 QuickPick 直接選了節點 → 直接連線
+    cmd_ssh "$combo"
+  fi
 }
 
 function cmd_ssh() {
@@ -1812,6 +1829,7 @@ function main() {
 
     ssh) cmd_ssh "$@" ;;
     issh) cmd_issh "$@" ;;
+    issh-quick) cmd_issh_quick "$@" ;;
     run) cmd_run "$@" ;;
     jobs) cmd_jobs "$@" ;;
     kill) cmd_kill "$@" ;;

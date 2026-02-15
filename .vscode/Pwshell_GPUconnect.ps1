@@ -1,10 +1,13 @@
 # SSH Connect Script
-# Usage: ./ssh-connect.ps1 -ServerCombo "87:3"
-#        ./ssh-connect.ps1 -Interactive           (GPU 即時狀態互動選單)
+# Usage: ./Pwshell_GPUconnect.ps1 -ServerCombo "87:3"
+#        ./Pwshell_GPUconnect.ps1 -Interactive           (GPU 即時狀態互動選單)
+#        ./Pwshell_GPUconnect.ps1 -QuickPick "87:3"      (VS Code QuickPick 選擇後直接連線)
+#        ./Pwshell_GPUconnect.ps1 -QuickPick "gpus"      (先查 GPU 再進入終端選單)
 
 param(
     [string]$ServerCombo,
-    [switch]$Interactive
+    [switch]$Interactive,
+    [string]$QuickPick
 )
 
 $_scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -72,14 +75,23 @@ function Parse-GpuDots {
 }
 
 # ══════════════════════════════════════════════════
-#  互動模式：查詢 GPU → 顯示選單 → 選擇 → 連線
+#  VS Code QuickPick 模式：從 tasks.json input:sshNodePicker 接收選擇
+# ══════════════════════════════════════════════════
+if ($QuickPick) {
+    if ($QuickPick -eq "gpus") {
+        # 使用者選了「先查 GPU 再選」→ 顯示 GPU 狀態 → 進入終端互動選單
+        $Interactive = $true
+    } else {
+        # 使用者在 QuickPick 直接選了節點 → 直接連線
+        $ServerCombo = $QuickPick
+    }
+}
+
+# ══════════════════════════════════════════════════
+#  互動模式：① 選單即時顯示 → ② GPU 背景查詢 → ③ 按 Enter 顯示
 # ══════════════════════════════════════════════════
 if ($Interactive) {
-    Write-Host ""
-    Write-Host "  Querying GPU status on all nodes ..." -ForegroundColor Cyan
-    Write-Host ""
-
-    # 節點定義: Label, Server, Node, GpuType (short)
+    # 節點定義
     $nodes = @(
         @{ Label=".89  direct"; Server="89";  Node="0"; GT="V100-32G" },
         @{ Label=".87->ib2";    Server="87";  Node="2"; GT="P100-16G" },
@@ -92,11 +104,30 @@ if ($Interactive) {
         @{ Label=".154->ib9";   Server="154"; Node="9"; GT="P100-16G" }
     )
 
-    # 並行查詢所有節點 (memory.used + memory.total + utilization)
-    $jobs = @()
+    # ── ① 立即顯示選單 (上方) ──
+    Write-Host ""
+    Write-Host " +====+============+===========+" -ForegroundColor Cyan
+    Write-Host " |        SSH Node Selection   |" -ForegroundColor Cyan
+    Write-Host " +----+------------+-----------+" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $nodes.Count; $i++) {
+        $num = $i + 1
+        $lbl = $nodes[$i].Label.PadRight(10)
+        $gt  = $nodes[$i].GT.PadRight(9)
+        Write-Host (" | {0,2} | {1} | {2} |" -f $num, $lbl, $gt) -ForegroundColor White
+    }
+    Write-Host " +----+------------+-----------+" -ForegroundColor Cyan
+    Write-Host (" |  0 | Cancel                 |") -ForegroundColor DarkGray
+    Write-Host " +====+============+===========+" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Enter a number to connect immediately" -ForegroundColor Yellow
+    Write-Host "  Press Enter to view GPU status first" -ForegroundColor Yellow
+    Write-Host ""
+
+    # ── ② 背景啟動 GPU 查詢 (不阻塞選單) ──
+    $gpuJobs = @()
     foreach ($n in $nodes) {
         $s = $n.Server; $nd = $n.Node
-        $jobs += Start-Job -ScriptBlock {
+        $gpuJobs += Start-Job -ScriptBlock {
             param($PlinkPath, $User, $Pass, $IP, $NodeNum, $IsWin, $SshOpts)
             try {
                 if ($NodeNum -eq "0") {
@@ -114,74 +145,68 @@ if ($Interactive) {
         } -ArgumentList $Config.PlinkPath, $Config.Username, $Config.Password, $Config.Servers[$s], $nd, $Config.IsWindows, $Config.SshOpts
     }
 
-    # 等待所有查詢完成（最多 15 秒）
-    $null = Wait-Job $jobs -Timeout 15
-    $results = @()
-    for ($i = 0; $i -lt $jobs.Count; $i++) {
-        $raw = Receive-Job $jobs[$i] -ErrorAction SilentlyContinue
-        if (-not $raw) { $raw = "OFFLINE" }
-        $results += $raw
-        Remove-Job $jobs[$i] -Force -ErrorAction SilentlyContinue
-    }
+    # ── ③ 等待使用者選擇 ──
+    $choice = Read-Host "  Select [1-$($nodes.Count)]"
 
-    # 表頭
-    Write-Host " ##  Server      GPU       0 1 2 3 4 5 6 7   Free" -ForegroundColor White
-    Write-Host " --  ----------- --------  ----------------  ----" -ForegroundColor DarkGray
+    # 使用者按 Enter (空白) → 等 GPU 完成 → 顯示狀態 → 再選
+    if ([string]::IsNullOrWhiteSpace($choice)) {
+        Write-Host ""
+        Write-Host "  Querying GPU status..." -ForegroundColor Cyan
+        $null = Wait-Job $gpuJobs -Timeout 15
 
-    for ($i = 0; $i -lt $nodes.Count; $i++) {
-        $info = Parse-GpuDots $results[$i]
-        $num = "{0,2}" -f ($i + 1)
-        $label = $nodes[$i].Label.PadRight(11)
-        $gt = $nodes[$i].GT.PadRight(8)
+        $results = @()
+        for ($i = 0; $i -lt $gpuJobs.Count; $i++) {
+            $raw = Receive-Job $gpuJobs[$i] -ErrorAction SilentlyContinue
+            if (-not $raw) { $raw = "OFFLINE" }
+            $results += $raw
+        }
 
-        # 編號
-        Write-Host " " -NoNewline
-        Write-Host "$num" -NoNewline -ForegroundColor Cyan
-        Write-Host ") " -NoNewline -ForegroundColor White
-        Write-Host "$label " -NoNewline -ForegroundColor White
-        Write-Host "$gt  " -NoNewline -ForegroundColor DarkGray
+        # 顯示 GPU 狀態 (唯讀，僅供參考)
+        Write-Host ""
+        Write-Host " -- GPU Status (read-only) ---------------------------" -ForegroundColor Cyan
+        Write-Host "  Server      GPU       0 1 2 3 4 5 6 7   Free" -ForegroundColor White
+        Write-Host "  ----------- --------  ----------------  ----" -ForegroundColor DarkGray
 
-        if ($info.Offline) {
-            # 離線：顯示灰色方塊
-            for ($g = 0; $g -lt 8; $g++) {
-                Write-Host "[X]" -NoNewline -ForegroundColor DarkGray
-            }
+        for ($i = 0; $i -lt $nodes.Count; $i++) {
+            $info = Parse-GpuDots $results[$i]
+            $label = $nodes[$i].Label.PadRight(11)
+            $gt = $nodes[$i].GT.PadRight(8)
+
             Write-Host "  " -NoNewline
-            Write-Host "OFFLINE" -ForegroundColor DarkGray
-        } else {
-            # 每顆 GPU 顯示彩色圓點
-            foreach ($d in $info.Dots) {
-                if ($d -eq "G") {
-                    Write-Host " O " -NoNewline -ForegroundColor Green
-                } else {
-                    Write-Host " X " -NoNewline -ForegroundColor Red
-                }
-            }
-            # 補齊不足 8 顆的位置
-            for ($g = $info.Dots.Count; $g -lt 8; $g++) {
-                Write-Host " . " -NoNewline -ForegroundColor DarkGray
-            }
-            Write-Host "  " -NoNewline
-            $freeStr = "$($info.Free)/$($info.Total)"
-            if ($info.Free -eq 0) {
-                Write-Host "$freeStr" -ForegroundColor Red
-            } elseif ($info.Free -ge 4) {
-                Write-Host "$freeStr" -ForegroundColor Green
+            Write-Host "$label " -NoNewline -ForegroundColor White
+            Write-Host "$gt  " -NoNewline -ForegroundColor DarkGray
+
+            if ($info.Offline) {
+                for ($g = 0; $g -lt 8; $g++) { Write-Host "[X]" -NoNewline -ForegroundColor DarkGray }
+                Write-Host "  " -NoNewline
+                Write-Host "OFFLINE" -ForegroundColor DarkGray
             } else {
-                Write-Host "$freeStr" -ForegroundColor Yellow
+                foreach ($d in $info.Dots) {
+                    if ($d -eq "G") { Write-Host " O " -NoNewline -ForegroundColor Green }
+                    else { Write-Host " X " -NoNewline -ForegroundColor Red }
+                }
+                for ($g = $info.Dots.Count; $g -lt 8; $g++) { Write-Host " . " -NoNewline -ForegroundColor DarkGray }
+                Write-Host "  " -NoNewline
+                $freeStr = "$($info.Free)/$($info.Total)"
+                if ($info.Free -eq 0) { Write-Host "$freeStr" -ForegroundColor Red }
+                elseif ($info.Free -ge 4) { Write-Host "$freeStr" -ForegroundColor Green }
+                else { Write-Host "$freeStr" -ForegroundColor Yellow }
             }
         }
+
+        Write-Host "  ----------- --------  ----------------  ----" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host " O=Free  X=Busy  [X]=Offline" -ForegroundColor DarkGray
+        Write-Host ""
+
+        $choice = Read-Host "  Refer to menu above, select [1-$($nodes.Count), 0=Cancel]"
     }
 
-    Write-Host " --  ----------- --------  ----------------  ----" -ForegroundColor DarkGray
-    Write-Host "  0) Cancel" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host " O=Free  X=Busy  [X]=Offline" -ForegroundColor DarkGray
-    Write-Host ""
+    # 清理 Jobs
+    $gpuJobs | Remove-Job -Force -ErrorAction SilentlyContinue
 
-    $choice = Read-Host "Select [1-$($nodes.Count)]"
-
-    if (-not $choice -or $choice -eq "0") {
+    # 處理選擇
+    if ([string]::IsNullOrWhiteSpace($choice) -or $choice -eq "0") {
         Write-Host "Cancelled." -ForegroundColor Yellow
         exit 0
     }

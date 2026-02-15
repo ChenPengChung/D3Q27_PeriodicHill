@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vpn-route-watcher.sh — Auto-fix VPN route for cfdlab servers
+# Zsh_checktroute.sh — Auto-fix VPN route for cfdlab servers
 # Install: cp this to ~/Library/LaunchAgents/ area (see below)
 #
 # This script monitors for VPN (ppp) interface changes and automatically

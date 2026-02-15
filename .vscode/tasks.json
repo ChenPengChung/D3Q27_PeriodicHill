@@ -5,13 +5,13 @@
                       "label":  "SSH to cfdlab",
                       "type":  "shell",
                       "windows":  {
-                                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\ssh-connect.ps1\u0027 -ServerCombo \u0027${input:serverCombo}\u0027"
+                                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_GPUconnect.ps1\u0027 -ServerCombo \u0027${input:serverCombo}\u0027"
                                   },
                       "osx":  {
-                                  "command":  "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 ssh \u0027${input:serverCombo}\u0027"
+                                  "command":  "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 ssh \u0027${input:serverCombo}\u0027"
                               },
                       "linux":  {
-                                    "command":  "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 ssh \u0027${input:serverCombo}\u0027"
+                                    "command":  "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 ssh \u0027${input:serverCombo}\u0027"
                                 },
                       "presentation":  {
                                            "reveal":  "always",
@@ -29,13 +29,13 @@
                       "label":  "Reconnect",
                       "type":  "shell",
                       "windows":  {
-                                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\ssh-connect.ps1\u0027 -Interactive"
+                                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_GPUconnect.ps1\u0027 -QuickPick \u0027${input:sshNodePicker}\u0027"
                                   },
                       "osx":  {
-                                  "command":  "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 issh reconnect"
+                                  "command":  "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 issh-quick \u0027${input:sshNodePicker}\u0027"
                               },
                       "linux":  {
-                                    "command":  "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 issh reconnect"
+                                    "command":  "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 issh-quick \u0027${input:sshNodePicker}\u0027"
                                 },
                       "presentation":  {
                                            "reveal":  "always",
@@ -50,13 +50,13 @@
                       "label":  "Switch Node",
                       "type":  "shell",
                       "windows":  {
-                                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\ssh-connect.ps1\u0027 -Interactive"
+                                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_GPUconnect.ps1\u0027 -QuickPick \u0027${input:sshNodePicker}\u0027"
                                   },
                       "osx":  {
-                                  "command":  "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 issh switch"
+                                  "command":  "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 issh-quick \u0027${input:sshNodePicker}\u0027"
                               },
                       "linux":  {
-                                    "command":  "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 issh switch"
+                                    "command":  "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 issh-quick \u0027${input:sshNodePicker}\u0027"
                                 },
                       "presentation":  {
                                            "reveal":  "always",
@@ -320,7 +320,7 @@
                   {
                       "label":  "Auto Sync (Watch)",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027c:\\Users\\88697.CHENPENGCHUNG12\\Desktop\\GitHub-PeriodicHill\\D3Q27_PeriodicHill\\.vscode\\mobaxterm.ps1\u0027 watch",
+                      "command":  "\u0026 \u0027c:\\Users\\88697.CHENPENGCHUNG12\\Desktop\\GitHub-PeriodicHill\\D3Q27_PeriodicHill\\.vscode\\Pwshell_mainsystem.ps1\u0027 watch",
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "dedicated",
@@ -334,7 +334,7 @@
                   {
                       "label":  "Quick Sync (Push if changed)",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027c:\\Users\\88697.CHENPENGCHUNG12\\Desktop\\GitHub-PeriodicHill\\D3Q27_PeriodicHill\\.vscode\\mobaxterm.ps1\u0027 autopush",
+                      "command":  "\u0026 \u0027c:\\Users\\88697.CHENPENGCHUNG12\\Desktop\\GitHub-PeriodicHill\\D3Q27_PeriodicHill\\.vscode\\Pwshell_mainsystem.ps1\u0027 autopush",
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "shared"
@@ -346,7 +346,7 @@
                   {
                       "label":  "Auto Download (Start)",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\mobaxterm.ps1\u0027 watchpull",
+                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_mainsystem.ps1\u0027 watchpull",
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "shared"
@@ -358,7 +358,7 @@
                   {
                       "label":  "Auto Download (.87 only)",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\mobaxterm.ps1\u0027 watchpull .87",
+                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_mainsystem.ps1\u0027 watchpull .87",
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "shared"
@@ -370,7 +370,7 @@
                   {
                       "label":  "Auto Download (.154 only)",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\mobaxterm.ps1\u0027 watchpull .154",
+                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_mainsystem.ps1\u0027 watchpull .154",
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "shared"
@@ -382,7 +382,7 @@
                   {
                       "label":  "Auto Download (Status)",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\mobaxterm.ps1\u0027 watchpull status",
+                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_mainsystem.ps1\u0027 watchpull status",
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "shared"
@@ -394,7 +394,7 @@
                   {
                       "label":  "Auto Download (Stop)",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\mobaxterm.ps1\u0027 watchpull stop",
+                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_mainsystem.ps1\u0027 watchpull stop",
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "shared"
@@ -406,7 +406,7 @@
                   {
                       "label":  "Auto Upload (Start)",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\mobaxterm.ps1\u0027 watchpush",
+                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_mainsystem.ps1\u0027 watchpush",
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "shared"
@@ -418,7 +418,7 @@
                   {
                       "label":  "Auto Upload (Status)",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\mobaxterm.ps1\u0027 watchpush status",
+                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_mainsystem.ps1\u0027 watchpush status",
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "shared"
@@ -430,7 +430,7 @@
                   {
                       "label":  "Auto Upload (Stop)",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\mobaxterm.ps1\u0027 watchpush stop",
+                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_mainsystem.ps1\u0027 watchpush stop",
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "shared"
@@ -442,7 +442,7 @@
                   {
                       "label":  "Sync Status (Upload + Download)",
                       "type":  "shell",
-                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\mobaxterm.ps1\u0027 syncstatus",
+                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_mainsystem.ps1\u0027 syncstatus",
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "shared"
@@ -508,7 +508,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 check"
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 check"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -524,7 +524,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 ssh \u0027${input:macServerCombo}\u0027"
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 ssh \u0027${input:macServerCombo}\u0027"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -541,7 +541,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 run \u0027${input:macServerCombo}\u0027 \u0027${input:macGpuCount}\u0027"
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 run \u0027${input:macServerCombo}\u0027 \u0027${input:macGpuCount}\u0027"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -557,7 +557,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 jobs \u0027${input:macServerCombo}\u0027"
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 jobs \u0027${input:macServerCombo}\u0027"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -573,7 +573,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 kill \u0027${input:macServerCombo}\u0027"
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 kill \u0027${input:macServerCombo}\u0027"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -589,7 +589,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 syncstatus \u0027${input:macServerOrAll}\u0027"
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 syncstatus \u0027${input:macServerOrAll}\u0027"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -605,7 +605,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 autopull \u0027${input:macServer}\u0027"
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 autopull \u0027${input:macServer}\u0027"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -621,7 +621,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 autopush \u0027${input:macServerOrAll}\u0027"
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 autopush \u0027${input:macServerOrAll}\u0027"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -637,7 +637,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 watchpull \u0027${input:macServer}\u0027"
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 watchpull \u0027${input:macServer}\u0027"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -654,7 +654,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "\u0027${workspaceFolder}/.vscode/cfdlab-mac.sh\u0027 watchpush \u0027${input:macServerOrAll}\u0027"
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 watchpush \u0027${input:macServerOrAll}\u0027"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -670,7 +670,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' autopush '${input:macServerOrAll}'"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' autopush '${input:macServerOrAll}'"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -686,7 +686,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchpull '${input:macServer}'"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchpull '${input:macServer}'"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -702,7 +702,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchpull 87"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchpull 87"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -718,7 +718,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchpull 154"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchpull 154"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -734,7 +734,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchpull status"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchpull status"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -750,7 +750,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchpull stop"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchpull stop"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -766,7 +766,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchpush '${input:macServerOrAll}'"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchpush '${input:macServerOrAll}'"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -782,7 +782,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchpush status"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchpush status"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -798,7 +798,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchpush stop"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchpush stop"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -814,7 +814,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' syncstatus '${input:macServerOrAll}'"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' syncstatus '${input:macServerOrAll}'"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -830,7 +830,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' bgstatus"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' bgstatus"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -846,7 +846,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' gpus"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' gpus"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -862,7 +862,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' gpu 89"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' gpu 89"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -878,7 +878,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' gpu 87"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' gpu 87"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -894,7 +894,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' gpu 154"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' gpu 154"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -910,7 +910,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' diff '${input:macServerOrAll}'"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' diff '${input:macServerOrAll}'"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -926,7 +926,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' push '${input:macServerOrAll}'"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' push '${input:macServerOrAll}'"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -942,7 +942,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' pull 87"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' pull 87"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -958,7 +958,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' pull 154"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' pull 154"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -974,7 +974,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' fetch 87"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' fetch 87"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -990,7 +990,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' fetch 154"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' fetch 154"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1006,7 +1006,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' fetch 89"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' fetch 89"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1022,7 +1022,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' pull 89"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' pull 89"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1038,7 +1038,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchfetch 89"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchfetch 89"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1054,7 +1054,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchpull 89"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchpull 89"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1070,7 +1070,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' log '${input:macServer}'"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' log '${input:macServer}'"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1086,7 +1086,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' issynced"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' issynced"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1102,7 +1102,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' autofetch '${input:macServer}'"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' autofetch '${input:macServer}'"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1118,7 +1118,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchfetch '${input:macServer}'"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchfetch '${input:macServer}'"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1134,7 +1134,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchfetch 87"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchfetch 87"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1150,7 +1150,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchfetch 154"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchfetch 154"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1166,7 +1166,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchfetch status"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchfetch status"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1182,7 +1182,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchfetch stop"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchfetch stop"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1198,7 +1198,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' vtkrename"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' vtkrename"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1214,7 +1214,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' vtkrename status"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' vtkrename status"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1230,7 +1230,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' vtkrename stop"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' vtkrename stop"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1246,7 +1246,7 @@
                       "command":  "bash",
                       "args":  [
                                    "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' watchpush '${input:macServerOrAll}'"
+                                   "'${workspaceFolder}/.vscode/Zsh_mainsystem.sh' watchpush '${input:macServerOrAll}'"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -1260,12 +1260,16 @@
                   },
                   {
                       "label":  "[Mac] SSH 選單 (開啟時自動)",
-                      "type":  "process",
-                      "command":  "bash",
-                      "args":  [
-                                   "-lc",
-                                   "'${workspaceFolder}/.vscode/cfdlab-mac.sh' issh"
-                               ],
+                      "type":  "shell",
+                      "windows":  {
+                                      "command":  "\u0026 \u0027${workspaceFolder}\\.vscode\\Pwshell_GPUconnect.ps1\u0027 -QuickPick \u0027${input:sshNodePicker}\u0027"
+                                  },
+                      "osx":  {
+                                  "command":  "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 issh-quick \u0027${input:sshNodePicker}\u0027"
+                              },
+                      "linux":  {
+                                    "command":  "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 issh-quick \u0027${input:sshNodePicker}\u0027"
+                                },
                       "presentation":  {
                                            "reveal":  "always",
                                            "panel":  "new",
@@ -1278,6 +1282,64 @@
                   }
               ],
     "inputs":  [
+                   {
+                       "id":  "sshNodePicker",
+                       "type":  "pickString",
+                       "description":  "\ud83d\udda5 SSH \u7bc0\u9ede\u9078\u64c7 \u2014 \u9078\u5b8c\u5373\u9023\u7dda",
+                       "options":  [
+                                       {
+                                           "label":  ".89 \u76f4\u9023",
+                                           "value":  "89:0",
+                                           "description":  "8\u00d7 Tesla V100-SXM2-32GB \u26a1\u26a1"
+                                       },
+                                       {
+                                           "label":  ".87 \u2192 ib2",
+                                           "value":  "87:2",
+                                           "description":  "8\u00d7 Tesla P100-PCIE-16GB"
+                                       },
+                                       {
+                                           "label":  ".87 \u2192 ib3",
+                                           "value":  "87:3",
+                                           "description":  "8\u00d7 Tesla P100-PCIE-16GB"
+                                       },
+                                       {
+                                           "label":  ".87 \u2192 ib5",
+                                           "value":  "87:5",
+                                           "description":  "8\u00d7 Tesla P100-PCIE-16GB"
+                                       },
+                                       {
+                                           "label":  ".87 \u2192 ib6",
+                                           "value":  "87:6",
+                                           "description":  "8\u00d7 Tesla V100-SXM2-16GB \u26a1"
+                                       },
+                                       {
+                                           "label":  ".154 \u2192 ib1",
+                                           "value":  "154:1",
+                                           "description":  "8\u00d7 Tesla P100-PCIE-16GB"
+                                       },
+                                       {
+                                           "label":  ".154 \u2192 ib4",
+                                           "value":  "154:4",
+                                           "description":  "8\u00d7 Tesla P100-PCIE-16GB"
+                                       },
+                                       {
+                                           "label":  ".154 \u2192 ib7",
+                                           "value":  "154:7",
+                                           "description":  "8\u00d7 Tesla P100-PCIE-16GB"
+                                       },
+                                       {
+                                           "label":  ".154 \u2192 ib9",
+                                           "value":  "154:9",
+                                           "description":  "8\u00d7 Tesla P100-PCIE-16GB"
+                                       },
+                                       {
+                                           "label":  "\ud83d\udcca \u5148\u67e5 GPU \u4f7f\u7528\u72c0\u614b\u518d\u9078",
+                                           "value":  "gpus",
+                                           "description":  "\u5728\u7d42\u7aef\u986f\u793a\u6240\u6709\u7bc0\u9ede GPU \u4f7f\u7528\u7387\uff0c\u518d\u5f9e\u7d42\u7aef\u9078\u64c7\u9023\u7dda"
+                                       }
+                                   ],
+                       "default":  "87:3"
+                   },
                    {
                        "id":  "serverCombo",
                        "type":  "pickString",
@@ -1515,9 +1577,6 @@
                    {
                        "id":  "macGpuCount",
                        "type":  "pickString",
-                   },
-                   {
-                       "id":  "macServerOrAll",
                        "description":  "Mac: GPU count",
                        "options":  [
                                        {

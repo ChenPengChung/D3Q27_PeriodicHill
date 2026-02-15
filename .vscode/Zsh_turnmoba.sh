@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
 # Setup 'mobaxterm' command alias for Mac/Linux
-# Run: source ./.vscode/setup-alias.sh
+# Run: source ./.vscode/Zsh_turnmoba.sh
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CFDLAB_SCRIPT="$SCRIPT_DIR/cfdlab-mac.sh"
+CFDLAB_SCRIPT="$SCRIPT_DIR/Zsh_mainsystem.sh"
 
 # Ensure script is executable
 chmod +x "$CFDLAB_SCRIPT" 2>/dev/null
@@ -34,11 +34,11 @@ read -r -d '' ALIAS_CODE << 'ENDBLOCK'
 # 用法: mobaxterm push / pull / gpus / ssh / issh / vpnfix ...
 mobaxterm() {
   local script
-  script="$(git rev-parse --show-toplevel 2>/dev/null)/.vscode/cfdlab-mac.sh"
+  script="$(git rev-parse --show-toplevel 2>/dev/null)/.vscode/Zsh_mainsystem.sh"
   if [[ -x "$script" ]]; then
     "$script" "$@"
   else
-    echo "[ERROR] Cannot find cfdlab-mac.sh (not in a git repo?)" >&2
+    echo "[ERROR] Cannot find Zsh_mainsystem.sh (not in a git repo?)" >&2
     return 1
   fi
 }

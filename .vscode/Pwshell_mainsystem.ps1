@@ -908,7 +908,7 @@ switch ($Command) {
         # Background auto-upload: monitor local files and upload changes (persistent process)
         $pidFile = Join-Path $Config.LocalPath ".vscode/watchpush.pid"
         $logFile = Join-Path $Config.LocalPath ".vscode/watchpush.log"
-        $daemonScript = Join-Path $Config.LocalPath ".vscode/watchpush-daemon.ps1"
+        $daemonScript = Join-Path $Config.LocalPath ".vscode/Pwshell_bg_watchpush.ps1"
         $subCommand = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "" }
         
         switch ($subCommand) {
@@ -1186,7 +1186,7 @@ switch ($Command) {
         # Auto-download: monitor remote servers and download new files (persistent process)
         $pidFile = Join-Path $Config.LocalPath ".vscode/watchpull.pid"
         $logFile = Join-Path $Config.LocalPath ".vscode/watchpull.log"
-        $daemonScript = Join-Path $Config.LocalPath ".vscode/watchpull-daemon.ps1"
+        $daemonScript = Join-Path $Config.LocalPath ".vscode/Pwshell_bg_watchpull.ps1"
         $subCommand = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "" }
         
         switch ($subCommand) {
@@ -1342,7 +1342,7 @@ switch ($Command) {
         # Auto-download with delete: monitor remote and sync local to match (persistent process)
         $pidFile = Join-Path $Config.LocalPath ".vscode/watchfetch.pid"
         $logFile = Join-Path $Config.LocalPath ".vscode/watchfetch.log"
-        $daemonScript = Join-Path $Config.LocalPath ".vscode/watchfetch-daemon.ps1"
+        $daemonScript = Join-Path $Config.LocalPath ".vscode/Pwshell_bg_watchfetch.ps1"
         $subCommand = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "" }
         
         switch ($subCommand) {
@@ -1599,7 +1599,7 @@ switch ($Command) {
         # VTK file auto-renamer: monitor and rename VTK files to use zero-padding
         $pidFile = Join-Path $Config.LocalPath ".vscode/vtk-renamer.pid"
         $logFile = Join-Path $Config.LocalPath ".vscode/vtk-renamer.log"
-        $renamerScript = Join-Path $Config.LocalPath ".vscode/vtk-renamer.ps1"
+        $renamerScript = Join-Path $Config.LocalPath ".vscode/Zsh_bg_renamer.ps1"
         $subCommand = if ($Arguments.Count -gt 0) { $Arguments[0] } else { "" }
         
         switch ($subCommand) {
@@ -1917,12 +1917,12 @@ switch ($Command) {
     }
 
     "issh" {
-        # 互動式 SSH 選擇器（調用 ssh-connect.ps1 -Interactive）
-        $sshScript = Join-Path $Config.LocalPath ".vscode/ssh-connect.ps1"
+        # 互動式 SSH 選擇器（調用 Pwshell_GPUconnect.ps1 -Interactive）
+        $sshScript = Join-Path $Config.LocalPath ".vscode/Pwshell_GPUconnect.ps1"
         if (Test-Path $sshScript) {
             & $sshScript -Interactive
         } else {
-            Write-Color "[ERROR] ssh-connect.ps1 not found" "Red"
+            Write-Color "[ERROR] Pwshell_GPUconnect.ps1 not found" "Red"
         }
     }
 

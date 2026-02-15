@@ -3,18 +3,18 @@
     Setup 'mobaxterm' command alias for PowerShell (Windows & macOS/Linux)
 .DESCRIPTION
     Run this script once to add 'mobaxterm' function to your PowerShell profile.
-    - Windows: mobaxterm calls mobaxterm.ps1 (PuTTY backend)
-    - macOS/Linux: mobaxterm calls cfdlab-mac.sh (ssh/rsync backend)
+    - Windows: mobaxterm calls Pwshell_mainsystem.ps1 (PuTTY backend)
+    - macOS/Linux: mobaxterm calls Zsh_mainsystem.sh (ssh/rsync backend)
     After setup, you can use: mobaxterm <command> [arguments]
 .EXAMPLE
-    .\setup-alias.ps1
+    .\Pwshell_turnmoba.ps1
 #>
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $_isWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or ($IsWindows -eq $true)
 
 if ($_isWindows) {
-    $TargetScript = Join-Path $ScriptDir "mobaxterm.ps1"
+    $TargetScript = Join-Path $ScriptDir "Pwshell_mainsystem.ps1"
     $FunctionCode = @"
 
 # ========== MobaXterm Alias ==========
@@ -24,7 +24,7 @@ function mobaxterm {
 # ========== End MobaXterm Alias ==========
 "@
 } else {
-    $TargetScript = Join-Path $ScriptDir "cfdlab-mac.sh"
+    $TargetScript = Join-Path $ScriptDir "Zsh_mainsystem.sh"
     # On macOS/Linux pwsh, call the bash script
     $FunctionCode = @"
 
