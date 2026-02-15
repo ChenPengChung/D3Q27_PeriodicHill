@@ -118,5 +118,36 @@
       "icon": "vm-running",
       "color": "terminal.ansiYellow"
     }
-  }
+  },
+
+  // SSH FS 掛載 (左側 Explorer 同時顯示三台伺服器)
+  "sshfs.configs": [
+    {
+      "name": "87-D3Q27",
+      "label": ".87 D3Q27_PeriodicHill",
+      "host": "140.114.58.87",
+      "port": 22,
+      "username": "chenpengchung",
+      "password": "1256",
+      "root": "/home/chenpengchung/D3Q27_PeriodicHill"
+    },
+    {
+      "name": "89-D3Q27",
+      "label": ".89 D3Q27_PeriodicHill",
+      "host": "140.114.58.89",
+      "port": 22,
+      "username": "chenpengchung",
+      "password": "1256",
+      "root": "/home/chenpengchung/D3Q27_PeriodicHill"
+    },
+    {
+      "name": "154-D3Q27",
+      "label": ".154 D3Q27_PeriodicHill",
+      "host": "140.114.58.154",
+      "port": 22,
+      "username": "chenpengchung",
+      "password": "1256",
+      "root": "/home/chenpengchung/D3Q27_PeriodicHill"
+    }
+  ]
 }
