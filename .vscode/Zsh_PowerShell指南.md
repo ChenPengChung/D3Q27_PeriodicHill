@@ -130,19 +130,19 @@ Windows 和 macOS 使用 **相同的命令名稱**，只是底層實作不同：
 
 ### Pull 系列（下載，不刪除）
 
-| 指令 | .87（預設） | .89 | .154 | all |
-|------|-------------|-----|------|-----|
-| **pull** | `pull` 或 `pull87` | `pull89` 或 `pull .89` | `pull154` 或 `pull .154` | 逐台執行 |
-| **autopull** | `autopull` 或 `autopull87` | `autopull89` 或 `autopull .89` | `autopull154` 或 `autopull .154` | 逐台執行 |
+| 指令 | .87 | .89 | .154 | all（預設） |
+|------|-----|-----|------|-------------|
+| **pull** | `pull87` 或 `pull .87` | `pull89` 或 `pull .89` | `pull154` 或 `pull .154` | `pull`（全部） |
+| **autopull** | `autopull87` 或 `autopull .87` | `autopull89` 或 `autopull .89` | `autopull154` 或 `autopull .154` | `autopull`（全部） |
 | **watchpull** | `watchpull .87` | `watchpull .89` | `watchpull .154` | `watchpull`（監控全部） |
 
 ### Fetch 系列（下載 + 刪除本地多餘）
 
-| 指令 | .87（預設） | .89 | .154 | all |
-|------|-------------|-----|------|-----|
-| **fetch** | `fetch` 或 `fetch87` | `fetch89` 或 `fetch .89` | `fetch154` 或 `fetch .154` | 逐台執行 |
-| **autofetch** | `autofetch` 或 `autofetch87` | `autofetch89` 或 `autofetch .89` | `autofetch154` 或 `autofetch .154` | 逐台執行 |
-| **watchfetch** | `watchfetch .87` | `watchfetch .89` | `watchfetch .154` | `watchfetch`（預設 .87） |
+| 指令 | .87 | .89 | .154 | all（預設） |
+|------|-----|-----|------|-------------|
+| **fetch** | `fetch87` 或 `fetch .87` | `fetch89` 或 `fetch .89` | `fetch154` 或 `fetch .154` | `fetch`（全部） |
+| **autofetch** | `autofetch87` 或 `autofetch .87` | `autofetch89` 或 `autofetch .89` | `autofetch154` 或 `autofetch .154` | `autofetch`（全部） |
+| **watchfetch** | `watchfetch .87` | `watchfetch .89` | `watchfetch .154` | `watchfetch`（監控全部） |
 
 ### 快捷別名總表
 
@@ -198,11 +198,11 @@ mobaxterm pull 執行流程：
 
 | 命令 | 做了什麼 |
 |------|----------|
-| `mobaxterm pull` | 從 .87 下載（預設） |
+| `mobaxterm pull` | 從全部伺服器下載（預設 all） |
 | `mobaxterm pull87` | 從 .87 下載 |
 | `mobaxterm pull89` | 從 .89 下載 |
 | `mobaxterm pull154` | 從 .154 下載 |
-| `mobaxterm autopull` | 有新檔案才下載（預設 .87） |
+| `mobaxterm autopull` | 有新檔案才下載（預設 all） |
 | `mobaxterm autopull87` | 有新檔案才下載 .87 |
 | `mobaxterm autopull89` | 有新檔案才下載 .89 |
 | `mobaxterm autopull154` | 有新檔案才下載 .154 |
@@ -232,11 +232,11 @@ mobaxterm fetch 執行流程：
 
 | 命令 | 做了什麼 |
 |------|----------|
-| `mobaxterm fetch` | 從 .87 完整同步（預設） |
+| `mobaxterm fetch` | 從全部伺服器完整同步（預設 all） |
 | `mobaxterm fetch87` | 同步 .87 |
 | `mobaxterm fetch89` | 同步 .89 |
 | `mobaxterm fetch154` | 同步 .154 |
-| `mobaxterm autofetch` | 有差異才同步（預設 .87） |
+| `mobaxterm autofetch` | 有差異才同步（預設 all） |
 | `mobaxterm autofetch87` | 有差異才同步 .87 |
 | `mobaxterm autofetch89` | 有差異才同步 .89 |
 | `mobaxterm autofetch154` | 有差異才同步 .154 |
@@ -257,7 +257,7 @@ mobaxterm fetch 執行流程：
 | `mobaxterm diffall` | = `diff`（全部） |
 | `mobaxterm add` | 列出待推送的檔案清單 |
 | `mobaxterm issynced` | 一行狀態：`.87: [OK] \| .89: [OK] \| .154: [DIFF]` |
-| `mobaxterm log` | .87 的 log 檔案（預設） |
+| `mobaxterm log` | 全部伺服器的 log 檔案（預設 all） |
 | `mobaxterm log87` / `log89` / `log154` | 指定伺服器的 log |
 
 ### 進階操作
@@ -269,6 +269,49 @@ mobaxterm fetch 執行流程：
 | `mobaxterm reset` | 只刪除遠端多餘（不上傳） |
 | `mobaxterm clone` | 從遠端完整複製到本地（覆蓋） |
 | `mobaxterm check` | 檢查工具 + 遠端連線是否正常 |
+
+### Code Diff Analysis（GitHub 風格差異分析）
+
+傳輸指令（push / pull / fetch）預設會先顯示差異再確認，可用選項控制行為：
+
+| 選項 | 說明 | 範例 |
+|------|------|------|
+| `--no-diff` | 跳過差異分析，直接傳輸 | `mobaxterm push --no-diff` |
+| `--diff-summary` | 僅顯示統計摘要 | `mobaxterm push --diff-summary` |
+| `--diff-stat` | diffstat 風格（±行數統計） | `mobaxterm push --diff-stat 87` |
+| `--diff-full` | 完整逐行差異（預設） | `mobaxterm push --diff-full` |
+| `--force` | 跳過確認 + 差異分析 | `mobaxterm push --force` |
+| `--quick` | 同 `--no-diff` | `mobaxterm pull --quick` |
+
+獨立差異查看（不同步）：
+
+| 命令 | 說明 |
+|------|------|
+| `mobaxterm sync-diff` | 比較全部伺服器差異（不同步） |
+| `mobaxterm sync-diff 87` | 只比較 .87 的差異 |
+| `mobaxterm sync-diff-summary` | 快速摘要（僅統計） |
+| `mobaxterm sync-diff-file main.cu` | 檢視特定檔案差異 |
+| `mobaxterm sync-log` | 查看同步歷史記錄 |
+| `mobaxterm sync-stop` | 停止所有背景同步任務 |
+
+### 🔑 預設行為黃金規則
+
+> **所有指令後面沒有指定伺服器 → 一律視為 all（全部伺服器）。**
+
+```
+mobaxterm push          # = push all   → .87 + .89 + .154
+mobaxterm pull          # = pull all   → .87 + .89 + .154
+mobaxterm fetch         # = fetch all  → .87 + .89 + .154
+mobaxterm autopull      # = autopull all
+mobaxterm autofetch     # = autofetch all
+mobaxterm watchpull     # = watchpull all
+mobaxterm watchfetch    # = watchfetch all
+mobaxterm log           # = log all
+mobaxterm diff          # = diff all
+
+mobaxterm pull 87       # 僅 .87
+mobaxterm pull89        # 僅 .89（快捷別名）
+```
 
 ---
 
@@ -314,7 +357,7 @@ mobaxterm fetch 執行流程：
 
 | 命令 | 做了什麼 |
 |------|----------|
-| `mobaxterm watchfetch` | 啟動背景完整同步 daemon（預設 .87） |
+| `mobaxterm watchfetch` | 啟動背景完整同步 daemon（預設全部伺服器） |
 | `mobaxterm watchfetch .87` | 同步 .87 |
 | `mobaxterm watchfetch .89` | 同步 .89 |
 | `mobaxterm watchfetch .154` | 同步 .154 |
@@ -560,7 +603,7 @@ sudo launchctl bootout system/com.cfdlab.vpn-route-watcher  # 停止
 | `autopush87` / `autopush89` / `autopush154` | ✅ | ✅ | 有變更才推指定 |
 | `autopushall` | ✅ | ✅ | = autopush |
 | `watchpush` (+status/log/stop/clear) | ✅ | ✅ | 背景上傳 daemon |
-| `pull` | ✅ | ✅ | 下載（預設 .87） |
+| `pull` | ✅ | ✅ | 下載全部（預設 all） |
 | `pull87` / `pull89` / `pull154` | ✅ | ✅ | 下載指定 |
 | `autopull` | ✅ | ✅ | 有新才下載 |
 | `autopull87` / `autopull89` / `autopull154` | ✅ | ✅ | 有新才下載指定 |
@@ -648,8 +691,8 @@ sudo launchctl bootout system/com.cfdlab.vpn-route-watcher  # 停止
 ┌─────────────────── 日常工作流程 ───────────────────┐
 │                                                      │
 │  改程式碼 → mobaxterm push      (上傳全部伺服器)    │
-│  看結果  → mobaxterm pull      (下載 .87 結果)     │
-│  看 .89  → mobaxterm pull89    (下載 .89 結果)     │
+│  看結果  → mobaxterm pull      (下載全部伺服器)    │
+│  看 .89  → mobaxterm pull89    (只下載 .89 結果)   │
 │  查狀態  → mobaxterm issynced  (一行看同步狀態)     │
 │  查差異  → mobaxterm diff      (逐檔比對)           │
 │                                                      │

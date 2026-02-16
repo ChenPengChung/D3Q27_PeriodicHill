@@ -1413,24 +1413,27 @@ switch ($Command) {
     
     "pull" {
         $opts = Parse-DiffOptions -Args_ $Arguments
-        $targetServer = $Config.Servers[0]
+        $targetServers = @()
         foreach ($posArg in $opts.Positional) {
             foreach ($s in $Config.Servers) {
                 if ($posArg -eq $s.Name -or $posArg -eq $s.Name.TrimStart('.') -or $posArg -eq ".$($s.Name.TrimStart('.'))") {
-                    $targetServer = $s; break
+                    $targetServers = @($s); break
                 }
             }
         }
-        # Run diff analysis before transfer
-        if ($opts.DiffMode -ne "no-diff") {
-            if (-not (Invoke-CodeDiffAnalysis -Direction "pull" -Server $targetServer -Mode $opts.DiffMode -Confirm $opts.Confirm)) {
-                Write-Color "[PULL] Cancelled" "Yellow"
-                return
+        if ($targetServers.Count -eq 0) { $targetServers = $Config.Servers }  # Default: all
+        foreach ($targetServer in $targetServers) {
+            # Run diff analysis before transfer
+            if ($opts.DiffMode -ne "no-diff") {
+                if (-not (Invoke-CodeDiffAnalysis -Direction "pull" -Server $targetServer -Mode $opts.DiffMode -Confirm $opts.Confirm)) {
+                    Write-Color "[PULL] $($targetServer.Name) Cancelled" "Yellow"
+                    continue
+                }
             }
+            Write-TransferHeader -Server $targetServer -Verb "Pull"
+            Invoke-GitStylePull -Server $targetServer
+            Write-SyncHistory -Action "PULL" -ServerName $targetServer.Name -FileCount $script:DiffFileCount -Adds $script:DiffTotalAdds -Dels $script:DiffTotalDels
         }
-        Write-TransferHeader -Server $targetServer -Verb "Pull"
-        Invoke-GitStylePull -Server $targetServer
-        Write-SyncHistory -Action "PULL" -ServerName $targetServer.Name -FileCount $script:DiffFileCount -Adds $script:DiffTotalAdds -Dels $script:DiffTotalDels
     }
     
     "pull87" {
@@ -1444,24 +1447,27 @@ switch ($Command) {
     # git fetch - 從遠端下載並刪除本地多餘檔案 (sync local to remote)
     "fetch" {
         $opts = Parse-DiffOptions -Args_ $Arguments
-        $targetServer = $Config.Servers[0]
+        $targetServers = @()
         foreach ($posArg in $opts.Positional) {
             foreach ($s in $Config.Servers) {
                 if ($posArg -eq $s.Name -or $posArg -eq $s.Name.TrimStart('.') -or $posArg -eq ".$($s.Name.TrimStart('.'))") {
-                    $targetServer = $s; break
+                    $targetServers = @($s); break
                 }
             }
         }
-        # Run diff analysis before transfer
-        if ($opts.DiffMode -ne "no-diff") {
-            if (-not (Invoke-CodeDiffAnalysis -Direction "fetch" -Server $targetServer -Mode $opts.DiffMode -Confirm $opts.Confirm)) {
-                Write-Color "[FETCH] Cancelled" "Yellow"
-                return
+        if ($targetServers.Count -eq 0) { $targetServers = $Config.Servers }  # Default: all
+        foreach ($targetServer in $targetServers) {
+            # Run diff analysis before transfer
+            if ($opts.DiffMode -ne "no-diff") {
+                if (-not (Invoke-CodeDiffAnalysis -Direction "fetch" -Server $targetServer -Mode $opts.DiffMode -Confirm $opts.Confirm)) {
+                    Write-Color "[FETCH] $($targetServer.Name) Cancelled" "Yellow"
+                    continue
+                }
             }
+            Write-TransferHeader -Server $targetServer -Verb "Fetch"
+            Invoke-GitStyleFetch -Server $targetServer
+            Write-SyncHistory -Action "FETCH" -ServerName $targetServer.Name -FileCount $script:DiffFileCount -Adds $script:DiffTotalAdds -Dels $script:DiffTotalDels
         }
-        Write-TransferHeader -Server $targetServer -Verb "Fetch"
-        Invoke-GitStyleFetch -Server $targetServer
-        Write-SyncHistory -Action "FETCH" -ServerName $targetServer.Name -FileCount $script:DiffFileCount -Adds $script:DiffTotalAdds -Dels $script:DiffTotalDels
     }
 
     "fetch87" { & $PSCommandPath fetch 87 }
@@ -1470,34 +1476,36 @@ switch ($Command) {
     "log" {
         Write-Color "[LOG] Fetching remote log files..." "Magenta"
         
-        $targetServer = $null
+        $targetServers = @()
         if ($Arguments -and $Arguments.Count -gt 0) {
             $serverArg = $Arguments[0]
             foreach ($s in $Config.Servers) {
                 if ($s.Name -eq $serverArg -or $s.Name -eq ".$serverArg" -or $serverArg -like "*$($s.Name)*") {
-                    $targetServer = $s
+                    $targetServers = @($s)
                     break
                 }
             }
         }
-        if (-not $targetServer) { $targetServer = $Config.Servers[0] }
+        if ($targetServers.Count -eq 0) { $targetServers = $Config.Servers }  # Default: all
         
-        Write-Color "`nLog files on $($targetServer.Name):" "Cyan"
-        $cmd = "ls -lth $($Config.RemotePath)/log* 2>/dev/null | head -10"
-        $result = Invoke-Ssh -Server $targetServer -Command $cmd
-        if ($result) {
-            foreach ($line in $result) { Write-Host "  $line" }
-        }
-        else {
-            Write-Color "  No log files found" "Yellow"
-        }
-        
-        # 顯示最新 log 的最後幾行
-        Write-Color "`nLatest log tail:" "Cyan"
-        $cmd = "tail -20 `$(ls -t $($Config.RemotePath)/log* 2>/dev/null | head -1) 2>/dev/null"
-        $result = Invoke-Ssh -Server $targetServer -Command $cmd
-        if ($result) {
-            foreach ($line in $result) { Write-Host "  $line" -ForegroundColor Gray }
+        foreach ($targetServer in $targetServers) {
+            Write-Color "`nLog files on $($targetServer.Name):" "Cyan"
+            $cmd = "ls -lth $($Config.RemotePath)/log* 2>/dev/null | head -10"
+            $result = Invoke-Ssh -Server $targetServer -Command $cmd
+            if ($result) {
+                foreach ($line in $result) { Write-Host "  $line" }
+            }
+            else {
+                Write-Color "  No log files found" "Yellow"
+            }
+            
+            # 顯示最新 log 的最後幾行
+            Write-Color "`nLatest log tail:" "Cyan"
+            $cmd = "tail -20 `$(ls -t $($Config.RemotePath)/log* 2>/dev/null | head -1) 2>/dev/null"
+            $result = Invoke-Ssh -Server $targetServer -Command $cmd
+            if ($result) {
+                foreach ($line in $result) { Write-Host "  $line" -ForegroundColor Gray }
+            }
         }
     }
     
@@ -1795,7 +1803,7 @@ switch ($Command) {
                 
                 Write-Color "[WATCHPUSH] Starting background auto-upload (persistent)..." "Magenta"
                 Write-Color "  Interval: ${interval}s" "White"
-                Write-Color "  Targets: .87, .154" "White"
+                Write-Color "  Targets: $($Config.Servers.Name -join ', ')" "White"
                 Write-Color "  Log: $logFile" "Gray"
                 Write-Color "`nCommands:" "Yellow"
                 Write-Color "  mobaxterm watchpush status  - Check status & recent uploads" "Gray"
@@ -2052,16 +2060,19 @@ switch ($Command) {
             }
             
             default {
-                # Start watchpull for specified server or both
+                # Start watchpull for specified server or all
                 $targetServers = @()
                 if ($subCommand -eq ".87" -or $subCommand -eq "87") {
                     $targetServers = @($Config.Servers | Where-Object { $_.Name -eq ".87" })
+                }
+                elseif ($subCommand -eq ".89" -or $subCommand -eq "89") {
+                    $targetServers = @($Config.Servers | Where-Object { $_.Name -eq ".89" })
                 }
                 elseif ($subCommand -eq ".154" -or $subCommand -eq "154") {
                     $targetServers = @($Config.Servers | Where-Object { $_.Name -eq ".154" })
                 }
                 else {
-                    $targetServers = $Config.Servers
+                    $targetServers = $Config.Servers  # Default: all
                 }
                 
                 # Check if already running
@@ -2208,16 +2219,19 @@ switch ($Command) {
             }
             
             default {
-                # Start watchfetch for specified server
-                $targetServer = $null
+                # Start watchfetch for specified server or all
+                $targetServers = @()
                 if ($subCommand -eq ".87" -or $subCommand -eq "87") {
-                    $targetServer = $Config.Servers | Where-Object { $_.Name -eq ".87" } | Select-Object -First 1
+                    $targetServers = @($Config.Servers | Where-Object { $_.Name -eq ".87" } | Select-Object -First 1)
+                }
+                elseif ($subCommand -eq ".89" -or $subCommand -eq "89") {
+                    $targetServers = @($Config.Servers | Where-Object { $_.Name -eq ".89" } | Select-Object -First 1)
                 }
                 elseif ($subCommand -eq ".154" -or $subCommand -eq "154") {
-                    $targetServer = $Config.Servers | Where-Object { $_.Name -eq ".154" } | Select-Object -First 1
+                    $targetServers = @($Config.Servers | Where-Object { $_.Name -eq ".154" } | Select-Object -First 1)
                 }
                 else {
-                    $targetServer = $Config.Servers[0]  # Default to first server
+                    $targetServers = $Config.Servers  # Default: all
                 }
                 
                 # Check if already running
@@ -2240,7 +2254,7 @@ switch ($Command) {
                 }
                 
                 Write-Color "[WATCHFETCH] Starting auto-fetch monitor WITH DELETE (persistent)..." "Magenta"
-                Write-Color "  Server: $($targetServer.Name)" "White"
+                Write-Color "  Servers: $($targetServers.Name -join ', ')" "White"
                 Write-Color "  Interval: ${interval}s" "White"
                 Write-Color "  Mode: Download + Delete local files not on remote" "Red"
                 Write-Color "  Log: $logFile" "Gray"
@@ -2254,31 +2268,35 @@ switch ($Command) {
                 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
                 [System.IO.File]::WriteAllText($logFile, "", $utf8NoBom)
                 
-                # Start daemon process
-                $_psExe = if ($Config.IsWindows) { "powershell.exe" } else { "pwsh" }
-                $_psArgs = @(
-                    "-NoProfile", "-ExecutionPolicy", "Bypass",
-                    "-File", "`"$daemonScript`"",
-                    "-LocalPath", "`"$($Config.LocalPath)`"",
-                    "-RemotePath", "`"$($Config.RemotePath)`"",
-                    "-ServerName", "`"$($targetServer.Name)`"",
-                    "-ServerHost", "`"$($targetServer.Host)`"",
-                    "-ServerUser", "`"$($targetServer.User)`"",
-                    "-ServerPass", "`"$($targetServer.Password)`"",
-                    "-PlinkPath", "`"$($Config.PlinkPath)`"",
-                    "-PscpPath", "`"$($Config.PscpPath)`"",
-                    "-LogPath", "`"$logFile`"",
-                    "-Interval", $interval,
-                    "-SshOpts", "`"$($Config.SshOpts)`""
-                )
-                if ($Config.IsWindows) { $_psArgs += @("-IsWindows"); $_psArgs = @("-WindowStyle", "Hidden") + $_psArgs }
-                $proc = Start-Process -FilePath $_psExe -ArgumentList $_psArgs -PassThru
+                # Start independent process for each server
+                $processPids = @()
+                foreach ($server in $targetServers) {
+                    $_psExe = if ($Config.IsWindows) { "powershell.exe" } else { "pwsh" }
+                    $_psArgs = @(
+                        "-NoProfile", "-ExecutionPolicy", "Bypass",
+                        "-File", "`"$daemonScript`"",
+                        "-LocalPath", "`"$($Config.LocalPath)`"",
+                        "-RemotePath", "`"$($Config.RemotePath)`"",
+                        "-ServerName", "`"$($server.Name)`"",
+                        "-ServerHost", "`"$($server.Host)`"",
+                        "-ServerUser", "`"$($server.User)`"",
+                        "-ServerPass", "`"$($server.Password)`"",
+                        "-PlinkPath", "`"$($Config.PlinkPath)`"",
+                        "-PscpPath", "`"$($Config.PscpPath)`"",
+                        "-LogPath", "`"$logFile`"",
+                        "-Interval", $interval,
+                        "-SshOpts", "`"$($Config.SshOpts)`""
+                    )
+                    if ($Config.IsWindows) { $_psArgs += @("-IsWindows"); $_psArgs = @("-WindowStyle", "Hidden") + $_psArgs }
+                    $proc = Start-Process -FilePath $_psExe -ArgumentList $_psArgs -PassThru
+                    
+                    Start-Sleep -Milliseconds 500
+                    $processPids += $proc.Id
+                    Write-Color "[STARTED] $($server.Name) fetch monitoring (PID: $($proc.Id))" "Green"
+                }
                 
-                Start-Sleep -Milliseconds 500
-                
-                # Save PID
-                $proc.Id | Out-File $pidFile -Force
-                Write-Color "[STARTED] $($targetServer.Name) fetch monitoring (PID: $($proc.Id))" "Green"
+                # Save all PIDs
+                $processPids | Out-File $pidFile -Force
                 
                 Write-Color "`n[WATCHFETCH] Background monitoring started!" "Green"
                 Write-Color "WARNING: Local files not on remote will be DELETED!" "Red"
@@ -2289,32 +2307,40 @@ switch ($Command) {
     
     "autopull" {
         # Quick auto-pull: check and pull if needed (download only, no local delete)
-        $targetServer = $Config.Servers[0]  # Default to .87
+        $targetServers = $Config.Servers  # Default: all
         if ($Arguments.Count -gt 0) {
             $arg = $Arguments[0]
             foreach ($s in $Config.Servers) {
                 if ($arg -eq $s.Name -or $arg -eq $s.Name.TrimStart('.')) {
-                    $targetServer = $s; break
+                    $targetServers = @($s); break
                 }
             }
         }
-        Write-TransferHeader -Server $targetServer -Verb "Pull (auto)"
-        Invoke-GitStylePull -Server $targetServer
+        $idx = 0; $total = $targetServers.Count
+        foreach ($server in $targetServers) {
+            $idx++
+            Write-TransferHeader -Server $server -Verb "Pull (auto)" -Index $idx -Total $total
+            Invoke-GitStylePull -Server $server
+        }
     }
     
     "autofetch" {
         # Quick auto-fetch: download + delete local files not on remote (sync local to remote)
-        $targetServer = $Config.Servers[0]  # Default to .87
+        $targetServers = $Config.Servers  # Default: all
         if ($Arguments.Count -gt 0) {
             $arg = $Arguments[0]
             foreach ($s in $Config.Servers) {
                 if ($arg -eq $s.Name -or $arg -eq $s.Name.TrimStart('.')) {
-                    $targetServer = $s; break
+                    $targetServers = @($s); break
                 }
             }
         }
-        Write-TransferHeader -Server $targetServer -Verb "Fetch (auto)"
-        Invoke-GitStyleFetch -Server $targetServer
+        $idx = 0; $total = $targetServers.Count
+        foreach ($server in $targetServers) {
+            $idx++
+            Write-TransferHeader -Server $server -Verb "Fetch (auto)" -Index $idx -Total $total
+            Invoke-GitStyleFetch -Server $server
+        }
     }
     
     "vtkrename" {

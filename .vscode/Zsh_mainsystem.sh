@@ -1615,12 +1615,22 @@ function cmd_help() {
   cat <<'EOF'
 Mac commands (Windows-compatible names)
 
-Core (same names as Windows):
-  diff, check, status, add, push, pull, fetch, log
-  reset, delete, clone, sync, fullsync, issynced
-  autopush, autopull, autofetch
-  watch, watchpush, watchpull, watchfetch
-  syncstatus, bgstatus, vtkrename
+Core (未指定伺服器 = all):
+  push [server]           - 上傳（預設 all）
+  pull [server]           - 下載（預設 all）
+  fetch [server]          - 下載+刪除本地多餘（預設 all）
+  log [server]            - 查看遠端 log（預設 all）
+  diff [server]           - 查看差異（預設 all）
+  autopush [server]       - 自動上傳（預設 all）
+  autopull [server]       - 自動下載（預設 all）
+  autofetch [server]      - 自動 fetch（預設 all）
+  watchpush [server]      - 背景持續上傳（預設 all）
+  watchpull [server]      - 背景持續下載（預設 all）
+  watchfetch [server]     - 背景持續 fetch（預設 all）
+  check, status, add, reset, delete, clone
+  sync, fullsync, issynced, syncstatus, bgstatus, vtkrename
+
+Server shortcuts (指定單台):
   pull87, pull89, pull154, fetch87, fetch89, fetch154
   push87, push89, push154, pushall
   autopull87, autopull89, autopull154
@@ -1660,10 +1670,17 @@ Optional environment:
   CFDLAB_ASSUME_YES=1          (skip confirmations for reset/clone/sync/fullsync)
 
 Examples:
-  mobaxterm push                  # 顯示差異 → 確認 → 上傳
+  mobaxterm push                  # 上傳到所有伺服器（預設 all）
+  mobaxterm push 87               # 僅上傳到 .87
   mobaxterm push --no-diff        # 直接上傳不顯示差異
   mobaxterm push --diff-stat 87   # 僅統計後上傳到 .87
+  mobaxterm pull                  # 從所有伺服器下載（預設 all）
+  mobaxterm pull 89               # 僅從 .89 下載
   mobaxterm pull --quick          # 快速下載不分析
+  mobaxterm autopull              # 自動下載所有伺服器
+  mobaxterm autopull 87           # 自動下載僅 .87
+  mobaxterm watchfetch            # 背景監控所有伺服器
+  mobaxterm watchfetch 154        # 背景監控僅 .154
   mobaxterm sync-diff 87          # 僅查看 .87 的差異
   mobaxterm sync-diff-file main.cu  # 查看特定檔案差異
   mobaxterm sync-log              # 查看同步歷史
@@ -2168,18 +2185,22 @@ function cmd_gpu_detail() {
 }
 
 function cmd_log() {
-  local server
+  local target
   local lines
 
-  server="$(normalize_server "${1:-87}")"
+  target="$(parse_server_or_all "${1:-all}")"
   lines="${2:-20}"
   [[ "$lines" =~ ^[0-9]+$ ]] || die "tail_lines must be an integer"
 
-  echo "=== ${server} remote logs ==="
-  run_on_server "$server" "ls -lth ${CFDLAB_REMOTE_PATH}/log* 2>/dev/null | head -10 || true"
-  echo
-  echo "=== latest log tail (${lines}) ==="
-  run_on_server "$server" "latest=\$(ls -t ${CFDLAB_REMOTE_PATH}/log* 2>/dev/null | head -1); [[ -n \"\$latest\" ]] && tail -n ${lines} \"\$latest\" || echo 'No log files found'"
+  while IFS= read -r server; do
+    [[ -z "$server" ]] && continue
+    echo "=== ${server} remote logs ==="
+    run_on_server "$server" "ls -lth ${CFDLAB_REMOTE_PATH}/log* 2>/dev/null | head -10 || true"
+    echo
+    echo "=== latest log tail (${lines}) ==="
+    run_on_server "$server" "latest=\$(ls -t ${CFDLAB_REMOTE_PATH}/log* 2>/dev/null | head -1); [[ -n \"\$latest\" ]] && tail -n ${lines} \"\$latest\" || echo 'No log files found'"
+    echo
+  done < <(each_target_server "$target")
 }
 
 function cmd_pull_like() {
@@ -2397,43 +2418,51 @@ function cmd_issynced() {
 }
 
 function cmd_autopull() {
-  local server
-  local preview
-  local count
+  local target
+  target="$(parse_server_or_all "${1:-all}")"
 
-  server="$(normalize_server "${1:-87}")"
-  if ! preview="$(preview_pull_changes "$server" delete)"; then
-    echo "[AUTOPULL] ${server}: preview failed"
-    return 1
-  fi
-  count="$(count_change_lines "$preview")"
+  while IFS= read -r server; do
+    [[ -z "$server" ]] && continue
+    local preview
+    local count
 
-  if [[ "$count" -gt 0 ]]; then
-    echo "[AUTOPULL] ${server}: ${count} changes"
-    git_style_transfer pull "$server" delete
-  else
-    echo "[AUTOPULL] ${server}: no changes"
-  fi
+    if ! preview="$(preview_pull_changes "$server" delete)"; then
+      echo "[AUTOPULL] ${server}: preview failed"
+      continue
+    fi
+    count="$(count_change_lines "$preview")"
+
+    if [[ "$count" -gt 0 ]]; then
+      echo "[AUTOPULL] ${server}: ${count} changes"
+      git_style_transfer pull "$server" delete
+    else
+      echo "[AUTOPULL] ${server}: no changes"
+    fi
+  done < <(each_target_server "$target")
 }
 
 function cmd_autofetch() {
-  local server
-  local preview
-  local count
+  local target
+  target="$(parse_server_or_all "${1:-all}")"
 
-  server="$(normalize_server "${1:-87}")"
-  if ! preview="$(preview_pull_changes "$server" keep)"; then
-    echo "[AUTOFETCH] ${server}: preview failed"
-    return 1
-  fi
-  count="$(count_change_lines "$preview")"
+  while IFS= read -r server; do
+    [[ -z "$server" ]] && continue
+    local preview
+    local count
 
-  if [[ "$count" -gt 0 ]]; then
-    echo "[AUTOFETCH] ${server}: ${count} changes"
-    git_style_transfer fetch "$server" keep
-  else
-    echo "[AUTOFETCH] ${server}: no changes"
-  fi
+    if ! preview="$(preview_pull_changes "$server" keep)"; then
+      echo "[AUTOFETCH] ${server}: preview failed"
+      continue
+    fi
+    count="$(count_change_lines "$preview")"
+
+    if [[ "$count" -gt 0 ]]; then
+      echo "[AUTOFETCH] ${server}: ${count} changes"
+      git_style_transfer fetch "$server" keep
+    else
+      echo "[AUTOFETCH] ${server}: no changes"
+    fi
+  done < <(each_target_server "$target")
 }
 
 function cmd_autopush() {
@@ -2598,7 +2627,7 @@ function cmd_watch_generic() {
         target="local"
         interval="${1:-5}"
       else
-        target="$(normalize_server "${1:-87}")"
+        target="$(parse_server_or_all "${1:-all}")"
         interval="${2:-30}"
       fi
       start_daemon "$kind" "$target" "$interval"
