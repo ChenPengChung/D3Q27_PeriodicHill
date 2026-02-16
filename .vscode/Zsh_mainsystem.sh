@@ -1222,8 +1222,8 @@ function show_file_diff() {
   diff_output=$(diff "${diff_args[@]}" "$old_file" "$new_file" 2>/dev/null || true)
 
   # Count adds/dels
-  adds=$(echo "$diff_output" | grep -c '^+[^+]' 2>/dev/null || echo 0)
-  dels=$(echo "$diff_output" | grep -c '^-[^-]' 2>/dev/null || echo 0)
+  adds=$(echo "$diff_output" | grep -c '^+[^+]' 2>/dev/null) || adds=0
+  dels=$(echo "$diff_output" | grep -c '^-[^-]' 2>/dev/null) || dels=0
 
   DIFF_TOTAL_ADDS=$((DIFF_TOTAL_ADDS + adds))
   DIFF_TOTAL_DELS=$((DIFF_TOTAL_DELS + dels))
