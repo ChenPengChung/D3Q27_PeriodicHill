@@ -1,6 +1,7 @@
 #ifndef METRIC_TERMS_FILE
 #define METRIC_TERMS_FILE
 
+#include <iostream>
 #include <fstream>
 #include <iomanip>
 #include <cmath>
@@ -123,7 +124,7 @@ void DiagnoseMetricTerms(int myid) {
         double dHdy = (HillFunction(y_g[j + 1]) - HillFunction(y_g[j - 1])) / (2.0 * dy);
         
         if (Hy < 0.01 && j_flat < 0) j_flat = j; //尋找第一個平坦點 (H≈0)
-        /*山丘高度為零，底壁是平的
+        /*山丘高度為零，底壁是平的值
         預期：∂z/∂j ≈ 0 → dk_dy ≈ 0，座標系退化為正交（無扭曲）
         驗證用途：判據 3 檢查 dk_dy ≈ 0；判據 5 檢查壁面 BC 方向恰好是標準的 5 個*/
         if (Hy > H_max) { H_max = Hy; j_peak = j; } //尋找山丘最高點 (argmax H)
@@ -137,9 +138,24 @@ void DiagnoseMetricTerms(int myid) {
     }
 
     cout << "\n===== Phase 0: Metric Terms Diagnostics (Global) =====\n";
-    cout << "j_flat  = " << setw(4) << j_flat << "  (y=" << fixed << setprecision(4) << setw(8) << y_g[j_flat] << ", H=" << setw(8) << HillFunction(y_g[j_flat]) << ")\n";
-    cout << "j_peak  = " << setw(4) << j_peak << "  (y=" << fixed << setprecision(4) << setw(8) << y_g[j_peak] << ", H=" << setw(8) << HillFunction(y_g[j_peak]) << ")\n";
-    cout << "j_slope = " << setw(4) << j_slope << "  (y=" << fixed << setprecision(4) << setw(8) << y_g[j_slope] << ", H=" << setw(8) << HillFunction(y_g[j_slope]) << ", |H'|=" << setw(8) << dH_max << ")\n";
+    if (j_flat >= 0)
+        cout << "j_flat  = " << setw(4) << j_flat << "  (y=" << fixed << setprecision(4)
+             << setw(8) << y_g[j_flat] << ", H=" << setw(8) << HillFunction(y_g[j_flat]) << ")\n";
+    else
+        cout << "j_flat  = NOT FOUND\n";
+
+    if (j_peak >= 0)
+        cout << "j_peak  = " << setw(4) << j_peak << "  (y=" << fixed << setprecision(4)
+             << setw(8) << y_g[j_peak] << ", H=" << setw(8) << HillFunction(y_g[j_peak]) << ")\n";
+    else
+        cout << "j_peak  = NOT FOUND\n";
+
+    if (j_slope >= 0)
+        cout << "j_slope = " << setw(4) << j_slope << "  (y=" << fixed << setprecision(4)
+             << setw(8) << y_g[j_slope] << ", H=" << setw(8) << HillFunction(y_g[j_slope])
+             << ", |H'|=" << setw(8) << dH_max << ")\n";
+    else
+        cout << "j_slope = NOT FOUND\n";
 
 
     // ====== 輸出 3: 壁面方向判別 ======

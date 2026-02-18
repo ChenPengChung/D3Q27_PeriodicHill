@@ -167,7 +167,7 @@ int main(int argc, char *argv[])
     GenerateMesh_Z();
 
     // Phase 0: 計算離散 Jacobian 度量項並輸出診斷文件
-    DiagnoseMetricTerms(y_h, z_h, xi_h, dk_dz_h, dk_dy_h, myid);
+    DiagnoseMetricTerms(myid);
 
     GetIntrplParameter_X();
     GetIntrplParameter_Y();
