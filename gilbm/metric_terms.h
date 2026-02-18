@@ -236,11 +236,11 @@ void DiagnoseMetricTerms(int myid) {
         // 判據 6：斜面應有額外方向 (num_bc > 5)
         if (fabs(dHdy) > 0.1) {  // 這是一個斜面點（山坡梯度顯著）
             found_any_slope = 1;
-            if (num_bc <= 5) {  // 斜面點卻只有 ≤5 個方向 → 度量項可能有誤
+            if (num_bc <= 5) {  // 斜面點卻只有 ≤5 個方向 → 該下邊界計算點的某一個度量項可能有誤
                 pass_slope_extra = 0;
                 cout << "  FAIL criteria 6: j=" << j
                      << " (slope, |dH/dy|=" << fixed << setprecision(4) << fabs(dHdy)
-                     << "), num_BC=" << num_bc << " (expected >5)\n";
+                     << "), num_BC=" << num_bc << " (expected >5)\n"; 
             }
         }
     }
@@ -253,7 +253,7 @@ void DiagnoseMetricTerms(int myid) {
 
 
     // ====== Pass/Fail 判據匯總 ======
-    printf("\n----- Pass/Fail Criteria -----\n");
+    cout << "\n----- Pass/Fail Criteria -----\n";
 
     // 判據 1: dk_dz > 0 全場
     int pass1 = 1;
@@ -261,11 +261,11 @@ void DiagnoseMetricTerms(int myid) {
         for (int k = bfr; k < NZ6 - bfr; k++) {
             if (dk_dz_g[j * NZ6 + k] <= 0.0) {
                 pass1 = 0;
-                printf("  FAIL: dk_dz <= 0 at j=%d, k=%d\n", j, k);
+                cout << "  FAIL: dk_dz <= 0 at j=" << j << ", k=" << k << "\n";
             }
         }
     }
-    printf("[%s] Criteria 1: dk_dz > 0 everywhere\n", pass1 ? "PASS" : "FAIL");
+    cout << "[" << (pass1 ? "PASS" : "FAIL") << "] Criteria 1: dk_dz > 0 everywhere\n";
 
     // 判據 2: 壁面附近 dz_dk ≈ minSize
     int pass2 = 1;
@@ -274,11 +274,13 @@ void DiagnoseMetricTerms(int myid) {
         double rel_err = fabs(dz_dk_wall - minSize) / minSize;
         if (rel_err > 0.1) {
             pass2 = 0;
-            printf("  FAIL: j=%d, dz_dk[wall]=%.6e, minSize=%.6e, rel_err=%.2f%%\n",
-                   j, dz_dk_wall, minSize, rel_err * 100);
+            cout << "  FAIL: j=" << j
+                 << ", dz_dk[wall]=" << scientific << setprecision(6) << dz_dk_wall
+                 << ", minSize=" << minSize
+                 << ", rel_err=" << fixed << setprecision(2) << rel_err * 100 << "%\n";
         }
     }
-    printf("[%s] Criteria 2: dz_dk(wall) ≈ minSize (within 10%%)\n", pass2 ? "PASS" : "FAIL");
+    cout << "[" << (pass2 ? "PASS" : "FAIL") << "] Criteria 2: dz_dk(wall) ≈ minSize (within 10%)\n";
 
     // 判據 3: 平坦段 dk_dy ≈ 0
     int pass3 = 1;
@@ -286,12 +288,13 @@ void DiagnoseMetricTerms(int myid) {
         for (int k = bfr; k < NZ6 - bfr; k++) {
             if (fabs(dk_dy_g[j_flat * NZ6 + k]) > 0.1) {
                 pass3 = 0;
-                printf("  FAIL: flat region j=%d k=%d, dk_dy=%.6e (expected ~0)\n",
-                       j_flat, k, dk_dy_g[j_flat * NZ6 + k]);
+                cout << "  FAIL: flat region j=" << j_flat << " k=" << k
+                     << ", dk_dy=" << scientific << setprecision(6) << dk_dy_g[j_flat * NZ6 + k]
+                     << " (expected ~0)\n";
             }
         }
     }
-    printf("[%s] Criteria 3: dk_dy ≈ 0 at flat region\n", pass3 ? "PASS" : "FAIL");
+    cout << "[" << (pass3 ? "PASS" : "FAIL") << "] Criteria 3: dk_dy ≈ 0 at flat region\n";
 
     // 判據 4: 斜面 dk_dy 符號正確
     int pass4 = 1;
@@ -303,32 +306,30 @@ void DiagnoseMetricTerms(int myid) {
         // 當 H'(y)>0（山丘上升段），dz_dj>0 → dk_dy<0
         if (dHdy_slope > 0 && dk_dy_val > 0) {
             pass4 = 0;
-            printf("  FAIL: slope j=%d, H'>0 but dk_dy>0 (sign wrong)\n", j_slope);
+            cout << "  FAIL: slope j=" << j_slope << ", H'>0 but dk_dy>0 (sign wrong)\n";
         }
         if (dHdy_slope < 0 && dk_dy_val < 0) {
             pass4 = 0;
-            printf("  FAIL: slope j=%d, H'<0 but dk_dy<0 (sign wrong)\n", j_slope);
+            cout << "  FAIL: slope j=" << j_slope << ", H'<0 but dk_dy<0 (sign wrong)\n";
         }
     }
-    printf("[%s] Criteria 4: dk_dy sign consistent with -H'(y)\n", pass4 ? "PASS" : "FAIL");
+    cout << "[" << (pass4 ? "PASS" : "FAIL") << "] Criteria 4: dk_dy sign consistent with -H'(y)\n";
 
     // 判據 5：平坦段壁面恰好 5 個方向需要 BC
-    printf("[%s] Criteria 5: flat wall has exactly 5 BC directions\n",
-           pass_flat_5dirs ? "PASS" : "FAIL");
+    cout << "[" << (pass_flat_5dirs ? "PASS" : "FAIL") << "] Criteria 5: flat wall has exactly 5 BC directions\n";
 
     // 判據 6：斜面有額外方向（三態：PASS / FAIL / SKIP）
     if (found_any_slope) {
-        printf("[%s] Criteria 6: slope wall has >5 BC directions\n",
-               pass_slope_extra ? "PASS" : "FAIL");
+        cout << "[" << (pass_slope_extra ? "PASS" : "FAIL") << "] Criteria 6: slope wall has >5 BC directions\n";
     } else {
-        printf("[SKIP] Criteria 6: no significant slope found (|dH/dy| > 0.1)\n");
+        cout << "[SKIP] Criteria 6: no significant slope found (|dH/dy| > 0.1)\n";
     }
 
-    printf("\nDiagnostic files written:\n");
-    printf("  gilbm_metrics.dat           — full field metric terms\n");
-    printf("  gilbm_metrics_selected.dat  — profiles at 3 characteristic j\n");
-    printf("  gilbm_contravariant_wall.dat — wall direction classification\n");
-    printf("===== End Phase 0 Diagnostics =====\n\n");
+    cout << "\nDiagnostic files written:\n";
+    cout << "  gilbm_metrics.dat           — full field metric terms\n";
+    cout << "  gilbm_metrics_selected.dat  — profiles at 3 characteristic j\n";
+    cout << "  gilbm_contravariant_wall.dat — wall direction classification\n";
+    cout << "===== End Phase 0 Diagnostics =====\n\n";
 
     free(y_g);
     free(z_g);
