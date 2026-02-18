@@ -129,20 +129,8 @@ void GenerateMesh_Z() {
 
     for( int k = bfr; k < NZ6-bfr; k++ ){
         xi_h[k] = tanhFunction( LXi, minSize, a, (k-3), (NZ6-7) ) - minSize/2.0;
-        //xi_h[k] = -1.0+2.0*(k-3)/double(NZ6-7);
-		/*if( myid == 0 ){
-        printf("xi = %lf\n", xi_h[k]);
-    	}*/ 
     }
     
-    /*for( int k = bfr; k < NZ6-bfr; k++ ){
-    for( int j = 0  ; j < NYD6 ; j++ ){
-    	double L = LZ - HillFunction(y_h[j]) - minSize;
-        xi_h[j*NZ6+k] = atanh((z_h[j*NZ6+k]-HillFunction(y_h[j])-minSize/2.0-L/2.0)/((L/2.0)/a))/log((1.0+a)/(1.0-a))*2.0;
-        if( myid == 0 ){
-        printf("k = %d\t z = %lf\t xi = %lf\n", k, z_h[j*NZ6+k], xi_h[j*NZ6+k]);
-    	}
-    }}*/
 
     double y_global[NY6];
     double z_global[NY6*NZ6];

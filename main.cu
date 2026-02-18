@@ -36,10 +36,6 @@ double  *x_h, *y_h, *z_h, *xi_h,
         *x_d, *y_d, *z_d, *xi_d;
 double  *Xdep_h[3], *Ydep_h[3], *Zdep_h[3],
         *Xdep_d[3], *Ydep_d[3], *Zdep_d[3];
-/* double  *XPara0_h[7], *YPara0_h[7], *ZPara0_h[7],
-        *XPara2_h[7], *YPara2_h[7], *ZPara2_h[7],
-        *XPara0_d[7], *YPara0_d[7], *ZPara0_d[7],
-        *XPara2_d[7], *YPara2_d[7], *ZPara2_d[7]; */
 
 //Variables for interpolation process
 double  *XPara0_h[7],    *XPara0_d[7],    *XPara2_h[7],    *XPara2_d[7],
@@ -65,6 +61,26 @@ double  *XBFLParaF37_d[7],      *XBFLParaF38_d[7],      *YBFLParaF378_d[7],     
 double  *ZSlopePara_h[5],
         *ZSlopePara_d[5];
 
+
+//======== GILBM 度量項（Imamura 2005 左側元素）========
+// 座標變換 (x,y,z) → 計算空間 (η=i, ξ=j, ζ=k)
+// 度量項矩陣（∂計算/∂物理）：
+//   | ∂η/∂x  ∂η/∂y  ∂η/∂z |   | 1/dx   0      0      |
+//   | ∂ξ/∂x  ∂ξ/∂y  ∂ξ/∂z | = | 0      1/dy   0      |  ← 常數，不需陣列
+//   | ∂ζ/∂x  ∂ζ/∂y  ∂ζ/∂z |   | 0      dk_dy  dk_dz  |  ← 隨空間變化
+//
+// 只需 2 個空間變化的度量項（大小 [NYD6*NZ6]，與 z_h 相同）
+double *dk_dz_h, *dk_dz_d;   // ∂ζ/∂z = 1/(∂z/∂k)
+double *dk_dy_h, *dk_dy_d;   // ∂ζ/∂y = -(∂z/∂j)/(dy·∂z/∂k)
+//
+// 逆變速度在 GPU kernel 中即時計算（不需全場存儲）：
+//   ẽ_α_η = e[α][0] / dx           (常數)
+//   ẽ_α_ξ = e[α][1] / dy           (常數)
+//   ẽ_α_ζ = e[α][1]*dk_dy + e[α][2]*dk_dz  (從度量項即時算)
+//
+// RK2 上風點座標是 kernel 局部變量，不需全場存儲
+
+
 //Variables for forcing term modification.
 double  *Ub_avg_h,  *Ub_avg_d;
 
@@ -73,6 +89,7 @@ double  *Force_h,   *Force_d;
 double *rho_modify_h, *rho_modify_d;
 //Variables for BFL 
 double *Q3_h, *Q3_d, *Q4_h, *Q4_d, *Q15_h, *Q15_d, *Q16_h, *Q16_d;
+
 
 
 int nProcs, myid;
@@ -108,11 +125,12 @@ int itag_f4[23] = {200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,2
 int itag_f5[23] = {300,301,302,303,304,305,306,307,308,309,310,311,312,313,314,315,316,317,318,319,320,321,322};
 int itag_f6[23] = {400,401,402,403,404,405,406,407,408,409,410,411,412,413,414,415,416,417,418,419,420,421,422};
 
-#include "common.h"
 
+#include "common.h"
 #include "model.h"
 #include "memory.h"
 #include "initialization.h"
+#include "gilbm/metric_terms.h"
 #include "communication.h"
 #include "monitor.h"
 #include "statistics.h"
@@ -147,6 +165,11 @@ int main(int argc, char *argv[])
 	GenerateMesh_X();
     GenerateMesh_Y();
     GenerateMesh_Z();
+
+    // Phase 0: 全域度量項診斷（僅 rank 0，內部重建全域座標）
+    DiagnoseMetricTerms(myid);
+    // 各 rank 計算自己的區域度量項（用於未來 evolution kernel）
+    ComputeMetricTerms(dk_dz_h, dk_dy_h, z_h, y_h, NYD6, NZ6);
 
     GetIntrplParameter_X();
     GetIntrplParameter_Y();

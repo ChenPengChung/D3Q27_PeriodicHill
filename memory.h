@@ -98,6 +98,9 @@ void AllocateMemory() {
     nBytes = NYD6 * NZ6 * sizeof(double);
     AllocateHostArray(  nBytes, 4,  &z_h, &Zdep_h[0], &Zdep_h[1], &Zdep_h[2]);
     AllocateDeviceArray(nBytes, 4,  &z_d, &Zdep_d[0], &Zdep_d[1], &Zdep_d[2]);
+    // GILBM 度量項：∂ζ/∂z 和 ∂ζ/∂y（與 z_h 同大小 [NYD6*NZ6]）
+    AllocateHostArray(  nBytes, 2,  &dk_dz_h, &dk_dy_h);
+    AllocateDeviceArray(nBytes, 2,  &dk_dz_d, &dk_dy_d);
     for( int i = 0; i < 7; i++ ){
         CHECK_CUDA( cudaMallocHost( (void**)&XiParaF3_h[i], nBytes ) );
         CHECK_CUDA( cudaMallocHost( (void**)&XiParaF4_h[i], nBytes ) );
@@ -193,6 +196,9 @@ void FreeSource() {
 
     FreeHostArray(  4,  x_h, y_h, z_h, xi_h);
     FreeDeviceArray(4,  x_d, y_d, z_d, xi_d);
+    // GILBM 度量項
+    FreeHostArray(  2,  dk_dz_h, dk_dy_h);
+    FreeDeviceArray(2,  dk_dz_d, dk_dy_d);
 
     for( int i = 0; i < 3; i++ ){
         FreeHostArray(  3,  Xdep_h[i], Ydep_h[i], Zdep_h[i]);
