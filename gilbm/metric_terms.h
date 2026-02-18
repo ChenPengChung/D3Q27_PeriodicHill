@@ -288,7 +288,7 @@ void DiagnoseMetricTerms(int myid) {
     for (int j = bfr; j < NY6 - bfr - 1; j++) {
         double Hy_c3 = HillFunction(y_g[j]);
         double dHdy_c3 = (HillFunction(y_g[j + 1]) - HillFunction(y_g[j - 1])) / (2.0 * dy);
-        if (fabs(Hy_c3) < 0.01 && fabs(dHdy_c3) < 0.01) {  // 同判據 5 的平坦條件
+        if (fabs(Hy_c3) < 0.01 && fabs(dHdy_c3) < 0.01) {//如果在平探區域內部// 同判據 5 的平坦條件
             for (int k = bfr; k < NZ6 - bfr; k++) {
                 if (fabs(dk_dy_g[j * NZ6 + k]) > 0.1) {
                     pass3 = 0;
@@ -301,23 +301,24 @@ void DiagnoseMetricTerms(int myid) {
     }
     cout << "[" << (pass3 ? "PASS" : "FAIL") << "] Criteria 3: dk_dy ≈ 0 at flat region\n";
 
-    // 判據 4: 斜面 dk_dy 符號正確
+    // 判據 4: 斜面 dk_dy 符號正確//dk_dy為因為山坡曲率而存在的度量係數
     int pass4 = 1;
-    if (j_slope >= 0) {
+    if (j_slope >= 0) { // j_slope 為最陡峭區域的 j 值
         double dHdy_slope = (HillFunction(y_g[j_slope + 1]) -
-                             HillFunction(y_g[j_slope - 1])) / (2.0 * dy);
-        int k_mid = NZ6 / 2;
+                             HillFunction(y_g[j_slope - 1])) / (2.0 * dy); //該j值點的山坡導數
+        int k_mid = NZ6 / 2;//選最陡峭ｊ點的垂直中點
         double dk_dy_val = dk_dy_g[j_slope * NZ6 + k_mid];
         // 當 H'(y)>0（山丘上升段），dz_dj>0 → dk_dy<0
-        if (dHdy_slope > 0 && dk_dy_val > 0) {
+        if (dHdy_slope > 0 && dk_dy_val > 0) { //如果最陡峭j值為上升階段，則度量係數應該要<0（因為Jacobian Determination <0)
             pass4 = 0;
             cout << "  FAIL: slope j=" << j_slope << ", H'>0 but dk_dy>0 (sign wrong)\n";
         }
-        if (dHdy_slope < 0 && dk_dy_val < 0) {
+        if (dHdy_slope < 0 && dk_dy_val < 0) { //如果最陡峭區域j值處在下降階段 , 則度量係數>0 (因為因為Jacobian Determination <0)
             pass4 = 0;
             cout << "  FAIL: slope j=" << j_slope << ", H'<0 but dk_dy<0 (sign wrong)\n";
         }
     }
+    //判斷4的意義：判斷因為山坡曲率而存在的度量係數是否計算錯誤 。
     cout << "[" << (pass4 ? "PASS" : "FAIL") << "] Criteria 4: dk_dy sign consistent with -H'(y)\n";
 
     // 判據 5：平坦段壁面恰好 5 個方向需要 BC
