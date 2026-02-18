@@ -158,8 +158,10 @@ void DiagnoseMetricTerms(int myid) {
     fwall << "# j  y  H(y)  dH/dy  num_BC_dirs  BC_directions\n";
 
     int pass_flat_5dirs = 1;  // 用於判據 5
+    int fail_count_flat = 0;  // 統計判據 5 失敗點數
     int pass_slope_extra = 1; // 用於判據 6（預設 PASS，任何斜面點 num_bc<=5 則 FAIL）
     int found_any_slope = 0;  // 是否找到任何斜面點 (|dHdy| > 0.1)
+    int fail_count_slope = 0; // 統計判據 6 失敗點數
 
     for (int j = bfr ; j < NY6 - bfr - 1; j++) { //由左到右掃描
         int k_wall = bfr;  //壁面位置（k=3，對應 z=H(y)+0.5minSize）
@@ -180,7 +182,9 @@ void DiagnoseMetricTerms(int myid) {
         for (int alpha = 0; alpha < 19; alpha++) {
             //計算座標變換下的離散速度集k分量(k = zeta分量)
             double e_tilde_k = e[alpha][1] * dk_dy_g[idx] + e[alpha][2] * dk_dz_g[idx];//k = zeta 為方向座標變換
-            if (e_tilde_k > 0.0) {//在哪一個y列的下面一點上，離散速度的zeta分量不為零，則此點為該編號alpha的邊界計算點
+            if (e_tilde_k > 0.0) {
+                //取<0作為面壁方向;取>0作為反彈後方向
+                //在哪一個y列的下面一點上，離散速度的zeta分量不為零，則此點為該編號alpha的邊界計算點
                 // 將當前方向索引 alpha 記錄到邊界條件方向陣列 bc_dirs 中，
                 // 同時將邊界條件計數器 num_bc 遞增 1。
                 bc_dirs[num_bc] = alpha;
@@ -213,6 +217,7 @@ void DiagnoseMetricTerms(int myid) {
         if (fabs(Hy) < 0.01 && fabs(dHdy) < 0.01) { //平坦區段判斷條件
             if (num_bc != 5) {
                 pass_flat_5dirs = 0;
+                fail_count_flat++;
                 cout << " FAIL criteria 5: j=" << j << " (flat, H=" << fixed << setprecision(4) << Hy << "), num_BC=" << num_bc << " (expected 5)\n";
             }
         }//需要做邊界處理的編號為反向牆面編號
@@ -235,9 +240,10 @@ void DiagnoseMetricTerms(int myid) {
         // ============================================================================
         // 判據 6：斜面應有額外方向 (num_bc > 5)
         if (fabs(dHdy) > 0.1) {  // 這是一個斜面點（山坡梯度顯著）
-            found_any_slope = 1;
+            found_any_slope = 1 ; //斜面區域的計算點 此值 = 1
             if (num_bc <= 5) {  // 斜面點卻只有 ≤5 個方向 → 該下邊界計算點的某一個度量項可能有誤
                 pass_slope_extra = 0;
+                fail_count_slope++;
                 cout << "  FAIL criteria 6: j=" << j
                      << " (slope, |dH/dy|=" << fixed << setprecision(4) << fabs(dHdy)
                      << "), num_BC=" << num_bc << " (expected >5)\n"; 
@@ -322,13 +328,24 @@ void DiagnoseMetricTerms(int myid) {
     cout << "[" << (pass4 ? "PASS" : "FAIL") << "] Criteria 4: dk_dy sign consistent with -H'(y)\n";
 
     // 判據 5：平坦段壁面恰好 5 個方向需要 BC
-    cout << "[" << (pass_flat_5dirs ? "PASS" : "FAIL") << "] Criteria 5: flat wall has exactly 5 BC directions\n";
+    if (pass_flat_5dirs) {
+        cout << "[PASS] Criteria 5: flat wall has exactly 5 BC directions\n";
+    } else {
+        cout << "[FAIL] Criteria 5: flat wall has exactly 5 BC directions ("
+             << fail_count_flat << " flat points failed)\n";
+    }
 
     // 判據 6：斜面有額外方向（三態：PASS / FAIL / SKIP）
-    if (found_any_slope) {
-        cout << "[" << (pass_slope_extra ? "PASS" : "FAIL") << "] Criteria 6: slope wall has >5 BC directions\n";
-    } else {
+    if (found_any_slope == 0) {
+        // 情況 A：整個計算域內沒有顯著斜面 (所有點的 |dH/dy| ≤ 0.1)
         cout << "[SKIP] Criteria 6: no significant slope found (|dH/dy| > 0.1)\n";
+    } else if (pass_slope_extra == 1) {
+        // 情況 B：有斜面，且所有斜面點的 BC 方向數都 > 5
+        cout << "[PASS] Criteria 6: slope wall has >5 BC directions\n";
+    } else {
+        // 情況 C：有斜面，但至少一個斜面點的 BC 方向數 ≤ 5
+        cout << "[FAIL] Criteria 6: slope wall has >5 BC directions ("
+             << fail_count_slope << " slope points failed)\n";
     }
 
     cout << "\nDiagnostic files written:\n";
@@ -344,3 +361,11 @@ void DiagnoseMetricTerms(int myid) {
 }
 
 #endif
+
+//Pass1: 驗證dk_dz計算正確 ： 全場dk_dz >0 
+//Pass2: 驗證dk_dz計算正確 ： k = 3處的dk_dz應該等於minSize 
+//Pass3: 驗證dk_dy計算正確 ： 利用雙重for迴圈計算平坦區段的dk_dy都等於0
+//Pass4: 驗證dk_dy計算正確 ： 取最陡峭的j列的垂直中點 ，檢查該點的dk_dy是否與山坡斜率反號：
+//取k=3計算空間下邊界計算點做判斷
+//Pass5: 驗證e_alpha_k的計算正確性：下邊界&&平坦區段：需要做邊界處理的編號個數 = 5 
+
