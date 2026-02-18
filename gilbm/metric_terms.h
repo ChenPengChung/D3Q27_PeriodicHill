@@ -255,7 +255,7 @@ void DiagnoseMetricTerms(int myid) {
     // ====== Pass/Fail 判據匯總 ======
     cout << "\n----- Pass/Fail Criteria -----\n";
 
-    // 判據 1: dk_dz > 0 全場
+    // 判據 1: dk_dz > 0 全場 //因為每一個點都應該存在hyperbolic tangent 伸縮程度 
     int pass1 = 1;
     for (int j = bfr; j < NY6 - bfr; j++) {
         for (int k = bfr; k < NZ6 - bfr; k++) {
@@ -267,10 +267,10 @@ void DiagnoseMetricTerms(int myid) {
     }
     cout << "[" << (pass1 ? "PASS" : "FAIL") << "] Criteria 1: dk_dz > 0 everywhere\n";
 
-    // 判據 2: 壁面附近 dz_dk ≈ minSize
+    // 判據 2:  下壁面附近 dz_dk ≈ minSize  = discrete jacobian \frac{z_h[idx_xi+1] - z_h[idx_xi應義-1]}{2}
     int pass2 = 1;
     for (int j = bfr; j < NY6 - bfr; j++) {
-        double dz_dk_wall = 1.0 / dk_dz_g[j * NZ6 + bfr];
+        double dz_dk_wall = 1.0 / dk_dz_g[j * NZ6 + bfr];//第四個度量係數在下邊界的判斷
         double rel_err = fabs(dz_dk_wall - minSize) / minSize;
         if (rel_err > 0.1) {
             pass2 = 0;
@@ -282,15 +282,20 @@ void DiagnoseMetricTerms(int myid) {
     }
     cout << "[" << (pass2 ? "PASS" : "FAIL") << "] Criteria 2: dz_dk(wall) ≈ minSize (within 10%)\n";
 
-    // 判據 3: 平坦段 dk_dy ≈ 0
+    // 判據 3: 平坦段 dk_dy ≈ 0（掃描所有平坦 j，與判據 5 同條件）
+    //  由於山坡曲率存在所引起的度量係數，在平坦區域應趨近於零
     int pass3 = 1;
-    if (j_flat >= 0) {
-        for (int k = bfr; k < NZ6 - bfr; k++) {
-            if (fabs(dk_dy_g[j_flat * NZ6 + k]) > 0.1) {
-                pass3 = 0;
-                cout << "  FAIL: flat region j=" << j_flat << " k=" << k
-                     << ", dk_dy=" << scientific << setprecision(6) << dk_dy_g[j_flat * NZ6 + k]
-                     << " (expected ~0)\n";
+    for (int j = bfr; j < NY6 - bfr - 1; j++) {
+        double Hy_c3 = HillFunction(y_g[j]);
+        double dHdy_c3 = (HillFunction(y_g[j + 1]) - HillFunction(y_g[j - 1])) / (2.0 * dy);
+        if (fabs(Hy_c3) < 0.01 && fabs(dHdy_c3) < 0.01) {  // 同判據 5 的平坦條件
+            for (int k = bfr; k < NZ6 - bfr; k++) {
+                if (fabs(dk_dy_g[j * NZ6 + k]) > 0.1) {
+                    pass3 = 0;
+                    cout << "  FAIL: flat region j=" << j << " k=" << k
+                         << ", dk_dy=" << scientific << setprecision(6) << dk_dy_g[j * NZ6 + k]
+                         << " (expected ~0)\n";
+                }
             }
         }
     }

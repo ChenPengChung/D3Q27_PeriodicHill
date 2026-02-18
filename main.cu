@@ -166,10 +166,8 @@ int main(int argc, char *argv[])
     GenerateMesh_Y();
     GenerateMesh_Z();
 
-    // Phase 0: 全域度量項診斷（僅 rank 0，內部重建全域座標）
-    DiagnoseMetricTerms(myid);
-    // 各 rank 計算自己的區域度量項（用於未來 evolution kernel）
-    ComputeMetricTerms(dk_dz_h, dk_dy_h, z_h, y_h, NYD6, NZ6);
+    // Phase 0: 計算離散 Jacobian 度量項並輸出診斷文件
+    DiagnoseMetricTerms(y_h, z_h, xi_h, dk_dz_h, dk_dy_h, myid);
 
     GetIntrplParameter_X();
     GetIntrplParameter_Y();
