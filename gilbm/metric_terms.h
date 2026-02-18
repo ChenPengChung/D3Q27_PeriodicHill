@@ -159,7 +159,7 @@ void DiagnoseMetricTerms(int myid) {
 
     int pass_flat_5dirs = 1;  // 用於判據 5
     int fail_count_flat = 0;  // 統計判據 5 失敗點數
-    int pass_slope_extra = 1; // 用於判據 6（預設 PASS，任何斜面點 num_bc<=5 則 FAIL）
+    int pass_slope_extra = 1; // 用於判據 6（預設 PASS，任何斜面點 num_bc<=5 則 FAIL=0）
     int found_any_slope = 0;  // 是否找到任何斜面點 (|dHdy| > 0.1)
     int fail_count_slope = 0; // 統計判據 6 失敗點數
 
@@ -243,7 +243,7 @@ void DiagnoseMetricTerms(int myid) {
             found_any_slope = 1 ; //斜面區域的計算點 此值 = 1
             if (num_bc <= 5) {  // 斜面點卻只有 ≤5 個方向 → 該下邊界計算點的某一個度量項可能有誤
                 pass_slope_extra = 0;
-                fail_count_slope++;
+                fail_count_slope++;//統計下邊界斜面區域不通過Pass的計算點個數
                 cout << "  FAIL criteria 6: j=" << j
                      << " (slope, |dH/dy|=" << fixed << setprecision(4) << fabs(dHdy)
                      << "), num_BC=" << num_bc << " (expected >5)\n"; 
@@ -341,6 +341,7 @@ void DiagnoseMetricTerms(int myid) {
         cout << "[SKIP] Criteria 6: no significant slope found (|dH/dy| > 0.1)\n";
     } else if (pass_slope_extra == 1) {
         // 情況 B：有斜面，且所有斜面點的 BC 方向數都 > 5
+        //因為預設pass_extra_slope為1所以當你掃描完所有的計算點後仍然保持為 1，則代表所有的計算點都符合判段
         cout << "[PASS] Criteria 6: slope wall has >5 BC directions\n";
     } else {
         // 情況 C：有斜面，但至少一個斜面點的 BC 方向數 ≤ 5
@@ -368,4 +369,5 @@ void DiagnoseMetricTerms(int myid) {
 //Pass4: 驗證dk_dy計算正確 ： 取最陡峭的j列的垂直中點 ，檢查該點的dk_dy是否與山坡斜率反號：
 //取k=3計算空間下邊界計算點做判斷
 //Pass5: 驗證e_alpha_k的計算正確性：下邊界&&平坦區段：需要做邊界處理的編號個數 = 5 
+//Pass6: 驗證e_alpha_k計算正確 ： 所有的斜面計算點都應該要有6個以上的編號需要邊界處理
 
