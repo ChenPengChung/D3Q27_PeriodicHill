@@ -158,51 +158,99 @@ void DiagnoseMetricTerms(int myid) {
     fwall << "# j  y  H(y)  dH/dy  num_BC_dirs  BC_directions\n";
 
     int pass_flat_5dirs = 1;  // 用於判據 5
-    int pass_slope_extra = 0; // 用於判據 6
+    int pass_slope_extra = 1; // 用於判據 6（預設 PASS，任何斜面點 num_bc<=5 則 FAIL）
+    int found_any_slope = 0;  // 是否找到任何斜面點 (|dHdy| > 0.1)
 
-    for (int j = bfr + 1; j < NY6 - bfr - 1; j++) {
-        int k_wall = bfr;  // 底壁
-        int idx = j * NZ6 + k_wall;
+    for (int j = bfr ; j < NY6 - bfr - 1; j++) { //由左到右掃描
+        int k_wall = bfr;  //壁面位置（k=3，對應 z=H(y)+0.5minSize）
+        int idx = j * NZ6 + k_wall;//計算空間最下面一排的計算點
         double Hy = HillFunction(y_g[j]);
         double dHdy = (HillFunction(y_g[j + 1]) - HillFunction(y_g[j - 1])) / (2.0 * dy);
 
-        int num_bc = 0;
+        //分別印出 編號：全域y座標：H(y)：dH/dy
         fwall << setw(4) << j << " "
               << setw(10) << fixed << setprecision(5) << y_g[j] << " "
               << setw(10) << Hy << " "
               << setw(10) << dHdy << "  ";
-
+        //====外迴圈：掃描各個底層計算點，內迴圈：掃描不同離散速度的方向
         // 暫存需要 BC 的方向
+        int num_bc = 0;
         int bc_dirs[19];
+        //不同離散速度分開計算
         for (int alpha = 0; alpha < 19; alpha++) {
-            double e_tilde_zeta = e[alpha][1] * dk_dy_g[idx]
-                                + e[alpha][2] * dk_dz_g[idx];
-            if (e_tilde_zeta > 0.0) {
-                bc_dirs[num_bc++] = alpha;
+            //計算座標變換下的離散速度集k分量(k = zeta分量)
+            double e_tilde_k = e[alpha][1] * dk_dy_g[idx] + e[alpha][2] * dk_dz_g[idx];//k = zeta 為方向座標變換
+            if (e_tilde_k > 0.0) {//在哪一個y列的下面一點上，離散速度的zeta分量不為零，則此點為該編號alpha的邊界計算點
+                // 將當前方向索引 alpha 記錄到邊界條件方向陣列 bc_dirs 中，
+                // 同時將邊界條件計數器 num_bc 遞增 1。
+                bc_dirs[num_bc] = alpha;
+                num_bc = num_bc + 1;
             }
         }
-
-        fwall << setw(2) << num_bc << "  ";
+        fwall << setw(2) << num_bc << "  "; //一共有幾個需要邊界處理 
         for (int n = 0; n < num_bc; n++) {
-            fwall << bc_dirs[n] << " ";
+            fwall << bc_dirs[n] << " "; //引出哪一些編號需要邊界處理
         }
         fwall << "\n";
-
+        // ============================================================================
+        // 判據 5 (Criteria 5): 平坦區域方向數驗證
+        // ----------------------------------------------------------------------------
+        // 目的：驗證在幾何形狀的平坦段（水平區域），邊界條件應恰好使用 5 個方向
+        // 
+        // 判斷條件：
+        //   - |Hy| < 0.01     : 高度值接近零，表示位於平坦區域
+        //   - |dHdy| < 0.01   : 高度梯度接近零，表示無斜率變化
+        // 
+        // 預期結果：
+        //   - 平坦段的邊界條件方向數應為 5，對應 D3Q27 中的方向 {5, 11, 12, 15, 16}
+        //   - 這些方向代表與平坦底面相交的離散速度方向
+        // 
+        // 物理意義：
+        //   在 LBM 的曲線邊界處理中，平坦表面只需處理垂直於表面的速度分量，
+        //   因此邊界條件方向數是固定且已知的
+        // ============================================================================
         // 判據 5：平坦段應恰好 5 方向 {5, 11, 12, 15, 16}
-        if (fabs(Hy) < 0.01 && fabs(dHdy) < 0.01) {
+        if (fabs(Hy) < 0.01 && fabs(dHdy) < 0.01) { //平坦區段判斷條件
             if (num_bc != 5) {
                 pass_flat_5dirs = 0;
-                printf("  FAIL criteria 5: j=%d (flat, H=%.4f), num_BC=%d (expected 5)\n",
-                       j, Hy, num_bc);
+                cout << " FAIL criteria 5: j=" << j << " (flat, H=" << fixed << setprecision(4) << Hy << "), num_BC=" << num_bc << " (expected 5)\n";
             }
-        }
-
-        // 判據 6：斜面應有額外方向
-        if (fabs(dHdy) > 0.1 && num_bc > 5) {
-            pass_slope_extra = 1;
+        }//需要做邊界處理的編號為反向牆面編號
+        // ============================================================================
+        // 判據 6 (Criteria 6): 斜面額外方向驗證
+        // ----------------------------------------------------------------------------
+        // 目的：驗證在幾何形狀的斜面段，邊界條件應包含額外的方向
+        // 
+        // 判斷條件：
+        //   - |dHdy| > 0.1    : 高度梯度顯著，表示存在斜率
+        //   - num_bc > 5      : 邊界條件方向數超過平坦段的 5 個
+        // 
+        // 預期結果：
+        //   - 斜面區域需要處理更多的離散速度方向
+        //   - 因為傾斜表面會與更多的速度向量相交
+        // 
+        // 物理意義：
+        //   在 GILBM（Generalized Interpolation-based LBM）中，曲線/斜面邊界
+        //   需要額外的插值方向來準確表示流體與傾斜壁面的相互作用
+        // ============================================================================
+        // 判據 6：斜面應有額外方向 (num_bc > 5)
+        if (fabs(dHdy) > 0.1) {  // 這是一個斜面點（山坡梯度顯著）
+            found_any_slope = 1;
+            if (num_bc <= 5) {  // 斜面點卻只有 ≤5 個方向 → 度量項可能有誤
+                pass_slope_extra = 0;
+                cout << "  FAIL criteria 6: j=" << j
+                     << " (slope, |dH/dy|=" << fixed << setprecision(4) << fabs(dHdy)
+                     << "), num_BC=" << num_bc << " (expected >5)\n";
+            }
         }
     }
     fwall.close();
+
+
+
+
+
+
 
     // ====== Pass/Fail 判據匯總 ======
     printf("\n----- Pass/Fail Criteria -----\n");
@@ -268,9 +316,13 @@ void DiagnoseMetricTerms(int myid) {
     printf("[%s] Criteria 5: flat wall has exactly 5 BC directions\n",
            pass_flat_5dirs ? "PASS" : "FAIL");
 
-    // 判據 6：斜面有額外方向
-    printf("[%s] Criteria 6: slope wall has >5 BC directions\n",
-           pass_slope_extra ? "PASS" : "WARN(may be ok if slope is gentle)");
+    // 判據 6：斜面有額外方向（三態：PASS / FAIL / SKIP）
+    if (found_any_slope) {
+        printf("[%s] Criteria 6: slope wall has >5 BC directions\n",
+               pass_slope_extra ? "PASS" : "FAIL");
+    } else {
+        printf("[SKIP] Criteria 6: no significant slope found (|dH/dy| > 0.1)\n");
+    }
 
     printf("\nDiagnostic files written:\n");
     printf("  gilbm_metrics.dat           — full field metric terms\n");
