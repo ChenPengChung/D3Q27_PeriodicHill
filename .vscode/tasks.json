@@ -238,6 +238,66 @@
                                          ]
                   },
                   {
+                      "label":  "Compile Only (.87)",
+                      "type":  "process",
+                      "command":  "C:\\Program Files\\PuTTY\\plink.exe",
+                      "args":  [
+                                   "-ssh",
+                                   "-pw",
+                                   "1256",
+                                   "-batch",
+                                   "chenpengchung@140.114.58.87",
+                                   "ssh cfdlab-ib${input:nodeFor87} \u0027cd /home/chenpengchung/D3Q27_PeriodicHill \u0026\u0026 nvcc main.cu -arch=sm_35 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out\u0027"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "Run 4GPU (.87)",
+                      "type":  "process",
+                      "command":  "C:\\Program Files\\PuTTY\\plink.exe",
+                      "args":  [
+                                   "-ssh",
+                                   "-pw",
+                                   "1256",
+                                   "-batch",
+                                   "chenpengchung@140.114.58.87",
+                                   "ssh cfdlab-ib${input:nodeFor87} \u0027cd /home/chenpengchung/D3Q27_PeriodicHill \u0026\u0026 nohup mpirun -np 4 ./a.out \u003e log$(date +%Y%m%d) 2\u003e\u00261 \u0026\u0027"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "Run 8GPU (.87)",
+                      "type":  "process",
+                      "command":  "C:\\Program Files\\PuTTY\\plink.exe",
+                      "args":  [
+                                   "-ssh",
+                                   "-pw",
+                                   "1256",
+                                   "-batch",
+                                   "chenpengchung@140.114.58.87",
+                                   "ssh cfdlab-ib${input:nodeFor87} \u0027cd /home/chenpengchung/D3Q27_PeriodicHill \u0026\u0026 nohup mpirun -np 8 ./a.out \u003e log$(date +%Y%m%d) 2\u003e\u00261 \u0026\u0027"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
                       "label":  "Check Running Jobs (.87)",
                       "type":  "process",
                       "command":  "C:\\Program Files\\PuTTY\\plink.exe",
@@ -542,6 +602,54 @@
                       "args":  [
                                    "-lc",
                                    "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 run \u0027${input:macServerCombo}\u0027 \u0027${input:macGpuCount}\u0027"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Compile Only",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 compile \u0027${input:macServerCombo}\u0027"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Run (4GPU)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 execute \u0027${input:macServerCombo}\u0027 4"
+                               ],
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared"
+                                       },
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "[Mac] Run (8GPU)",
+                      "type":  "process",
+                      "command":  "bash",
+                      "args":  [
+                                   "-lc",
+                                   "\u0027${workspaceFolder}/.vscode/Zsh_mainsystem.sh\u0027 execute \u0027${input:macServerCombo}\u0027 8"
                                ],
                       "presentation":  {
                                            "reveal":  "always",

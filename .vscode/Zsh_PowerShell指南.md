@@ -458,7 +458,10 @@ nohup mpirun -np 4 ./a.out > log$(date +%Y%m%d) 2>&1 &
 |--------|-----------|------|
 | `Ctrl+Alt+F` | `Ctrl+Option(⌥)+F` | 切換節點（QuickPick 搜尋欄選單） |
 | `Ctrl+Alt+G` | `Ctrl+Option(⌥)+G` | 重新連線（QuickPick 搜尋欄選單） |
-| `Ctrl+Shift+B` | `Cmd+Shift+B` | 編譯 + 執行 |
+| `Ctrl+Shift+B` | `Cmd+Shift+B` | 編譯 + 執行（選 GPU 數量） |
+| `Alt+5` | `Cmd+5` | **只編譯**（nvcc，不執行） |
+| `Alt+4` | `Cmd+4` | **執行 4 顆 GPU**（nohup mpirun -np 4，輸出 log 當日日期） |
+| `Alt+8` | `Cmd+8` | **執行 8 顆 GPU**（nohup mpirun -np 8，輸出 log 當日日期） |
 
 ### 跨平台通用任務
 

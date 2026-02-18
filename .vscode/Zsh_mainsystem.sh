@@ -2002,6 +2002,39 @@ function cmd_run() {
   run_on_node "$server" "$node" "$remote_cmd"
 }
 
+# ---- 拆分版：只編譯 ----
+function cmd_compile() {
+  local parsed
+  local server
+  local node
+  local remote_cmd
+
+  parsed="$(parse_combo "${1:-87:${CFDLAB_DEFAULT_NODE}}")"
+  server="${parsed%%:*}"
+  node="${parsed##*:}"
+
+  remote_cmd="cd ${CFDLAB_REMOTE_PATH} && nvcc main.cu -arch=${CFDLAB_NVCC_ARCH} -I${CFDLAB_MPI_INCLUDE} -L${CFDLAB_MPI_LIB} -lmpi -o a.out"
+  run_on_node "$server" "$node" "$remote_cmd"
+}
+
+# ---- 拆分版：只執行（需先編譯）----
+function cmd_execute() {
+  local parsed
+  local server
+  local node
+  local gpu_count
+  local remote_cmd
+
+  parsed="$(parse_combo "${1:-87:${CFDLAB_DEFAULT_NODE}}")"
+  server="${parsed%%:*}"
+  node="${parsed##*:}"
+  gpu_count="${2:-$CFDLAB_DEFAULT_GPU_COUNT}"
+  [[ "$gpu_count" =~ ^[0-9]+$ ]] || die "gpu_count must be an integer"
+
+  remote_cmd="cd ${CFDLAB_REMOTE_PATH} && nohup mpirun -np ${gpu_count} ./a.out > log\$(date +%Y%m%d) 2>&1 &"
+  run_on_node "$server" "$node" "$remote_cmd"
+}
+
 function cmd_jobs() {
   local parsed
   local server
@@ -2772,6 +2805,8 @@ function main() {
     issh) cmd_issh "$@" ;;
     issh-quick) cmd_issh_quick "$@" ;;
     run) cmd_run "$@" ;;
+    compile) cmd_compile "$@" ;;
+    execute) cmd_execute "$@" ;;
     jobs) cmd_jobs "$@" ;;
     kill) cmd_kill "$@" ;;
     gpus) cmd_gpus ;;
