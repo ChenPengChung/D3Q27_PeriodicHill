@@ -54,6 +54,10 @@ double *dk_dz_h, *dk_dz_d;   // ∂ζ/∂z = 1/(∂z/∂k)
 double *dk_dy_h, *dk_dy_d;   // ∂ζ/∂y = -(∂z/∂j)/(dy·∂z/∂k)
 double *delta_zeta_h, *delta_zeta_d;  // GILBM RK2 ζ-direction displacement [19*NYD6*NZ6]
 double delta_xi_h[19];               // GILBM ξ-direction displacement (constant for uniform y)
+
+// Phase 3: Imamura global time step — runtime parameters (extern'd in variables.h)
+double dt;
+double tau;
 //
 // 逆變速度在 GPU kernel 中即時計算（不需全場存儲）：
 //   ẽ_α_η = e[α][0] / dx           (常數)
@@ -154,26 +158,50 @@ int main(int argc, char *argv[])
     // GILBM Phase 1: 計算各 rank 的區域度量項
     ComputeMetricTerms(dk_dz_h, dk_dy_h, z_h, y_h, NYD6, NZ6);
 
-    // GILBM Phase 1.5: 預計算 δξ (常數) 和 δζ (RK2 空間變化) 位移
+    // Phase 3: Imamura's global time step (Eq. 22)
+    // Compute ν_target from original parameters: tau_orig=0.6833, dt_orig=minSize
+    double niu_target = (0.6833 - 0.5) / 3.0 * (double)minSize;
+    double dx_val = LX / (double)(NX6 - 7);
+    double dy_val = LY / (double)(NY6 - 7);
+
+    dt = ComputeGlobalTimeStep(dk_dz_h, dk_dy_h, dx_val, dy_val, NYD6, NZ6, CFL, myid);
+    tau = 0.5 + 3.0 * niu_target / dt;
+
+    if (myid == 0) {
+        printf("Phase 3: Imamura CFL time step\n");
+        printf("  dt  = %.6e (was minSize = %.6e, ratio = %.4f)\n",
+               dt, (double)minSize, dt / (double)minSize);
+        printf("  tau = %.6f (was 0.6833)\n", tau);
+        printf("  niu = %.6e (target = %.6e, match = %s)\n",
+               niu, niu_target, fabs(niu - niu_target) < 1e-15 ? "YES" : "NO");
+        printf("  Re  = %.1f, Uref = %.6e\n", (double)Re, Uref);
+    }
+
+    // Precompute delta_eta (η-direction, constant, like delta_xi)
+    double delta_eta_h[19];
+    PrecomputeGILBM_DeltaEta(delta_eta_h, dx_val, dt);
+
+    // GILBM Phase 1.5: 預計算 δξ (常數) 和 δζ (RK2 空間變化) 位移 (using runtime dt)
     PrecomputeGILBM_DeltaXiZeta(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, NYD6, NZ6);
 
-    // Phase 2: CFL validation — departure point safety check
+    // Phase 2: CFL validation — departure point safety check (should now PASS)
     bool cfl_ok = ValidateDepartureCFL(delta_zeta_h, dk_dy_h, dk_dz_h, NYD6, NZ6, myid);
     if (!cfl_ok && myid == 0) {
         fprintf(stderr,
-            "[WARNING] CFL_zeta >= 1.0 detected at first interior node.\n"
-            "  Departure points cross into solid region at wall.\n"
-            "  Remedy: decouple dt from minSize (dt = alpha*minSize, alpha < 3/4)\n"
-            "  or extend C-E BC to k=3 for violating directions.\n");
+            "[WARNING] CFL_zeta >= 1.0 still detected after Imamura time step.\n"
+            "  This should not happen — check ComputeGlobalTimeStep logic.\n");
     }
 
-    // 拷貝度量項、delta_zeta、delta_xi 到 GPU
+    // 拷貝度量項、delta 陣列、runtime 參數到 GPU
     CHECK_CUDA( cudaMemcpy(dk_dz_d,   dk_dz_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaMemcpy(dk_dy_d,   dk_dy_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaMemcpy(delta_zeta_d, delta_zeta_h, 19*NYD6*NZ6*sizeof(double),   cudaMemcpyHostToDevice) );
-    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_xi, delta_xi_h, 19*sizeof(double)) );
+    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_xi,  delta_xi_h,  19*sizeof(double)) );
+    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_eta, delta_eta_h, 19*sizeof(double)) );
+    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_dt,  &dt,  sizeof(double)) );
+    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_tau, &tau, sizeof(double)) );
 
-    if (myid == 0) printf("GILBM: delta_xi (__constant__[19]) + delta_zeta (field) precomputed and copied to GPU.\n");
+    if (myid == 0) printf("GILBM: dt/tau/delta_eta/delta_xi (__constant__) + delta_zeta (field) copied to GPU.\n");
 
     if ( INIT == 0 ) {
         printf("Initializing by default function...\n");

@@ -130,6 +130,122 @@ void PrecomputeGILBM_DeltaXiZeta(
     PrecomputeGILBM_DeltaZeta(delta_zeta_h, dk_dz_h, dk_dy_h, NYD6_local, NZ6_local);
 }
 
+// ============================================================================
+// Phase 3: Imamura's Global Time Step (Imamura 2005 Eq. 22)
+// ============================================================================
+// Δt_g = λ · min_{i,α,j,k} [ 1 / |c̃_{i,α}|_{j,k} ]
+//      = λ / max_{i,α,j,k} |c̃_{i,α}|_{j,k}
+//
+// where c̃ is the contravariant velocity in each computational direction:
+//   η: |c̃^η_α| = |e_x[α]| / dx          (uniform x)
+//   ξ: |c̃^ξ_α| = |e_y[α]| / dy          (uniform y)
+//   ζ: |c̃^ζ_α| = |e_y·dk_dy + e_z·dk_dz| (space-varying)
+//
+// This ensures CFL < 1 in ALL directions at ALL grid points.
+double ComputeGlobalTimeStep(
+    const double *dk_dz_h,
+    const double *dk_dy_h,
+    double dx_val,
+    double dy_val,
+    int NYD6_local,
+    int NZ6_local,
+    double cfl_lambda,
+    int myid_local
+) {
+    double e[19][3] = {
+        {0,0,0},
+        {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
+        {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
+        {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
+        {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
+    };
+
+    double max_c_tilde = 0.0;
+    int max_dir = -1;  // 0=eta, 1=xi, 2=zeta
+    int max_alpha = -1, max_j = -1, max_k = -1;
+
+    // η-direction (uniform x): max|c̃^η| = 1/dx (for |e_x|=1 directions)
+    double c_eta = 1.0 / dx_val;
+    if (c_eta > max_c_tilde) {
+        max_c_tilde = c_eta;
+        max_dir = 0; max_alpha = 1; max_j = -1; max_k = -1;
+    }
+
+    // ξ-direction (uniform y): max|c̃^ξ| = 1/dy (for |e_y|=1 directions)
+    double c_xi = 1.0 / dy_val;
+    if (c_xi > max_c_tilde) {
+        max_c_tilde = c_xi;
+        max_dir = 1; max_alpha = 3; max_j = -1; max_k = -1;
+    }
+
+    // ζ-direction (non-uniform z): scan all interior fluid points
+    for (int j = 3; j < NYD6_local - 4; j++) {
+        for (int k = 3; k < NZ6_local - 3; k++) {
+            int idx_jk = j * NZ6_local + k;
+            double dk_dy_val = dk_dy_h[idx_jk];
+            double dk_dz_val = dk_dz_h[idx_jk];
+
+            for (int alpha = 1; alpha < 19; alpha++) {
+                if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
+
+                double c_zeta = fabs(e[alpha][1] * dk_dy_val
+                                   + e[alpha][2] * dk_dz_val);
+                if (c_zeta > max_c_tilde) {
+                    max_c_tilde = c_zeta;
+                    max_dir = 2; max_alpha = alpha;
+                    max_j = j; max_k = k;
+                }
+            }
+        }
+    }
+
+    double dt_g = cfl_lambda / max_c_tilde;
+
+    if (myid_local == 0) {
+        const char *dir_name[] = {"eta (x)", "xi (y)", "zeta (z)"};
+        printf("\n=============================================================\n");
+        printf("  Phase 3: Imamura Global Time Step (Eq. 22)\n");
+        printf("  CFL lambda = %.4f\n", cfl_lambda);
+        printf("=============================================================\n");
+        printf("  max|c_tilde| = %.6f in %s direction\n",
+               max_c_tilde, dir_name[max_dir]);
+        if (max_dir == 2) {
+            printf("    at alpha=%d (e_y=%+.0f, e_z=%+.0f), j=%d, k=%d\n",
+                   max_alpha, e[max_alpha][1], e[max_alpha][2], max_j, max_k);
+        }
+        printf("  dt_g = lambda / max|c_tilde| = %.6e\n", dt_g);
+        printf("  dt_old = minSize = %.6e\n", (double)minSize);
+        printf("  ratio dt_g / minSize = %.4f\n", dt_g / (double)minSize);
+        printf("  Speedup cost: %.1fx more timesteps per physical time\n",
+               (double)minSize / dt_g);
+        printf("=============================================================\n\n");
+    }
+
+    return dt_g;
+}
+
+// ============================================================================
+// PrecomputeGILBM_DeltaEta: η-direction displacement (constant for uniform x)
+// ============================================================================
+// δη[α] = dt · e_x[α] / dx   (constant per alpha, like delta_xi)
+void PrecomputeGILBM_DeltaEta(
+    double *delta_eta_h,   // 輸出: [19]，η 方向位移量
+    double dx_val,         // 輸入: uniform grid spacing dx = LX/(NX6-7)
+    double dt_val          // 輸入: runtime time step
+) {
+    double e_x[19] = {
+        0,
+        1, -1, 0, 0, 0, 0,
+        1, -1, 1, -1,
+        1, -1, 1, -1,
+        0, 0, 0, 0
+    };
+
+    for (int alpha = 0; alpha < 19; alpha++) {
+        delta_eta_h[alpha] = dt_val * e_x[alpha] / dx_val;
+    }
+}
+
 #endif
 /*
 在曲線座標下的遷移距離計算應該要分開編號，分裏量計算，或者創建二維度陣咧儲存

@@ -19,8 +19,13 @@ __constant__ double GILBM_e[19][3] = {
     {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
 };
 
-// Precomputed ξ-direction displacement: δξ[α] = dt · e_y[α] / dy (constant for uniform y)
-__constant__ double GILBM_delta_xi[19];
+// Phase 3: Runtime dt and tau from Imamura global time step
+__constant__ double GILBM_dt;
+__constant__ double GILBM_tau;
+
+// Precomputed displacement arrays (constant for uniform x and y)
+__constant__ double GILBM_delta_eta[19]; // δη[α] = dt · e_x[α] / dx
+__constant__ double GILBM_delta_xi[19];  // δξ[α] = dt · e_y[α] / dy
 
 __constant__ double GILBM_W[19] = {
     1.0/3.0,
@@ -84,6 +89,9 @@ __global__ void stream_collide_GILBM_Buffer(
     // Grid spacings (uniform in i and j)
     const double dx_val = LX / (double)(NX6 - 7);
     const double dy_val = LY / (double)(NY6 - 7);
+    // Phase 3: runtime dt and tau from __constant__ memory
+    const double dt = GILBM_dt;
+    const double tau = GILBM_tau;
     const double omega = 1.0 / tau;
 
     // MRT variables
@@ -175,7 +183,7 @@ __global__ void stream_collide_GILBM_Buffer(
                 dk_dy_val, dk_dz_val, omega, dt);
         } else {
             // GILBM interpolation streaming
-            double delta_i = dt * GILBM_e[alpha][0] / dx_val;
+            double delta_i = GILBM_delta_eta[alpha];
             double delta_xi_val = GILBM_delta_xi[alpha];
             double delta_zeta_val = delta_zeta_d[alpha * NYD6 * NZ6 + idx_jk];
 
@@ -285,6 +293,9 @@ __global__ void stream_collide_GILBM(
 
     const double dx_val = LX / (double)(NX6 - 7);
     const double dy_val = LY / (double)(NY6 - 7);
+    // Phase 3: runtime dt and tau from __constant__ memory
+    const double dt = GILBM_dt;
+    const double tau = GILBM_tau;
     const double omega = 1.0 / tau;
 
     double F0_in, F1_in, F2_in, F3_in, F4_in, F5_in, F6_in, F7_in, F8_in, F9_in;
@@ -365,7 +376,7 @@ __global__ void stream_collide_GILBM(
                 du_x_dk, du_y_dk, du_z_dk,
                 dk_dy_val, dk_dz_val, omega, dt);
         } else {
-            double delta_i = dt * GILBM_e[alpha][0] / dx_val;
+            double delta_i = GILBM_delta_eta[alpha];
             double delta_xi_val = GILBM_delta_xi[alpha];
             double delta_zeta_val = delta_zeta_d[alpha * NYD6 * NZ6 + idx_jk];
 
