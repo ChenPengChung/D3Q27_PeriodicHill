@@ -127,7 +127,7 @@ void GenerateMesh_Z() {
         z_h[j*NZ6+(NZ6-3)] = (double)LZ;
 
         // Ghost z values (linear extrapolation, for difference stencils at k=2 and k=NZ6-3)
-        z_h[j*NZ6+1]       = 2.0 * z_h[j*NZ6+2] - z_h[j*NZ6+3];
+        z_h[j*NZ6+1]       = 2.0 * z_h[j*NZ6+2] - z_h[j*NZ6+3]; //透過線性外插取得bufferlayer 層的位置
         z_h[j*NZ6+(NZ6-2)] = 2.0 * z_h[j*NZ6+(NZ6-3)] - z_h[j*NZ6+(NZ6-4)];
     }
 

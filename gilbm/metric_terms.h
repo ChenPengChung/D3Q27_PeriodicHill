@@ -189,7 +189,7 @@ void DiagnoseMetricTerms(int myid) {
     int fail_count_slope = 0; // 統計判據 6 失敗點數
 
     for (int j = bfr ; j < NY6 - bfr - 1; j++) { //由左到右掃描
-        int k_wall = 2;  //壁面位置（k=2，對應 z=H(y)，wet-node on wall）
+        int k_wall = 2 ;  //壁面位置（k=2，對應 z=H(y)，wet-node on wall）
         int idx = j * NZ6 + k_wall;//計算空間最下面一排的計算點
         double Hy = HillFunction(y_g[j]);
         double dHdy = (HillFunction(y_g[j + 1]) - HillFunction(y_g[j - 1])) / (2.0 * dy);
@@ -239,9 +239,11 @@ void DiagnoseMetricTerms(int myid) {
         //   因此邊界條件方向數是固定且已知的
         // ============================================================================
         // 判據 5：平坦段應恰好 5 方向 {5, 11, 12, 15, 16}
+        double H_stencil_diff_c5 = fabs(HillFunction(y_g[j + 1]) - HillFunction(y_g[j - 1]));
         if (fabs(Hy) < 0.01 && fabs(dHdy) < 0.01
             && fabs(HillFunction(y_g[j - 1])) < 0.01
-            && fabs(HillFunction(y_g[j + 1])) < 0.01) { //排除山丘-平坦過渡帶（鄰居也必須平坦）
+            && fabs(HillFunction(y_g[j + 1])) < 0.01
+            && H_stencil_diff_c5 < 1e-6) { //排除山丘-平坦過渡帶（鄰居 H 差值必須接近零）
             if (num_bc != 5) {
                 pass_flat_5dirs = 0;
                 fail_count_flat++;
@@ -326,9 +328,11 @@ void DiagnoseMetricTerms(int myid) {
     for (int j = bfr; j < NY6 - bfr - 1; j++) {
         double Hy_c3 = HillFunction(y_g[j]);
         double dHdy_c3 = (HillFunction(y_g[j + 1]) - HillFunction(y_g[j - 1])) / (2.0 * dy);
+        double H_stencil_diff_c3 = fabs(HillFunction(y_g[j + 1]) - HillFunction(y_g[j - 1]));
         if (fabs(Hy_c3) < 0.01 && fabs(dHdy_c3) < 0.01
             && fabs(HillFunction(y_g[j - 1])) < 0.01
-            && fabs(HillFunction(y_g[j + 1])) < 0.01) {//排除山丘-平坦過渡帶（鄰居也必須平坦）
+            && fabs(HillFunction(y_g[j + 1])) < 0.01
+            && H_stencil_diff_c3 < 1e-6) {//排除山丘-平坦過渡帶（鄰居 H 差值必須接近零）
             for (int k = 2; k < NZ6 - 2; k++) {            // 擴展至壁面
                 if (fabs(dk_dy_g[j * NZ6 + k]) > 0.1) {
                     pass3 = 0;
@@ -399,7 +403,7 @@ void DiagnoseMetricTerms(int myid) {
 
 //Pass1: 驗證dk_dz計算正確 ： 全場dk_dz >0（含壁面 k=2 和 k=NZ6-3）
 //Pass2: 驗證dk_dz計算正確 ： k=2壁面 dz_dk = minSize/2（forward difference 解析值）
-//Pass3: 驗證dk_dy計算正確 ： 利用雙重for迴圈計算平坦區段的dk_dy都等於0
+//Pass3: 驗證dk_dy計算正確 ： 利用雙重for迴圈計算平坦區段的j值的dk_dy都等於0 
 //Pass4: 驗證dk_dy計算正確 ： 取最陡峭的j列的垂直中點 ，檢查該點的dk_dy是否與山坡斜率反號
 //取k=2計算空間下邊界壁面計算點做判斷
 //Pass5: 驗證e_alpha_k的計算正確性：下邊界&&平坦區段：需要做邊界處理的編號個數 = 5
