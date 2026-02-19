@@ -230,7 +230,9 @@ void DiagnoseMetricTerms(int myid) {
         //   因此邊界條件方向數是固定且已知的
         // ============================================================================
         // 判據 5：平坦段應恰好 5 方向 {5, 11, 12, 15, 16}
-        if (fabs(Hy) < 0.01 && fabs(dHdy) < 0.01) { //平坦區段判斷條件
+        if (fabs(Hy) < 0.01 && fabs(dHdy) < 0.01
+            && fabs(HillFunction(y_g[j - 1])) < 0.01
+            && fabs(HillFunction(y_g[j + 1])) < 0.01) { //排除山丘-平坦過渡帶（鄰居也必須平坦）
             if (num_bc != 5) {
                 pass_flat_5dirs = 0;
                 fail_count_flat++;
@@ -289,20 +291,26 @@ void DiagnoseMetricTerms(int myid) {
     }
     cout << "[" << (pass1 ? "PASS" : "FAIL") << "] Criteria 1: dk_dz > 0 everywhere\n";
 
-    // 判據 2:  下壁面附近 dz_dk ≈ minSize  = discrete jacobian \frac{z_h[idx_xi+1] - z_h[idx_xi應義-1]}{2}
+    // 判據 2: 下壁面 dz_dk 與 tanh 解析值一致（10% 容差）
+    // dz_dk|_(k=3) = (z[k=4] - z[k=2]) / 2 = (minSize/2 + dx_j) / 2
+    // 其中 dx_j = minSize * total_j / total_0（tanh 拉伸的第一個完整格距隨 total 線性縮放）
     int pass2 = 1;
+    double total_0 = LZ - HillFunction(0.0) - minSize;
     for (int j = bfr; j < NY6 - bfr; j++) {
-        double dz_dk_wall = 1.0 / dk_dz_g[j * NZ6 + bfr];//第四個度量係數在下邊界的判斷
-        double rel_err = fabs(dz_dk_wall - minSize) / minSize;
+        double total_j = LZ - HillFunction(y_g[j]) - minSize;
+        double dx_j = minSize * total_j / total_0;            // 第一個完整格距
+        double expected_dz_dk = (minSize / 2.0 + dx_j) / 2.0; // 中心差分期望值
+        double dz_dk_wall = 1.0 / dk_dz_g[j * NZ6 + bfr];
+        double rel_err = fabs(dz_dk_wall - expected_dz_dk) / expected_dz_dk;
         if (rel_err > 0.1) {
             pass2 = 0;
             cout << "  FAIL: j=" << j
                  << ", dz_dk[wall]=" << scientific << setprecision(6) << dz_dk_wall
-                 << ", minSize=" << minSize
+                 << ", expected=" << expected_dz_dk
                  << ", rel_err=" << fixed << setprecision(2) << rel_err * 100 << "%\n";
         }
     }
-    cout << "[" << (pass2 ? "PASS" : "FAIL") << "] Criteria 2: dz_dk(wall) ≈ minSize (within 10%)\n";
+    cout << "[" << (pass2 ? "PASS" : "FAIL") << "] Criteria 2: dz_dk(wall) matches tanh analytical value (within 10%)\n";
 
     // 判據 3: 平坦段 dk_dy ≈ 0（掃描所有平坦 j，與判據 5 同條件）
     //  由於山坡曲率存在所引起的度量係數，在平坦區域應趨近於零
@@ -310,7 +318,9 @@ void DiagnoseMetricTerms(int myid) {
     for (int j = bfr; j < NY6 - bfr - 1; j++) {
         double Hy_c3 = HillFunction(y_g[j]);
         double dHdy_c3 = (HillFunction(y_g[j + 1]) - HillFunction(y_g[j - 1])) / (2.0 * dy);
-        if (fabs(Hy_c3) < 0.01 && fabs(dHdy_c3) < 0.01) {//如果在平探區域內部// 同判據 5 的平坦條件
+        if (fabs(Hy_c3) < 0.01 && fabs(dHdy_c3) < 0.01
+            && fabs(HillFunction(y_g[j - 1])) < 0.01
+            && fabs(HillFunction(y_g[j + 1])) < 0.01) {//排除山丘-平坦過渡帶（鄰居也必須平坦）
             for (int k = bfr; k < NZ6 - bfr; k++) {
                 if (fabs(dk_dy_g[j * NZ6 + k]) > 0.1) {
                     pass3 = 0;
@@ -380,7 +390,7 @@ void DiagnoseMetricTerms(int myid) {
 #endif
 
 //Pass1: 驗證dk_dz計算正確 ： 全場dk_dz >0 
-//Pass2: 驗證dk_dz計算正確 ： k = 3處的dk_dz應該等於minSize 
+//Pass2: 驗證dk_dz計算正確 ： k = 3處的dz_dk應與tanh解析值一致（j-dependent期望值）
 //Pass3: 驗證dk_dy計算正確 ： 利用雙重for迴圈計算平坦區段的dk_dy都等於0
 //Pass4: 驗證dk_dy計算正確 ： 取最陡峭的j列的垂直中點 ，檢查該點的dk_dy是否與山坡斜率反號：
 //取k=3計算空間下邊界計算點做判斷
