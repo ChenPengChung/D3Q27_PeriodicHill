@@ -111,6 +111,7 @@ int itag_f6[23] = {400,401,402,403,404,405,406,407,408,409,410,411,412,413,414,4
 #include "initialization.h"
 #include "gilbm/metric_terms.h"
 #include "gilbm/precompute.h"
+#include "gilbm/diagnostic_gilbm.h"
 #include "communication.h"
 #include "monitor.h"
 #include "statistics.h"
@@ -170,6 +171,9 @@ int main(int argc, char *argv[])
         result_readbin_velocityandf();
         if( TBINIT && TBSWITCH ) statistics_readbin_stress();
     }
+
+    // Phase 1 acceptance diagnostic: delta_k range, interpolation, C-E BC
+    DiagnoseGILBM_Phase1(delta_k_h, dk_dz_h, dk_dy_h, fh_p, NYD6, NZ6, myid);
 
     SendDataToGPU();
 

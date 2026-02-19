@@ -39,8 +39,8 @@ void PrecomputeGILBM_DeltaK(
         // e[alpha][1] = e_y, e[alpha][2] = e_z
         if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
 
-        for (int j = 0; j < NYD6_local; j++) {
-            // k 方向僅遍歷內部節點（避開邊界各留 2 層）
+        for (int j = 3 ; j < NYD6_local -4 ; j++) { //修改：y方向應該跳過BufferLayer
+            // k 方向僅遍歷內部節點（避開邊界各留 2 層//k方向buffer layer只有下兩層上兩層
             for (int k = 2; k < NZ6_local - 2; k++) {
                 int idx_jk = j * NZ6_local + k;
 
@@ -87,3 +87,5 @@ void PrecomputeGILBM_DeltaK(
 }
 
 #endif
+
+提出異議：你的遷移前計算點應該分成\xi分量以及\zeta分量計算，這樣在做內插時，才可以配合函數計算，可以直接套用函數是，來計算垂直方向剋插全重陣列：
