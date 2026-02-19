@@ -157,6 +157,16 @@ int main(int argc, char *argv[])
     // GILBM Phase 1.5: 預計算 δξ (常數) 和 δζ (RK2 空間變化) 位移
     PrecomputeGILBM_DeltaXiZeta(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, NYD6, NZ6);
 
+    // Phase 2: CFL validation — departure point safety check
+    bool cfl_ok = ValidateDepartureCFL(delta_zeta_h, dk_dy_h, dk_dz_h, NYD6, NZ6, myid);
+    if (!cfl_ok && myid == 0) {
+        fprintf(stderr,
+            "[WARNING] CFL_zeta >= 1.0 detected at first interior node.\n"
+            "  Departure points cross into solid region at wall.\n"
+            "  Remedy: decouple dt from minSize (dt = alpha*minSize, alpha < 3/4)\n"
+            "  or extend C-E BC to k=3 for violating directions.\n");
+    }
+
     // 拷貝度量項、delta_zeta、delta_xi 到 GPU
     CHECK_CUDA( cudaMemcpy(dk_dz_d,   dk_dz_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaMemcpy(dk_dy_d,   dk_dy_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );

@@ -310,4 +310,202 @@ void DiagnoseGILBM_Phase1(
     printf("=============================================================\n\n");
 }
 
+// ==============================================================================
+// Phase 2: Departure Point CFL Validation
+// ==============================================================================
+// Checks whether |δζ| < 1 at first interior nodes k=3 (bottom) and k=NZ6-4 (top).
+// In our GILBM framework ζ = k (integer index), so Δζ = 1 between adjacent points.
+// CFL_ζ = |δζ| / 1 = |δζ|.
+// If CFL_ζ ≥ 1.0, the departure point crosses into the solid/ghost region.
+//
+// Mathematical background:
+//   tanhFunction(L, minSize, a, j=0, N) = minSize/2  (structural identity)
+//   → z[k=3] - z[k=2] = minSize/2
+//   → dz_dk(k=3) = (z[k=4]-z[k=2])/2 = 3·minSize/4  (central difference)
+//   → dk_dz(k=3) = 4/(3·minSize)
+//   → CFL_ζ = dt · dk_dz = minSize · 4/(3·minSize) = 4/3 ≈ 1.333
+//   This is INDEPENDENT of CFL parameter or NZ — it's structural.
+
+bool ValidateDepartureCFL(
+    const double *delta_zeta_h,  // [19*NYD6*NZ6] precomputed RK2 displacement
+    const double *dk_dy_h,       // [NYD6*NZ6] metric terms
+    const double *dk_dz_h,       // [NYD6*NZ6] metric terms
+    int NYD6_local,
+    int NZ6_local,
+    int myid_local
+) {
+    if (myid_local != 0) return true;
+
+    double e[19][3] = {
+        {0,0,0},
+        {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
+        {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
+        {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
+        {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
+    };
+
+    int sz = NYD6_local * NZ6_local;
+    bool valid = true;
+
+    printf("\n");
+    printf("=============================================================\n");
+    printf("  Phase 2: Departure Point CFL Validation (Rank 0)\n");
+    printf("  dt=%.6e, minSize=%.6e, NZ6=%d, NYD6=%d\n",
+           dt, (double)minSize, NZ6_local, NYD6_local);
+    printf("  Theoretical CFL at flat floor: dt·dk_dz(k=3) = 4/3 ≈ 1.333\n");
+    printf("=============================================================\n");
+
+    // ====== Bottom wall: first interior k=3 ======
+    printf("\n[Bottom Wall] CFL check at k=3 (first interior, k=2 is wall)\n");
+
+    double bot_raw_max = 0.0, bot_eff_max = 0.0;
+    int bot_raw_j = -1, bot_raw_a = -1;
+    int bot_eff_j = -1, bot_eff_a = -1;
+    int bot_violations = 0;
+
+    for (int j = 3; j < NYD6_local - 4; j++) {
+        int idx3 = j * NZ6_local + 3;
+        double dk_dy_val = dk_dy_h[idx3];
+        double dk_dz_val = dk_dz_h[idx3];
+
+        for (int alpha = 1; alpha < 19; alpha++) {
+            if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
+
+            // Raw CFL: from metric terms at current point (no RK2)
+            double e_tilde_zeta = e[alpha][1] * dk_dy_val + e[alpha][2] * dk_dz_val;
+            double raw_cfl = fabs(e_tilde_zeta) * dt;
+
+            // Effective CFL: from precomputed delta_zeta (with RK2 midpoint)
+            double eff_cfl = fabs(delta_zeta_h[alpha * sz + idx3]);
+
+            if (raw_cfl > bot_raw_max) {
+                bot_raw_max = raw_cfl; bot_raw_j = j; bot_raw_a = alpha;
+            }
+            if (eff_cfl > bot_eff_max) {
+                bot_eff_max = eff_cfl; bot_eff_j = j; bot_eff_a = alpha;
+            }
+
+            if (eff_cfl >= 1.0) {
+                bot_violations++;
+                if (bot_violations <= 5) {
+                    printf("  [VIOLATION] j=%d, alpha=%2d (e_y=%+.0f,e_z=%+.0f): "
+                           "CFL_raw=%.4f, CFL_eff=%.4f, delta_zeta=%+.6f\n",
+                           j, alpha, e[alpha][1], e[alpha][2],
+                           raw_cfl, eff_cfl, delta_zeta_h[alpha * sz + idx3]);
+                }
+            }
+        }
+    }
+    if (bot_violations > 5) {
+        printf("  ... and %d more violations (total: %d)\n",
+               bot_violations - 5, bot_violations);
+    }
+
+    printf("\n  Max raw  CFL (metric-based): %.6f at j=%d, alpha=%d\n",
+           bot_raw_max, bot_raw_j, bot_raw_a);
+    printf("  Max eff  CFL (RK2 delta_z):  %.6f at j=%d, alpha=%d\n",
+           bot_eff_max, bot_eff_j, bot_eff_a);
+    printf("  RK2 correction: %.2e (raw - eff at worst)\n",
+           bot_raw_max - bot_eff_max);
+
+    // ====== Top wall: first interior k=NZ6-4 ======
+    int k_top = NZ6_local - 4;
+    printf("\n[Top Wall] CFL check at k=%d (first interior, k=%d is wall)\n",
+           k_top, NZ6_local - 3);
+
+    double top_raw_max = 0.0, top_eff_max = 0.0;
+    int top_raw_j = -1, top_raw_a = -1;
+    int top_eff_j = -1, top_eff_a = -1;
+    int top_violations = 0;
+
+    for (int j = 3; j < NYD6_local - 4; j++) {
+        int idx_top = j * NZ6_local + k_top;
+        double dk_dy_val = dk_dy_h[idx_top];
+        double dk_dz_val = dk_dz_h[idx_top];
+
+        for (int alpha = 1; alpha < 19; alpha++) {
+            if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
+
+            double e_tilde_zeta = e[alpha][1] * dk_dy_val + e[alpha][2] * dk_dz_val;
+            double raw_cfl = fabs(e_tilde_zeta) * dt;
+            double eff_cfl = fabs(delta_zeta_h[alpha * sz + idx_top]);
+
+            if (raw_cfl > top_raw_max) {
+                top_raw_max = raw_cfl; top_raw_j = j; top_raw_a = alpha;
+            }
+            if (eff_cfl > top_eff_max) {
+                top_eff_max = eff_cfl; top_eff_j = j; top_eff_a = alpha;
+            }
+
+            if (eff_cfl >= 1.0) {
+                top_violations++;
+                if (top_violations <= 5) {
+                    printf("  [VIOLATION] j=%d, alpha=%2d (e_y=%+.0f,e_z=%+.0f): "
+                           "CFL_raw=%.4f, CFL_eff=%.4f, delta_zeta=%+.6f\n",
+                           j, alpha, e[alpha][1], e[alpha][2],
+                           raw_cfl, eff_cfl, delta_zeta_h[alpha * sz + idx_top]);
+                }
+            }
+        }
+    }
+    if (top_violations > 5) {
+        printf("  ... and %d more violations (total: %d)\n",
+               top_violations - 5, top_violations);
+    }
+
+    printf("\n  Max raw  CFL (metric-based): %.6f at j=%d, alpha=%d\n",
+           top_raw_max, top_raw_j, top_raw_a);
+    printf("  Max eff  CFL (RK2 delta_z):  %.6f at j=%d, alpha=%d\n",
+           top_eff_max, top_eff_j, top_eff_a);
+
+    // ====== Per-j profile (condensed) ======
+    printf("\n[Per-j CFL Profile] (every 4th j, bottom k=3)\n");
+    printf("  %5s  %12s  %12s  %6s\n", "j", "max_raw_CFL", "max_eff_CFL", "status");
+    for (int j = 3; j < NYD6_local - 4; j += 4) {
+        int idx3 = j * NZ6_local + 3;
+        double j_raw_max = 0.0, j_eff_max = 0.0;
+        for (int alpha = 1; alpha < 19; alpha++) {
+            if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
+            double e_tilde = e[alpha][1] * dk_dy_h[idx3] + e[alpha][2] * dk_dz_h[idx3];
+            double rc = fabs(e_tilde) * dt;
+            double ec = fabs(delta_zeta_h[alpha * sz + idx3]);
+            if (rc > j_raw_max) j_raw_max = rc;
+            if (ec > j_eff_max) j_eff_max = ec;
+        }
+        const char *status = j_eff_max < 0.8 ? "PASS" :
+                             (j_eff_max < 1.0 ? "WARN" : "FAIL");
+        printf("  %5d  %12.6f  %12.6f  %6s\n", j, j_raw_max, j_eff_max, status);
+    }
+
+    // ====== Summary ======
+    double overall_max = bot_eff_max > top_eff_max ? bot_eff_max : top_eff_max;
+    int total_violations = bot_violations + top_violations;
+
+    if (overall_max >= 1.0) valid = false;
+
+    printf("\n=============================================================\n");
+    printf("  Phase 2 CFL Summary:\n");
+    printf("  [Bottom] max CFL_zeta = %.4f at j=%d, alpha=%d  %s\n",
+           bot_eff_max, bot_eff_j, bot_eff_a,
+           bot_eff_max < 0.8 ? "PASS" : (bot_eff_max < 1.0 ? "WARNING" : "FAIL"));
+    printf("  [Top]    max CFL_zeta = %.4f at j=%d, alpha=%d  %s\n",
+           top_eff_max, top_eff_j, top_eff_a,
+           top_eff_max < 0.8 ? "PASS" : (top_eff_max < 1.0 ? "WARNING" : "FAIL"));
+    printf("  Total violations (CFL >= 1.0): %d\n", total_violations);
+
+    if (!valid) {
+        printf("\n  *** CFL VIOLATION DETECTED ***\n");
+        printf("  Root cause: tanhFunction(j=0) = minSize/2 → z[3]-z[2] = minSize/2\n");
+        printf("  With dt = minSize: CFL = dt · 4/(3·minSize) = 4/3 ≈ 1.333\n");
+        printf("  This is STRUCTURAL — independent of CFL parameter or NZ.\n");
+        printf("  Remedies:\n");
+        printf("    A. Decouple dt: dt = timeCFL * minSize (timeCFL < 3/4)\n");
+        printf("    B. Extend C-E BC to k=3 for violating directions\n");
+        printf("    C. Modify tanh stretching so z[3]-z[2] = minSize\n");
+    }
+    printf("=============================================================\n\n");
+
+    return valid;
+}
+
 #endif

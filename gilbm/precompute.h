@@ -133,8 +133,8 @@ void PrecomputeGILBM_DeltaXiZeta(
 #endif
 /*
 在曲線座標下的遷移距離計算應該要分開編號，分裏量計算，或者創建二維度陣咧儲存
-Delta[alpha][0=\eta] = dt*e_x[alpha] / dx
-Delta[alpha][1=\xi]  = dt*e_y[alpha] / dy
+Delta[alpha][0=\eta] = dt*e_x[alpha] / dx*minSIze
+Delta[alpha][1=\xi]  = dt*e_y[alpha] / dy*minSize
 Delta[alpha][2=\zeta][idx_xi] = 利用二階RK方法計算每個點不同，或許應該擴展陣陣列為每個空間計算點都存放一值
 \documentclass[12pt,a4paper]{article}
 
