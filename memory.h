@@ -78,22 +78,9 @@ void AllocateMemory() {
     nBytes = NYD6 * sizeof(double);
     AllocateHostArray(  nBytes, 4,  &y_h, &Ydep_h[0], &Ydep_h[1], &Ydep_h[2]);
     AllocateDeviceArray(nBytes, 4,  &y_d, &Ydep_d[0], &Ydep_d[1], &Ydep_d[2]);
-    for( int i = 0; i < 7; i++ ){
-        CHECK_CUDA( cudaMallocHost( (void**)&YPara0_h[i], nBytes ) );
-        CHECK_CUDA( cudaMallocHost( (void**)&YPara2_h[i], nBytes ) );
-        CHECK_CUDA( cudaMalloc( &YPara0_d[i], nBytes ) );
-        CHECK_CUDA( cudaMalloc( &YPara2_d[i], nBytes ) );
-    }
-
     nBytes = NX6 * sizeof(double);
     AllocateHostArray(  nBytes, 4,  &x_h, &Xdep_h[0], &Xdep_h[1], &Xdep_h[2]);
     AllocateDeviceArray(nBytes, 4,  &x_d, &Xdep_d[0], &Xdep_d[1], &Xdep_d[2]);
-    for( int i = 0; i < 7; i++ ){
-        CHECK_CUDA( cudaMallocHost( (void**)&XPara0_h[i], nBytes ) );
-        CHECK_CUDA( cudaMallocHost( (void**)&XPara2_h[i], nBytes ) );
-        CHECK_CUDA( cudaMalloc( &XPara0_d[i], nBytes ) );
-        CHECK_CUDA( cudaMalloc( &XPara2_d[i], nBytes ) );
-    }
 
     nBytes = NYD6 * NZ6 * sizeof(double);
     AllocateHostArray(  nBytes, 4,  &z_h, &Zdep_h[0], &Zdep_h[1], &Zdep_h[2]);
@@ -101,49 +88,10 @@ void AllocateMemory() {
     // GILBM 度量項：∂ζ/∂z 和 ∂ζ/∂y（與 z_h 同大小 [NYD6*NZ6]）
     AllocateHostArray(  nBytes, 2,  &dk_dz_h, &dk_dy_h);
     AllocateDeviceArray(nBytes, 2,  &dk_dz_d, &dk_dy_d);
-    for( int i = 0; i < 7; i++ ){
-        CHECK_CUDA( cudaMallocHost( (void**)&XiParaF3_h[i], nBytes ) );
-        CHECK_CUDA( cudaMallocHost( (void**)&XiParaF4_h[i], nBytes ) );
-        CHECK_CUDA( cudaMallocHost( (void**)&XiParaF5_h[i], nBytes ) );
-        CHECK_CUDA( cudaMallocHost( (void**)&XiParaF6_h[i], nBytes ) );
-        CHECK_CUDA( cudaMallocHost( (void**)&XiParaF15_h[i], nBytes ) );
-        CHECK_CUDA( cudaMallocHost( (void**)&XiParaF16_h[i], nBytes ) );
-        CHECK_CUDA( cudaMallocHost( (void**)&XiParaF17_h[i], nBytes ) );
-        CHECK_CUDA( cudaMallocHost( (void**)&XiParaF18_h[i], nBytes ) );
-
-        CHECK_CUDA( cudaMalloc( &XiParaF3_d[i], nBytes ) );
-        CHECK_CUDA( cudaMalloc( &XiParaF4_d[i], nBytes ) );
-        CHECK_CUDA( cudaMalloc( &XiParaF5_d[i], nBytes ) );
-        CHECK_CUDA( cudaMalloc( &XiParaF6_d[i], nBytes ) );
-        CHECK_CUDA( cudaMalloc( &XiParaF15_d[i], nBytes ) );
-        CHECK_CUDA( cudaMalloc( &XiParaF16_d[i], nBytes ) );
-        CHECK_CUDA( cudaMalloc( &XiParaF17_d[i], nBytes ) );
-        CHECK_CUDA( cudaMalloc( &XiParaF18_d[i], nBytes ) );
-    }
-    for( int i = 0; i < 5; i++ ){
-        CHECK_CUDA( cudaMallocHost( (void**)&ZSlopePara_h[i], nBytes ) );
-        CHECK_CUDA( cudaMalloc( &ZSlopePara_d[i], nBytes ) );
-    }
-
-    nBytes = 2 * NYD6 * sizeof(int);
-    AllocateHostArray(  nBytes,  4, &BFLReqF3_h, &BFLReqF4_h, &BFLReqF15_h, &BFLReqF16_h);
-    AllocateDeviceArray(nBytes,  4, &BFLReqF3_d, &BFLReqF4_d, &BFLReqF15_d, &BFLReqF16_d);
-
-    nBytes = 2 * NYD6 * sizeof(double);
-    AllocateHostArray(   nBytes, 4, &Q3_h, &Q4_h, &Q15_h, &Q16_h);
-    AllocateDeviceArray( nBytes, 4, &Q3_d, &Q4_d, &Q15_d, &Q16_d);
-
-    nBytes = 2 * NYD6 * sizeof(double);
-    for( int i = 0; i < 7; i++ ){
-        AllocateHostArray(  nBytes, 4, &XBFLParaF37_h[i], &XBFLParaF38_h[i],  &YBFLParaF378_h[i],  &XiBFLParaF378_h[i]);
-        AllocateHostArray(  nBytes, 4, &XBFLParaF49_h[i], &XBFLParaF410_h[i], &YBFLParaF4910_h[i], &XiBFLParaF4910_h[i]);
-        AllocateHostArray(  nBytes, 2, &YBFLParaF15_h[i], &XiBFLParaF15_h[i]);
-        AllocateHostArray(  nBytes, 2, &YBFLParaF16_h[i], &XiBFLParaF16_h[i]);
-        AllocateDeviceArray(nBytes, 4, &XBFLParaF37_d[i], &XBFLParaF38_d[i],  &YBFLParaF378_d[i],  &XiBFLParaF378_d[i]);
-        AllocateDeviceArray(nBytes, 4, &XBFLParaF49_d[i], &XBFLParaF410_d[i], &YBFLParaF4910_d[i], &XiBFLParaF4910_d[i]);
-        AllocateDeviceArray(nBytes, 2, &YBFLParaF15_d[i], &XiBFLParaF15_d[i]);
-        AllocateDeviceArray(nBytes, 2, &YBFLParaF16_d[i], &XiBFLParaF16_d[i]);
-    }
+    // GILBM 預計算逆變速度 RK2 位移 [19 * NYD6 * NZ6]
+    nBytes = 19 * NYD6 * NZ6 * sizeof(double);
+    AllocateHostArray(  nBytes, 1, &delta_k_h);
+    AllocateDeviceArray(nBytes, 1, &delta_k_d);
 
     nBytes = NZ6 * sizeof(double);
     CHECK_CUDA( cudaMallocHost( (void**)&xi_h, nBytes ) );
@@ -199,33 +147,12 @@ void FreeSource() {
     // GILBM 度量項
     FreeHostArray(  2,  dk_dz_h, dk_dy_h);
     FreeDeviceArray(2,  dk_dz_d, dk_dy_d);
+    FreeHostArray(  1,  delta_k_h);
+    FreeDeviceArray(1,  delta_k_d);
 
     for( int i = 0; i < 3; i++ ){
         FreeHostArray(  3,  Xdep_h[i], Ydep_h[i], Zdep_h[i]);
         FreeDeviceArray(3,  Xdep_d[i], Ydep_d[i], Zdep_d[i]);
-    }
-    for( int i = 0; i < 7; i++ ){
-        FreeHostArray(  4,  XPara0_h[i], XPara2_h[i], YPara0_h[i], YPara2_h[i]);
-        FreeDeviceArray(4,  XPara0_d[i], XPara2_d[i], YPara0_d[i], YPara2_d[i]);
-        FreeHostArray(  8,  XiParaF3_h[i], XiParaF4_h[i], XiParaF5_h[i], XiParaF6_h[i], XiParaF15_h[i], XiParaF16_h[i], XiParaF17_h[i], XiParaF18_h[i]);
-        FreeDeviceArray(8,  XiParaF3_d[i], XiParaF4_d[i], XiParaF5_d[i], XiParaF6_d[i], XiParaF15_d[i], XiParaF16_d[i], XiParaF17_d[i], XiParaF18_d[i]);
-    }
-    for( int i = 0; i < 5; i++ ){
-        CHECK_CUDA( cudaFreeHost( ZSlopePara_h[i] ) );
-        CHECK_CUDA( cudaFree( ZSlopePara_d[i] ) );
-    }
-    
-    FreeHostArray(  4, BFLReqF3_h, BFLReqF4_h, BFLReqF15_h, BFLReqF16_h);
-    FreeDeviceArray(4, BFLReqF3_d, BFLReqF4_d, BFLReqF15_d, BFLReqF16_d);
-    for( int i = 0; i < 7; i++ ){
-        FreeHostArray(  4, XBFLParaF37_h[i], XBFLParaF38_h[i],  YBFLParaF378_h[i],  XiBFLParaF378_h[i]);
-        FreeHostArray(  4, XBFLParaF49_h[i], XBFLParaF410_h[i], YBFLParaF4910_h[i], XiBFLParaF4910_h[i]);
-        FreeHostArray(  2, YBFLParaF15_h[i], XiBFLParaF15_h[i]);
-        FreeHostArray(  2, YBFLParaF16_h[i], XiBFLParaF16_h[i]);
-        FreeDeviceArray(4, XBFLParaF37_d[i], XBFLParaF38_d[i],   YBFLParaF378_d[i],  XiBFLParaF378_d[i]);
-        FreeDeviceArray(4, XBFLParaF49_d[i], XBFLParaF410_d[i], YBFLParaF4910_d[i], XiBFLParaF4910_d[i]);
-        FreeDeviceArray(2, YBFLParaF15_d[i], XiBFLParaF15_d[i]);
-        FreeDeviceArray(2, YBFLParaF16_d[i], XiBFLParaF16_d[i]);
     }
 
     CHECK_CUDA( cudaFreeHost( Ub_avg_h ) );

@@ -37,29 +37,9 @@ double  *x_h, *y_h, *z_h, *xi_h,
 double  *Xdep_h[3], *Ydep_h[3], *Zdep_h[3],
         *Xdep_d[3], *Ydep_d[3], *Zdep_d[3];
 
-//Variables for interpolation process
-double  *XPara0_h[7],    *XPara0_d[7],    *XPara2_h[7],    *XPara2_d[7],
-        *YPara0_h[7],    *YPara0_d[7],    *YPara2_h[7],    *YPara2_d[7],
-        *XiParaF3_h[7],  *XiParaF3_d[7],  *XiParaF4_h[7],  *XiParaF4_d[7],
-        *XiParaF5_h[7],  *XiParaF5_d[7],  *XiParaF6_h[7],  *XiParaF6_d[7],
-        *XiParaF15_h[7], *XiParaF15_d[7], *XiParaF16_h[7], *XiParaF16_d[7],
-        *XiParaF17_h[7], *XiParaF17_d[7], *XiParaF18_h[7], *XiParaF18_d[7];
+// ZSlopePara retained for MeanDerivatives kernel in statistics.h (TBSWITCH=0, dead path)
+double  *ZSlopePara_d[5];
 
-//Variables for BFL boundary condition
-//If BFL boundary condition is required. 1: yes, 0: no.
-int     *BFLReqF3_h,    *BFLReqF4_h,    *BFLReqF15_h,   *BFLReqF16_h,
-        *BFLReqF3_d,    *BFLReqF4_d,    *BFLReqF15_d,   *BFLReqF16_d;
-//Parameters of interpolation process.
-double  *XBFLParaF37_h[7],      *XBFLParaF38_h[7],      *YBFLParaF378_h[7],     *XiBFLParaF378_h[7],
-        *XBFLParaF49_h[7],      *XBFLParaF410_h[7],     *YBFLParaF4910_h[7],    *XiBFLParaF4910_h[7],
-        *YBFLParaF15_h[7],      *XiBFLParaF15_h[7],
-        *YBFLParaF16_h[7],      *XiBFLParaF16_h[7];
-double  *XBFLParaF37_d[7],      *XBFLParaF38_d[7],      *YBFLParaF378_d[7],     *XiBFLParaF378_d[7],
-        *XBFLParaF49_d[7],      *XBFLParaF410_d[7],     *YBFLParaF4910_d[7],    *XiBFLParaF4910_d[7],
-        *YBFLParaF15_d[7],      *XiBFLParaF15_d[7],
-        *YBFLParaF16_d[7],      *XiBFLParaF16_d[7];
-double  *ZSlopePara_h[5],
-        *ZSlopePara_d[5];
 
 
 //======== GILBM 度量項（Imamura 2005 左側元素）========
@@ -72,6 +52,7 @@ double  *ZSlopePara_h[5],
 // 只需 2 個空間變化的度量項（大小 [NYD6*NZ6]，與 z_h 相同）
 double *dk_dz_h, *dk_dz_d;   // ∂ζ/∂z = 1/(∂z/∂k)
 double *dk_dy_h, *dk_dy_d;   // ∂ζ/∂y = -(∂z/∂j)/(dy·∂z/∂k)
+double *delta_k_h, *delta_k_d;  // GILBM RK2 upwind displacement [19*NYD6*NZ6]
 //
 // 逆變速度在 GPU kernel 中即時計算（不需全場存儲）：
 //   ẽ_α_η = e[α][0] / dx           (常數)
@@ -87,8 +68,6 @@ double  *Ub_avg_h,  *Ub_avg_d;
 double  *Force_h,   *Force_d;
 
 double *rho_modify_h, *rho_modify_d;
-//Variables for BFL 
-double *Q3_h, *Q3_d, *Q4_h, *Q4_d, *Q15_h, *Q15_d, *Q16_h, *Q16_d;
 
 
 
@@ -131,6 +110,7 @@ int itag_f6[23] = {400,401,402,403,404,405,406,407,408,409,410,411,412,413,414,4
 #include "memory.h"
 #include "initialization.h"
 #include "gilbm/metric_terms.h"
+#include "gilbm/precompute.h"
 #include "communication.h"
 #include "monitor.h"
 #include "statistics.h"
@@ -169,11 +149,18 @@ int main(int argc, char *argv[])
     // Phase 0: 計算離散 Jacobian 度量項並輸出診斷文件
     DiagnoseMetricTerms(myid);
 
-    GetIntrplParameter_X();
-    GetIntrplParameter_Y();
-    GetIntrplParameter_Xi();    
+    // GILBM Phase 1: 計算各 rank 的區域度量項
+    ComputeMetricTerms(dk_dz_h, dk_dy_h, z_h, y_h, NYD6, NZ6);
 
-    BFLInitialization();
+    // GILBM Phase 1: 預計算 GILBM RK2 上風位移
+    PrecomputeGILBM_DeltaK(delta_k_h, dk_dz_h, dk_dy_h, NYD6, NZ6);
+
+    // 拷貝度量項和 delta_k 到 GPU
+    CHECK_CUDA( cudaMemcpy(dk_dz_d,   dk_dz_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
+    CHECK_CUDA( cudaMemcpy(dk_dy_d,   dk_dy_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
+    CHECK_CUDA( cudaMemcpy(delta_k_d, delta_k_h, 19*NYD6*NZ6*sizeof(double),   cudaMemcpyHostToDevice) );
+
+    if (myid == 0) printf("GILBM: RK2 delta_k precomputed and copied to GPU.\n");
 
     if ( INIT == 0 ) {
         printf("Initializing by default function...\n");
