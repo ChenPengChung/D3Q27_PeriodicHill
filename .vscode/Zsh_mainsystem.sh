@@ -69,11 +69,16 @@ VTKRENAME_LOG="$STATE_DIR/vtk-renamer.log"
 CLR_87='\033[32m'    # green
 CLR_89='\033[34m'    # blue
 CLR_154='\033[33m'   # yellow
-CLR_ERR='\033[31m'   # red
-CLR_OK='\033[32m'    # green (success)
-CLR_DIM='\033[90m'   # dim gray
-CLR_BOLD='\033[1m'   # bold
-CLR_RST='\033[0m'    # reset
+if [[ -t 1 ]]; then
+  CLR_ERR='\033[31m'   # red
+  CLR_OK='\033[32m'    # green (success)
+  CLR_DIM='\033[90m'   # dim gray
+  CLR_BOLD='\033[1m'   # bold
+  CLR_RST='\033[0m'    # reset
+else
+  CLR_ERR='' CLR_OK='' CLR_DIM='' CLR_BOLD='' CLR_RST=''
+  CLR_87='' CLR_89='' CLR_154=''
+fi
 
 function server_color() {
   case "$1" in
@@ -485,7 +490,7 @@ function git_style_transfer() {
   fi
 
   # Print formatted file list with per-file line stats
-  for l in "${formatted_lines[@]}"; do
+  for l in "${formatted_lines[@]+${formatted_lines[@]}}"; do
     # Extract path from formatted line for line stats lookup
     local fpath=""
     # Try to extract the path (after label text)
@@ -906,6 +911,18 @@ function run_pull() {
   rsync "${args[@]}" "${CFDLAB_USER}@${host}:${CFDLAB_REMOTE_PATH}/" "${WORKSPACE_DIR}/"
 }
 
+# Helper: filter rsync output to keep only valid itemize lines
+function filter_rsync_output() {
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local flags="${line%% *}"
+    # Keep only valid rsync itemize lines
+    if [[ "$flags" =~ ^[.\<\>ch\*][fdLDS] ]] || [[ "$flags" == *deleting ]]; then
+      printf '%s\n' "$line"
+    fi
+  done
+}
+
 function preview_push_changes() {
   local server="$1"
   local host
@@ -922,7 +939,7 @@ function preview_push_changes() {
     echo "$output" >&2
     return 1
   fi
-  printf '%s\n' "$output"
+  printf '%s\n' "$output" | filter_rsync_output
 }
 
 function preview_pull_changes() {
@@ -942,7 +959,7 @@ function preview_pull_changes() {
     echo "$output" >&2
     return 1
   fi
-  printf '%s\n' "$output"
+  printf '%s\n' "$output" | filter_rsync_output
 }
 
 function count_change_lines() {
@@ -1073,7 +1090,7 @@ function get_remote_file_size() {
   local filepath="$2"
   local host
   host="$(resolve_host "$server")"
-  ssh_batch_exec "$host" "stat -c%s '${CFDLAB_REMOTE_PATH}/${filepath}' 2>/dev/null || echo 0"
+  ssh_batch_exec "$host" "stat -c%s '${CFDLAB_REMOTE_PATH}/${filepath}' 2>/dev/null || echo 0" 2>/dev/null
 }
 
 # Get local file size in bytes
@@ -1132,34 +1149,76 @@ function show_file_diff() {
 
   # ── New file (exists only on source side) ──
   if [[ "$file_status" == "new" ]]; then
+    # For pull/fetch: new file is on remote, not local yet
+    local is_remote_new=0
+    [[ "$direction" == "pull" || "$direction" == "fetch" ]] && is_remote_new=1
+
     if [[ "$mode" == "stat" ]]; then
-      adds=$(wc -l < "$local_file" 2>/dev/null || echo 0)
-      adds="${adds##*( )}"  # trim whitespace
+      if [[ "$is_remote_new" -eq 1 ]]; then
+        local host_tmp
+        host_tmp="$(resolve_host "$server")"
+        adds=$(ssh_batch_exec "$host_tmp" "wc -l < '${CFDLAB_REMOTE_PATH}/${filepath}'" 2>/dev/null | tr -d ' ')
+      else
+        adds=$(wc -l < "$local_file" 2>/dev/null || echo 0)
+      fi
+      adds="${adds##*( )}"
+      adds="${adds:-0}"
       printf '📄 %-50s \033[32m+%s\033[0m (new file)\n' "$filepath" "$adds"
       DIFF_TOTAL_ADDS=$((DIFF_TOTAL_ADDS + adds))
       return
     fi
 
     if is_text_file "$filepath"; then
-      adds=$(wc -l < "$local_file" 2>/dev/null || echo 0)
-      adds="${adds##*( )}"
-      printf '\n\033[34m📄 %s\033[0m %50s \033[32m+%s -0\033[0m (new file)\n' \
-        "$filepath" "" "$adds"
-      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
-      printf '\033[33m@@ -0,0 +1,%s @@\033[0m\n' "$adds"
-      head -n "$DIFF_NEW_FILE_PREVIEW_LINES" "$local_file" | while IFS= read -r line; do
-        printf '\033[32m+%s\033[0m\n' "$line"
-      done
-      local total_lines
-      total_lines=$(wc -l < "$local_file" 2>/dev/null || echo 0)
-      total_lines="${total_lines##*( )}"
-      if [[ "$total_lines" -gt "$DIFF_NEW_FILE_PREVIEW_LINES" ]]; then
-        local remaining=$((total_lines - DIFF_NEW_FILE_PREVIEW_LINES))
-        printf '\033[90m... (%d more lines)\033[0m\n' "$remaining"
+      if [[ "$is_remote_new" -eq 1 ]]; then
+        local host_tmp
+        host_tmp="$(resolve_host "$server")"
+        adds=$(ssh_batch_exec "$host_tmp" "wc -l < '${CFDLAB_REMOTE_PATH}/${filepath}'" 2>/dev/null | tr -d ' ')
+        adds="${adds##*( )}"
+        adds="${adds:-0}"
+        printf '\n\033[34m📄 %s\033[0m %50s \033[32m+%s -0\033[0m (new file)\n' \
+          "$filepath" "" "$adds"
+        printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+        printf '\033[33m@@ -0,0 +1,%s @@\033[0m\n' "$adds"
+        local remote_tmp
+        remote_tmp="$(fetch_remote_to_temp "$server" "$filepath")"
+        if [[ -f "$remote_tmp" ]]; then
+          head -n "$DIFF_NEW_FILE_PREVIEW_LINES" "$remote_tmp" | while IFS= read -r line; do
+            printf '\033[32m+%s\033[0m\n' "$line"
+          done
+          local total_lines
+          total_lines=$(wc -l < "$remote_tmp" 2>/dev/null || echo 0)
+          total_lines="${total_lines##*( )}"
+          if [[ "$total_lines" -gt "$DIFF_NEW_FILE_PREVIEW_LINES" ]]; then
+            local remaining=$((total_lines - DIFF_NEW_FILE_PREVIEW_LINES))
+            printf '\033[90m... (%d more lines)\033[0m\n' "$remaining"
+          fi
+          rm -f "$remote_tmp"
+        fi
+      else
+        adds=$(wc -l < "$local_file" 2>/dev/null || echo 0)
+        adds="${adds##*( )}"
+        printf '\n\033[34m📄 %s\033[0m %50s \033[32m+%s -0\033[0m (new file)\n' \
+          "$filepath" "" "$adds"
+        printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+        printf '\033[33m@@ -0,0 +1,%s @@\033[0m\n' "$adds"
+        head -n "$DIFF_NEW_FILE_PREVIEW_LINES" "$local_file" | while IFS= read -r line; do
+          printf '\033[32m+%s\033[0m\n' "$line"
+        done
+        local total_lines
+        total_lines=$(wc -l < "$local_file" 2>/dev/null || echo 0)
+        total_lines="${total_lines##*( )}"
+        if [[ "$total_lines" -gt "$DIFF_NEW_FILE_PREVIEW_LINES" ]]; then
+          local remaining=$((total_lines - DIFF_NEW_FILE_PREVIEW_LINES))
+          printf '\033[90m... (%d more lines)\033[0m\n' "$remaining"
+        fi
       fi
     else
       local fsize
-      fsize=$(get_local_file_size "$filepath")
+      if [[ "$is_remote_new" -eq 1 ]]; then
+        fsize=$(get_remote_file_size "$server" "$filepath")
+      else
+        fsize=$(get_local_file_size "$filepath")
+      fi
       adds=1
       printf '\n\033[34m📄 %s\033[0m (new file, %s)\n' "$filepath" "$(format_size "$fsize")"
     fi
@@ -1377,17 +1436,17 @@ function analyze_code_diff() {
   # ── Per-file diff ──
   if [[ "$mode" != "summary" ]]; then
     # Modified files
-    for filepath in "${modified_files[@]}"; do
+    for filepath in ${modified_files[@]+"${modified_files[@]}"}; do
       show_file_diff "$direction" "$server" "$filepath" "modified" "$mode"
     done
 
     # New files
-    for filepath in "${new_files[@]}"; do
+    for filepath in ${new_files[@]+"${new_files[@]}"}; do
       show_file_diff "$direction" "$server" "$filepath" "new" "$mode"
     done
 
     # Deleted files
-    for filepath in "${deleted_files[@]}"; do
+    for filepath in ${deleted_files[@]+"${deleted_files[@]}"}; do
       show_file_diff "$direction" "$server" "$filepath" "deleted" "$mode"
     done
   fi
@@ -1405,19 +1464,29 @@ function analyze_code_diff() {
   fi
 
   # ── File type breakdown ──
-  # Group by extension
-  local -A ext_files ext_adds ext_dels
-  for filepath in "${modified_files[@]}" "${new_files[@]}"; do
+  # Group by extension (using sort/uniq for portability)
+  local ext_list=""
+  for filepath in ${modified_files[@]+"${modified_files[@]}"} ${new_files[@]+"${new_files[@]}"}; do
     local ext="${filepath##*.}"
-    [[ "$filepath" == *.* ]] || ext="(no ext)"
-    ext=".${ext}"
-    ext_files["$ext"]=$(( ${ext_files["$ext"]:-0} + 1 ))
+    if [[ "$filepath" == *.* ]]; then
+      ext_list="${ext_list}.${ext}"$'\n'
+    else
+      ext_list="${ext_list}(no-ext)"$'\n'
+    fi
   done
-  if [[ ${#ext_files[@]} -gt 0 ]]; then
-    printf '\n   📁 Changed files by type:\n'
-    for ext in "${!ext_files[@]}"; do
-      printf '      %s: %d file(s)\n' "$ext" "${ext_files[$ext]}"
-    done
+  if [[ -n "$ext_list" ]]; then
+    local ext_summary
+    ext_summary=$(printf '%s' "$ext_list" | sort | uniq -c | sort -rn)
+    if [[ -n "$ext_summary" ]]; then
+      printf '\n   📁 Changed files by type:\n'
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local count ext_name
+        count=$(echo "$line" | awk '{print $1}')
+        ext_name=$(echo "$line" | awk '{print $2}')
+        printf '      %s: %d file(s)\n' "$ext_name" "$count"
+      done <<< "$ext_summary"
+    fi
   fi
 
   printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
