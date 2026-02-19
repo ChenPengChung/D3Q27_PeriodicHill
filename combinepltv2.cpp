@@ -82,14 +82,14 @@ void write_ASCII_of_str(const string& str, ofstream& file) {
 
 void Output3Dvelocity() {
     ostringstream oss;
-    oss << (NX6 - 6) << "x" << (NY6 - 6) << "x" << (NZ6 - 6) << ".plt";
+    oss << (NX6 - 6) << "x" << (NY6 - 6) << "x" << (NZ6 - 4) << ".plt";
     cout << oss.str() << "\n";
 
     ofstream fpE3(oss.str(), ios::binary);
 
     int IMax = NX6 - 6;
     int JMax = NY6 - 6;
-    int KMax = NZ6 - 6;
+    int KMax = NZ6 - 4;
 
     string Title = "Particle intensity";
     string Varname1 = "X", Varname2 = "Y", Varname3 = "Z";
@@ -167,7 +167,7 @@ void Output3Dvelocity() {
     fpE3.write(reinterpret_cast<char*>(&ZoneNumToShareConnectivity), sizeof(int));
 
     // Write data
-    for (int k = 3; k < NZ6 - 3; k++) {
+    for (int k = 2; k < NZ6 - 2; k++) {
     for (int j = 3; j < NY6 - 3; j++) {
     for (int i = 3; i < NX6 - 3; i++) {
         double X = x[i];
@@ -195,7 +195,7 @@ void Output3Dvelocity() {
 // 輸出 VTK 格式給 Paraview
 void Output3Dvelocity_VTK() {
     ostringstream oss;
-    oss << (NX6 - 6) << "x" << (NY6 - 6) << "x" << (NZ6 - 6) << ".vtk";
+    oss << (NX6 - 6) << "x" << (NY6 - 6) << "x" << (NZ6 - 4) << ".vtk";
     cout << "VTK output: " << oss.str() << "\n";
 
     ofstream out(oss.str());
@@ -203,13 +203,13 @@ void Output3Dvelocity_VTK() {
     out << "LBM Velocity Field (combined)\n";
     out << "ASCII\n";
     out << "DATASET STRUCTURED_GRID\n";
-    out << "DIMENSIONS " << (NX6 - 6) << " " << (NY6 - 6) << " " << (NZ6 - 6) << "\n";
+    out << "DIMENSIONS " << (NX6 - 6) << " " << (NY6 - 6) << " " << (NZ6 - 4) << "\n";
 
-    int nPoints = (NX6 - 6) * (NY6 - 6) * (NZ6 - 6);
+    int nPoints = (NX6 - 6) * (NY6 - 6) * (NZ6 - 4);
     out << "POINTS " << nPoints << " double\n";
     out << fixed << setprecision(6);
 
-    for (int k = 3; k < NZ6 - 3; k++) {
+    for (int k = 2; k < NZ6 - 2; k++) {
     for (int j = 3; j < NY6 - 3; j++) {
     for (int i = 3; i < NX6 - 3; i++) {
         out << x[i] << " " << y[j] << " " << z[j * NZ6 + k] << "\n";
@@ -219,7 +219,7 @@ void Output3Dvelocity_VTK() {
     out << "SCALARS rho double 1\n";
     out << "LOOKUP_TABLE default\n";
     out << setprecision(15);
-    for (int k = 3; k < NZ6 - 3; k++) {
+    for (int k = 2; k < NZ6 - 2; k++) {
     for (int j = 3; j < NY6 - 3; j++) {
     for (int i = 3; i < NX6 - 3; i++) {
         int idx = j * NX6 * NZ6 + k * NX6 + i;
@@ -227,7 +227,7 @@ void Output3Dvelocity_VTK() {
     }}}
 
     out << "\nVECTORS velocity double\n";
-    for (int k = 3; k < NZ6 - 3; k++) {
+    for (int k = 2; k < NZ6 - 2; k++) {
     for (int j = 3; j < NY6 - 3; j++) {
     for (int i = 3; i < NX6 - 3; i++) {
         int idx = j * NX6 * NZ6 + k * NX6 + i;
@@ -247,10 +247,10 @@ void Outputstreamwise() {
         ofstream fout(fname.str());
         fout << "VARIABLES=\"z\",\"uavg\",\"vavg\",\"wavg\"\n";
         fout << "ZONE T=\"y=" << n << "\", F=POINT\n";
-        fout << "K=" << (NZ6 - 6) << "\n";
+        fout << "K=" << (NZ6 - 4) << "\n";
         fout << fixed;
 
-        for (int k = 3; k < NZ6 - 3; k++) {
+        for (int k = 2; k < NZ6 - 2; k++) {
             int j = static_cast<int>(n / 9.0 * (NY6 - 6)) + 3;
             int idx = j * NX6 * NZ6 + k * NX6 + NX6 / 2;
 
@@ -267,10 +267,10 @@ void OutputMiddlePlane() {
     ofstream middle("middleplane.dat");
     middle << "VARIABLES=\"y\",\"z\",\"vavg\",\"wavg\"\n";
     middle << "ZONE T=\"x=6\", F=POINT\n";
-    middle << "j = " << (NY6 - 6) << " k = " << (NZ6 - 6) << "\n";
+    middle << "j = " << (NY6 - 6) << " k = " << (NZ6 - 4) << "\n";
     middle << fixed;
 
-    for (int k = 3; k < NZ6 - 3; k++) {
+    for (int k = 2; k < NZ6 - 2; k++) {
         for (int j = 3; j < NY6 - 3; j++) {
             int index = j * NX6 * NZ6 + k * NX6 + NX6 / 2;
 
@@ -317,7 +317,7 @@ int main(int argc, char* argv[]) {
         ReadData(rho_local, "result", "rho", myid);
 
         // 合併到全域陣列
-        for (int k = 3; k < NZ6 - 3; k++) {
+        for (int k = 2; k < NZ6 - 2; k++) {
         for (int j = 3; j < NYD6 - 3; j++) {
         for (int i = 3; i < NX6 - 3; i++) {
             int j_global = myid * (NYD6 - 7) + j;
