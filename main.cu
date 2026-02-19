@@ -52,7 +52,8 @@ double  *ZSlopePara_d[5];
 // 只需 2 個空間變化的度量項（大小 [NYD6*NZ6]，與 z_h 相同）
 double *dk_dz_h, *dk_dz_d;   // ∂ζ/∂z = 1/(∂z/∂k)
 double *dk_dy_h, *dk_dy_d;   // ∂ζ/∂y = -(∂z/∂j)/(dy·∂z/∂k)
-double *delta_k_h, *delta_k_d;  // GILBM RK2 upwind displacement [19*NYD6*NZ6]
+double *delta_zeta_h, *delta_zeta_d;  // GILBM RK2 ζ-direction displacement [19*NYD6*NZ6]
+double delta_xi_h[19];               // GILBM ξ-direction displacement (constant for uniform y)
 //
 // 逆變速度在 GPU kernel 中即時計算（不需全場存儲）：
 //   ẽ_α_η = e[α][0] / dx           (常數)
@@ -153,15 +154,16 @@ int main(int argc, char *argv[])
     // GILBM Phase 1: 計算各 rank 的區域度量項
     ComputeMetricTerms(dk_dz_h, dk_dy_h, z_h, y_h, NYD6, NZ6);
 
-    // GILBM Phase 1: 預計算 GILBM RK2 上風位移
-    PrecomputeGILBM_DeltaK(delta_k_h, dk_dz_h, dk_dy_h, NYD6, NZ6);
+    // GILBM Phase 1.5: 預計算 δξ (常數) 和 δζ (RK2 空間變化) 位移
+    PrecomputeGILBM_DeltaXiZeta(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, NYD6, NZ6);
 
-    // 拷貝度量項和 delta_k 到 GPU
+    // 拷貝度量項、delta_zeta、delta_xi 到 GPU
     CHECK_CUDA( cudaMemcpy(dk_dz_d,   dk_dz_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaMemcpy(dk_dy_d,   dk_dy_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
-    CHECK_CUDA( cudaMemcpy(delta_k_d, delta_k_h, 19*NYD6*NZ6*sizeof(double),   cudaMemcpyHostToDevice) );
+    CHECK_CUDA( cudaMemcpy(delta_zeta_d, delta_zeta_h, 19*NYD6*NZ6*sizeof(double),   cudaMemcpyHostToDevice) );
+    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_xi, delta_xi_h, 19*sizeof(double)) );
 
-    if (myid == 0) printf("GILBM: RK2 delta_k precomputed and copied to GPU.\n");
+    if (myid == 0) printf("GILBM: delta_xi (__constant__[19]) + delta_zeta (field) precomputed and copied to GPU.\n");
 
     if ( INIT == 0 ) {
         printf("Initializing by default function...\n");
@@ -172,8 +174,8 @@ int main(int argc, char *argv[])
         if( TBINIT && TBSWITCH ) statistics_readbin_stress();
     }
 
-    // Phase 1 acceptance diagnostic: delta_k range, interpolation, C-E BC
-    DiagnoseGILBM_Phase1(delta_k_h, dk_dz_h, dk_dy_h, fh_p, NYD6, NZ6, myid);
+    // Phase 1.5 acceptance diagnostic: delta_xi, delta_zeta range, interpolation, C-E BC
+    DiagnoseGILBM_Phase1(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, fh_p, NYD6, NZ6, myid);
 
     SendDataToGPU();
 

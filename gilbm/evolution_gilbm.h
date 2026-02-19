@@ -19,6 +19,9 @@ __constant__ double GILBM_e[19][3] = {
     {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
 };
 
+// Precomputed ξ-direction displacement: δξ[α] = dt · e_y[α] / dy (constant for uniform y)
+__constant__ double GILBM_delta_xi[19];
+
 __constant__ double GILBM_W[19] = {
     1.0/3.0,
     1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0,
@@ -64,7 +67,7 @@ __global__ void stream_collide_GILBM_Buffer(
     double *f5_new, double *f6_new, double *f7_new, double *f8_new, double *f9_new,
     double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
     double *f15_new, double *f16_new, double *f17_new, double *f18_new,
-    double *dk_dz_d, double *dk_dy_d, double *delta_k_d,
+    double *dk_dz_d, double *dk_dy_d, double *delta_zeta_d,
     double *u_out, double *v_out, double *w_out, double *rho_out,
     double *Force, double *rho_modify, int start
 ) {
@@ -173,12 +176,12 @@ __global__ void stream_collide_GILBM_Buffer(
         } else {
             // GILBM interpolation streaming
             double delta_i = dt * GILBM_e[alpha][0] / dx_val;
-            double delta_j = dt * GILBM_e[alpha][1] / dy_val;
-            double delta_k_val = delta_k_d[alpha * NYD6 * NZ6 + idx_jk];
+            double delta_xi_val = GILBM_delta_xi[alpha];
+            double delta_zeta_val = delta_zeta_d[alpha * NYD6 * NZ6 + idx_jk];
 
             double up_i = (double)i - delta_i;
-            double up_j = (double)j - delta_j;
-            double up_k = (double)k - delta_k_val;
+            double up_j = (double)j - delta_xi_val;
+            double up_k = (double)k - delta_zeta_val;
 
             // Clamp upwind point to valid interpolation range
             // Need base >= 0 and base+2 < array size for 3-point stencil
@@ -266,7 +269,7 @@ __global__ void stream_collide_GILBM(
     double *f5_new, double *f6_new, double *f7_new, double *f8_new, double *f9_new,
     double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
     double *f15_new, double *f16_new, double *f17_new, double *f18_new,
-    double *dk_dz_d, double *dk_dy_d, double *delta_k_d,
+    double *dk_dz_d, double *dk_dy_d, double *delta_zeta_d,
     double *u_out, double *v_out, double *w_out, double *rho_out,
     double *Force, double *rho_modify
 ) {
@@ -363,12 +366,12 @@ __global__ void stream_collide_GILBM(
                 dk_dy_val, dk_dz_val, omega, dt);
         } else {
             double delta_i = dt * GILBM_e[alpha][0] / dx_val;
-            double delta_j = dt * GILBM_e[alpha][1] / dy_val;
-            double delta_k_val = delta_k_d[alpha * NYD6 * NZ6 + idx_jk];
+            double delta_xi_val = GILBM_delta_xi[alpha];
+            double delta_zeta_val = delta_zeta_d[alpha * NYD6 * NZ6 + idx_jk];
 
             double up_i = (double)i - delta_i;
-            double up_j = (double)j - delta_j;
-            double up_k = (double)k - delta_k_val;
+            double up_j = (double)j - delta_xi_val;
+            double up_k = (double)k - delta_zeta_val;
 
             if (up_i < 1.0) up_i = 1.0;
             if (up_i > (double)(NX6 - 3)) up_i = (double)(NX6 - 3);

@@ -1,13 +1,15 @@
 #ifndef GILBM_DIAGNOSTIC_H
 #define GILBM_DIAGNOSTIC_H
 
-// Phase 1 Acceptance Diagnostic (Imamura 2005 GILBM)
+// Phase 1.5 Acceptance Diagnostic (Imamura 2005 GILBM)
 // Call ONCE after initialization, before main time loop.
-// Prints: (1) delta_k statistics, (2) interpolation spot-check, (3) C-E BC spot-check.
+// Prints: (0) delta_xi validation, (1) delta_zeta statistics,
+//         (2) interpolation spot-check, (3) C-E BC spot-check.
 // All computation is host-side — no GPU kernel needed.
 
 void DiagnoseGILBM_Phase1(
-    const double *delta_k_h,
+    const double *delta_xi_h,    // [19] ξ-direction displacement
+    const double *delta_zeta_h,  // [19*NYD6*NZ6] ζ-direction displacement
     const double *dk_dz_h,
     const double *dk_dy_h,
     double **fh_p_local,     // host distribution pointers [19]
@@ -34,18 +36,38 @@ void DiagnoseGILBM_Phase1(
     };
 
     int sz = NYD6_local * NZ6_local;
+    double dy_val = LY / (double)(NY6 - 7);
 
     printf("\n");
     printf("=============================================================\n");
-    printf("  GILBM Phase 1 Acceptance Diagnostic (Rank 0, t=0)\n");
+    printf("  GILBM Phase 1.5 Acceptance Diagnostic (Rank 0, t=0)\n");
     printf("  NYD6=%d, NZ6=%d, NX6=%d, dt=%.6e, tau=%.4f\n",
            NYD6_local, NZ6_local, (int)NX6, dt, tau);
     printf("=============================================================\n");
 
     // ==================================================================
-    // TEST 1: delta_k range (min/max across all alpha, j, k)
+    // TEST 0: delta_xi validation (constant for uniform y)
     // ==================================================================
-    printf("\n[Test 1] delta_k range (19 dirs x %d j-k points)\n", sz);
+    printf("\n[Test 0] delta_xi validation: delta_xi[a] == dt*e_y[a]/dy\n");
+    printf("  dy = %.10f, dt = %.10f\n", dy_val, dt);
+    printf("  %5s  %5s  %14s  %14s  %10s\n",
+           "alpha", "e_y", "delta_xi", "dt*e_y/dy", "error");
+
+    double max_xi_err = 0.0;
+    for (int alpha = 0; alpha < 19; alpha++) {
+        double expected = dt * e[alpha][1] / dy_val;
+        double err = fabs(delta_xi_h[alpha] - expected);
+        if (err > max_xi_err) max_xi_err = err;
+        printf("  %5d  %+4.0f  %+14.10e  %+14.10e  %10.2e\n",
+               alpha, e[alpha][1], delta_xi_h[alpha], expected, err);
+    }
+    printf("\n  max|error| = %.2e  %s\n", max_xi_err,
+           max_xi_err < 1e-15 ? "PASS" : "FAIL");
+
+    // ==================================================================
+    // TEST 1: delta_zeta range (min/max across all alpha, j, k)
+    // ==================================================================
+    printf("\n[Test 1] delta_zeta range (19 dirs x %d j-k points)\n", sz);
 
     double dk_gmin = 1e30, dk_gmax = -1e30;
     int gmin_a = 0, gmin_j = 0, gmin_k = 0;
@@ -55,7 +77,7 @@ void DiagnoseGILBM_Phase1(
     for (int alpha = 0; alpha < 19; alpha++) {
         for (int j = 0; j < NYD6_local; j++) {
             for (int k = 2; k < NZ6_local - 2; k++) {
-                double val = delta_k_h[alpha * sz + j * NZ6_local + k];
+                double val = delta_zeta_h[alpha * sz + j * NZ6_local + k];
                 if (val < dk_gmin) { dk_gmin = val; gmin_a = alpha; gmin_j = j; gmin_k = k; }
                 if (val > dk_gmax) { dk_gmax = val; gmax_a = alpha; gmax_j = j; gmax_k = k; }
                 if (val != 0.0) nonzero++;
@@ -63,22 +85,22 @@ void DiagnoseGILBM_Phase1(
         }
     }
 
-    printf("  min(delta_k) = %+.6e  at alpha=%2d, j=%3d, k=%3d\n",
+    printf("  min(delta_zeta) = %+.6e  at alpha=%2d, j=%3d, k=%3d\n",
            dk_gmin, gmin_a, gmin_j, gmin_k);
-    printf("  max(delta_k) = %+.6e  at alpha=%2d, j=%3d, k=%3d\n",
+    printf("  max(delta_zeta) = %+.6e  at alpha=%2d, j=%3d, k=%3d\n",
            dk_gmax, gmax_a, gmax_j, gmax_k);
-    printf("  max|delta_k| = %.6e\n", fabs(dk_gmin) > fabs(dk_gmax) ? fabs(dk_gmin) : fabs(dk_gmax));
+    printf("  max|delta_zeta| = %.6e\n", fabs(dk_gmin) > fabs(dk_gmax) ? fabs(dk_gmin) : fabs(dk_gmax));
     printf("  nonzero entries: %d / %d\n", nonzero, 19 * sz);
 
     // Per-direction breakdown (only directions with e_y or e_z != 0)
-    printf("\n  Per-direction max|delta_k|:\n");
-    printf("  %5s  %8s  %12s  %12s  %12s\n", "alpha", "e(y,z)", "max|dk|", "min(dk)", "max(dk)");
+    printf("\n  Per-direction max|delta_zeta|:\n");
+    printf("  %5s  %8s  %12s  %12s  %12s\n", "alpha", "e(y,z)", "max|dz|", "min(dz)", "max(dz)");
     for (int alpha = 1; alpha < 19; alpha++) {
         if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
         double amax = 0.0, amin = 1e30, amx = -1e30;
         for (int j = 0; j < NYD6_local; j++) {
             for (int k = 2; k < NZ6_local - 2; k++) {
-                double val = delta_k_h[alpha * sz + j * NZ6_local + k];
+                double val = delta_zeta_h[alpha * sz + j * NZ6_local + k];
                 if (fabs(val) > amax) amax = fabs(val);
                 if (val < amin) amin = val;
                 if (val > amx) amx = val;
@@ -91,32 +113,32 @@ void DiagnoseGILBM_Phase1(
     // CFL safety check
     double absmax = fabs(dk_gmin) > fabs(dk_gmax) ? fabs(dk_gmin) : fabs(dk_gmax);
     if (absmax > 2.0) {
-        printf("\n  ** WARNING: max|delta_k|=%.3f > 2.0 cells! "
+        printf("\n  ** WARNING: max|delta_zeta|=%.3f > 2.0 cells! "
                "3-point stencil stretched.\n", absmax);
     }
     if (absmax > 3.0) {
-        printf("  ** CRITICAL: max|delta_k|=%.3f > 3.0 cells! "
+        printf("  ** CRITICAL: max|delta_zeta|=%.3f > 3.0 cells! "
                "Quadratic interpolation insufficient!\n", absmax);
     }
 
     // Symmetry check: alpha=5 (e_z=+1) vs alpha=6 (e_z=-1)
     int jmid = NYD6_local / 2;
     int kmid = NZ6_local / 2;
-    double dk5 = delta_k_h[5 * sz + jmid * NZ6_local + kmid];
-    double dk6 = delta_k_h[6 * sz + jmid * NZ6_local + kmid];
+    double dk5 = delta_zeta_h[5 * sz + jmid * NZ6_local + kmid];
+    double dk6 = delta_zeta_h[6 * sz + jmid * NZ6_local + kmid];
     printf("\n  Symmetry check at j=%d, k=%d:\n", jmid, kmid);
-    printf("    alpha=5 (e_z=+1): delta_k = %+.8e\n", dk5);
-    printf("    alpha=6 (e_z=-1): delta_k = %+.8e\n", dk6);
-    printf("    |dk5 + dk6| = %.2e  (should be ~0 for symmetric metric)\n",
+    printf("    alpha=5 (e_z=+1): delta_zeta = %+.8e\n", dk5);
+    printf("    alpha=6 (e_z=-1): delta_zeta = %+.8e\n", dk6);
+    printf("    |dz5 + dz6| = %.2e  (should be ~0 for symmetric metric)\n",
            fabs(dk5 + dk6));
 
-    // Spot-check: compare delta_k vs dt*e_tilde_k for one point
+    // Spot-check: compare delta_zeta vs dt*e_tilde_zeta for one point
     int idx_jk_spot = jmid * NZ6_local + kmid;
     double dk_dz_spot = dk_dz_h[idx_jk_spot];
     double dk_dy_spot = dk_dy_h[idx_jk_spot];
     double etk5 = e[5][1] * dk_dy_spot + e[5][2] * dk_dz_spot;
-    printf("    dt*e_tilde_k(alpha=5) = %.8e  (1st-order, no RK2)\n", dt * etk5);
-    printf("    delta_k[5]            = %.8e  (RK2)\n", dk5);
+    printf("    dt*e_tilde_zeta(alpha=5) = %.8e  (1st-order, no RK2)\n", dt * etk5);
+    printf("    delta_zeta[5]            = %.8e  (RK2)\n", dk5);
     printf("    Difference (RK2 correction) = %.2e\n", fabs(dk5 - dt * etk5));
 
     // ==================================================================
@@ -132,7 +154,6 @@ void DiagnoseGILBM_Phase1(
     printf("  Test point: i=%d, j=%d, k=%d\n", ti, tj, tk);
 
     double dx_val = LX / (double)(NX6 - 7);
-    double dy_val = LY / (double)(NY6 - 7);
     double max_err = 0.0;
 
     printf("  %5s  %14s  %14s  %10s\n", "alpha", "interpolated", "expected(w_a)", "error");
@@ -140,12 +161,12 @@ void DiagnoseGILBM_Phase1(
         int idx_jk = tj * NZ6_local + tk;
 
         double delta_i = dt * e[alpha][0] / dx_val;
-        double delta_j = dt * e[alpha][1] / dy_val;
-        double delta_k_val = delta_k_h[alpha * sz + idx_jk];
+        double delta_xi_val = delta_xi_h[alpha];
+        double delta_zeta_val = delta_zeta_h[alpha * sz + idx_jk];
 
         double up_i = (double)ti - delta_i;
-        double up_j = (double)tj - delta_j;
-        double up_k = (double)tk - delta_k_val;
+        double up_j = (double)tj - delta_xi_val;
+        double up_k = (double)tk - delta_zeta_val;
 
         // Clamp (same as kernel)
         if (up_i < 1.0) up_i = 1.0;
@@ -239,13 +260,13 @@ void DiagnoseGILBM_Phase1(
 
     printf("\n  C-E BC per direction needing BC at bottom wall:\n");
     printf("  %5s  %6s  %6s  %12s  %12s  %12s  %12s\n",
-           "alpha", "e_y", "e_z", "e_tilde_k", "C_alpha", "f_CE", "w_alpha");
+           "alpha", "e_y", "e_z", "e_tilde_zeta", "C_alpha", "f_CE", "w_alpha");
 
     int bc_count = 0;
     double sum_f_CE = 0.0;
     for (int alpha = 1; alpha < 19; alpha++) {
-        double e_tilde_k = e[alpha][1] * bc_dk_dy + e[alpha][2] * bc_dk_dz;
-        if (e_tilde_k <= 0.0) continue;  // doesn't need BC at bottom wall
+        double e_tilde_zeta = e[alpha][1] * bc_dk_dy + e[alpha][2] * bc_dk_dz;
+        if (e_tilde_zeta <= 0.0) continue;  // doesn't need BC at bottom wall
         bc_count++;
 
         // Host-side replica of ChapmanEnskogBC
@@ -260,7 +281,7 @@ void DiagnoseGILBM_Phase1(
         sum_f_CE += f_CE;
 
         printf("  %5d  %+5.0f  %+5.0f  %+12.4f  %+12.6e  %12.8f  %12.8f\n",
-               alpha, ey, ez, e_tilde_k, C_alpha, f_CE, W[alpha]);
+               alpha, ey, ez, e_tilde_zeta, C_alpha, f_CE, W[alpha]);
     }
 
     printf("\n  Directions needing BC: %d / 18\n", bc_count);
@@ -268,16 +289,18 @@ void DiagnoseGILBM_Phase1(
     printf("  Sum(w_alpha) for same directions: ");
     double sum_w = 0.0;
     for (int alpha = 1; alpha < 19; alpha++) {
-        double e_tilde_k = e[alpha][1] * bc_dk_dy + e[alpha][2] * bc_dk_dz;
-        if (e_tilde_k > 0.0) sum_w += W[alpha];
+        double e_tilde_zeta = e[alpha][1] * bc_dk_dy + e[alpha][2] * bc_dk_dz;
+        if (e_tilde_zeta > 0.0) sum_w += W[alpha];
     }
     printf("%.10f\n", sum_w);
     printf("  Difference: %.2e  (should be ~0 at t=0)\n", fabs(sum_f_CE - sum_w * rho3));
 
     // Summary
     printf("\n=============================================================\n");
-    printf("  Phase 1 Acceptance Summary:\n");
-    printf("  [1] max|delta_k| = %.4f cells  %s\n", absmax,
+    printf("  Phase 1.5 Acceptance Summary:\n");
+    printf("  [0] max|delta_xi error| = %.2e  %s\n", max_xi_err,
+           max_xi_err < 1e-15 ? "PASS" : "FAIL");
+    printf("  [1] max|delta_zeta| = %.4f cells  %s\n", absmax,
            absmax <= 2.5 ? "OK" : (absmax <= 3.0 ? "WARNING" : "CRITICAL"));
     printf("  [2] Interpolation error = %.2e  %s\n", max_err,
            max_err < 1e-12 ? "PASS" : "FAIL");

@@ -88,10 +88,10 @@ void AllocateMemory() {
     // GILBM 度量項：∂ζ/∂z 和 ∂ζ/∂y（與 z_h 同大小 [NYD6*NZ6]）
     AllocateHostArray(  nBytes, 2,  &dk_dz_h, &dk_dy_h);
     AllocateDeviceArray(nBytes, 2,  &dk_dz_d, &dk_dy_d);
-    // GILBM 預計算逆變速度 RK2 位移 [19 * NYD6 * NZ6]
+    // GILBM 預計算 RK2 ζ 方向位移 [19 * NYD6 * NZ6]
     nBytes = 19 * NYD6 * NZ6 * sizeof(double);
-    AllocateHostArray(  nBytes, 1, &delta_k_h);
-    AllocateDeviceArray(nBytes, 1, &delta_k_d);
+    AllocateHostArray(  nBytes, 1, &delta_zeta_h);
+    AllocateDeviceArray(nBytes, 1, &delta_zeta_d);
 
     nBytes = NZ6 * sizeof(double);
     CHECK_CUDA( cudaMallocHost( (void**)&xi_h, nBytes ) );
@@ -147,8 +147,8 @@ void FreeSource() {
     // GILBM 度量項
     FreeHostArray(  2,  dk_dz_h, dk_dy_h);
     FreeDeviceArray(2,  dk_dz_d, dk_dy_d);
-    FreeHostArray(  1,  delta_k_h);
-    FreeDeviceArray(1,  delta_k_d);
+    FreeHostArray(  1,  delta_zeta_h);
+    FreeDeviceArray(1,  delta_zeta_d);
 
     for( int i = 0; i < 3; i++ ){
         FreeHostArray(  3,  Xdep_h[i], Ydep_h[i], Zdep_h[i]);
