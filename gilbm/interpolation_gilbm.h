@@ -21,6 +21,16 @@ __device__ __forceinline__ void quadratic_coeffs(
     a2 = 0.5 * t * (t - 1.0);
 }
 
+// Compute equilibrium distribution for a single alpha at given macroscopic state
+// Used by LTS re-estimation (Imamura 2005 Eq. 36)
+__device__ __forceinline__ double compute_feq_alpha(
+    int alpha, double rho, double ux, double uy, double uz
+) {
+    double eu = GILBM_e[alpha][0]*ux + GILBM_e[alpha][1]*uy + GILBM_e[alpha][2]*uz;
+    double udot = ux*ux + uy*uy + uz*uz;
+    return GILBM_W[alpha] * rho * (1.0 + 3.0*eu + 4.5*eu*eu - 1.5*udot);
+}
+
 // 3D quadratic upwind interpolation (tensor product)
 // up_i, up_j, up_k: upwind point coordinates in computational space
 // f_alpha: distribution function array for this direction [NYD6 * NZ6 * NX6]
@@ -56,6 +66,79 @@ __device__ double interpolate_quadratic_3d(
                         + (bk + n) * NX6_val
                         + (bi + l);
                 result += ai[l] * wjk * f_alpha[idx];
+            }
+        }
+    }
+    return result;
+}
+
+// Phase 4: 3D quadratic interpolation with LTS re-estimation (Imamura 2005 Eq. 36)
+//
+// At each stencil point B, the non-equilibrium part is rescaled to match
+// the target point A's relaxation scale:
+//   f̃*_α|_B = f^eq_α|_B + (f_α|_B - f^eq_α|_B) * (τ_A-1)·dt_A / (τ_B·dt_B)
+//
+// This ensures correct interpolation when neighboring cells have different
+// local time steps (and hence different τ·dt products).
+__device__ double interpolate_quadratic_3d_lts(
+    double up_i, double up_j, double up_k,
+    double * const *f_old_all,          // [19] pointers to all f arrays
+    const double *tau_dt_field,         // [NYD6*NZ6] precomputed τ·dt at each (j,k)
+    int alpha,
+    double tau_A_minus1_dt_A,           // (τ_A - 1) * dt_A at target point
+    int NX6_val, int NZ6_val
+) {
+    int bi = (int)floor(up_i);
+    int bj = (int)floor(up_j);
+    int bk = (int)floor(up_k);
+
+    double ti = up_i - (double)bi;
+    double tj = up_j - (double)bj;
+    double tk = up_k - (double)bk;
+
+    double ai[3], aj[3], ak[3];
+    quadratic_coeffs(ti, ai[0], ai[1], ai[2]);
+    quadratic_coeffs(tj, aj[0], aj[1], aj[2]);
+    quadratic_coeffs(tk, ak[0], ak[1], ak[2]);
+
+    double result = 0.0;
+    for (int n = 0; n < 3; n++) {
+        for (int m = 0; m < 3; m++) {
+            double wjk = aj[m] * ak[n];
+            int jB = bj + m;
+            int kB = bk + n;
+            int idx_jk_B = jB * NZ6_val + kB;
+            double tau_dt_B = tau_dt_field[idx_jk_B];
+            double R_AB = tau_A_minus1_dt_A / tau_dt_B;
+
+            for (int l = 0; l < 3; l++) {
+                int idx_B = jB * NZ6_val * NX6_val
+                          + kB * NX6_val
+                          + (bi + l);
+
+                // Read f at B for this alpha
+                double f_B = f_old_all[alpha][idx_B];
+
+                // Compute macroscopic at B from all 19 f's
+                double rho_B = 0.0, mx = 0.0, my = 0.0, mz = 0.0;
+                for (int a = 0; a < 19; a++) {
+                    double fa = f_old_all[a][idx_B];
+                    rho_B += fa;
+                    mx += GILBM_e[a][0] * fa;
+                    my += GILBM_e[a][1] * fa;
+                    mz += GILBM_e[a][2] * fa;
+                }
+                double ux_B = mx / rho_B;
+                double uy_B = my / rho_B;
+                double uz_B = mz / rho_B;
+
+                // f_eq at B for this alpha
+                double feq_B = compute_feq_alpha(alpha, rho_B, ux_B, uy_B, uz_B);
+
+                // Re-estimation: rescale non-equilibrium part
+                double f_tilde_B = feq_B + (f_B - feq_B) * R_AB;
+
+                result += ai[l] * wjk * f_tilde_B;
             }
         }
     }

@@ -85,12 +85,14 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     f_old[0], f_old[1], f_old[2], f_old[3], f_old[4], f_old[5], f_old[6], f_old[7], f_old[8], f_old[9], f_old[10], f_old[11], f_old[12], f_old[13], f_old[14], f_old[15], f_old[16], f_old[17], f_old[18],
     f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6], f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12], f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
     dk_dz_d, dk_dy_d, delta_zeta_d,
+    dt_local_d, tau_local_d, tau_dt_product_d,
     u, v, w, rho_d, Force_d, rho_modify_d, 3
     );
     stream_collide_GILBM_Buffer<<<griddimBuf, blockdimBuf, 0, stream1>>>(
     f_old[0], f_old[1], f_old[2], f_old[3], f_old[4], f_old[5], f_old[6], f_old[7], f_old[8], f_old[9], f_old[10], f_old[11], f_old[12], f_old[13], f_old[14], f_old[15], f_old[16], f_old[17], f_old[18],
     f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6], f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12], f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
     dk_dz_d, dk_dy_d, delta_zeta_d,
+    dt_local_d, tau_local_d, tau_dt_product_d,
     u, v, w, rho_d, Force_d, rho_modify_d, NYD6-7
     );
 
@@ -104,6 +106,7 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     f_old[0], f_old[1], f_old[2], f_old[3], f_old[4], f_old[5], f_old[6], f_old[7], f_old[8], f_old[9], f_old[10], f_old[11], f_old[12], f_old[13], f_old[14], f_old[15], f_old[16], f_old[17], f_old[18],
     f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6], f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12], f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
     dk_dz_d, dk_dy_d, delta_zeta_d,
+    dt_local_d, tau_local_d, tau_dt_product_d,
     u, v, w, rho_d, Force_d, rho_modify_d
     );
 

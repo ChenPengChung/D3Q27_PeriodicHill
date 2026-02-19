@@ -73,6 +73,7 @@ __global__ void stream_collide_GILBM_Buffer(
     double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
     double *f15_new, double *f16_new, double *f17_new, double *f18_new,
     double *dk_dz_d, double *dk_dy_d, double *delta_zeta_d,
+    double *dt_local_d, double *tau_local_d, double *tau_dt_product_d,
     double *u_out, double *v_out, double *w_out, double *rho_out,
     double *Force, double *rho_modify, int start
 ) {
@@ -86,12 +87,9 @@ __global__ void stream_collide_GILBM_Buffer(
     const int idx_jk = j * NZ6 + k;
     const int nface = NX6 * NZ6;
 
-    // Grid spacings (uniform in i and j)
-    const double dx_val = LX / (double)(NX6 - 7);
-    const double dy_val = LY / (double)(NY6 - 7);
-    // Phase 3: runtime dt and tau from __constant__ memory
-    const double dt = GILBM_dt;
-    const double tau = GILBM_tau;
+    // Phase 4: local dt and tau from per-point fields
+    const double dt = dt_local_d[idx_jk];
+    const double tau = tau_local_d[idx_jk];
     const double omega = 1.0 / tau;
 
     // MRT variables
@@ -168,6 +166,10 @@ __global__ void stream_collide_GILBM_Buffer(
     double F_in_arr[19];
     F_in_arr[0] = F0_in;
 
+    // Phase 4: LTS acceleration factor and re-estimation prefactor
+    const double a_local = dt / GILBM_dt;               // ≥ 1 (local dt / global dt)
+    const double tau_A_minus1_dt_A = (tau - 1.0) * dt;  // for re-estimation Eq. 36
+
     for (int alpha = 1; alpha < 19; alpha++) {
         bool need_bc = false;
         if (is_bottom) {
@@ -177,14 +179,15 @@ __global__ void stream_collide_GILBM_Buffer(
         }
 
         if (need_bc) {
-            // Chapman-Enskog BC
+            // Chapman-Enskog BC (uses local omega, dt automatically)
             F_in_arr[alpha] = ChapmanEnskogBC(alpha, rho_wall,
                 du_x_dk, du_y_dk, du_z_dk,
                 dk_dy_val, dk_dz_val, omega, dt);
         } else {
-            // GILBM interpolation streaming
-            double delta_i = GILBM_delta_eta[alpha];
-            double delta_xi_val = GILBM_delta_xi[alpha];
+            // Phase 4: scale η/ξ displacement by local acceleration factor
+            double delta_i = a_local * GILBM_delta_eta[alpha];
+            double delta_xi_val = a_local * GILBM_delta_xi[alpha];
+            // ζ displacement already precomputed with local dt
             double delta_zeta_val = delta_zeta_d[alpha * NYD6 * NZ6 + idx_jk];
 
             double up_i = (double)i - delta_i;
@@ -192,7 +195,6 @@ __global__ void stream_collide_GILBM_Buffer(
             double up_k = (double)k - delta_zeta_val;
 
             // Clamp upwind point to valid interpolation range
-            // Need base >= 0 and base+2 < array size for 3-point stencil
             if (up_i < 1.0) up_i = 1.0;
             if (up_i > (double)(NX6 - 3)) up_i = (double)(NX6 - 3);
             if (up_j < 1.0) up_j = 1.0;
@@ -200,9 +202,11 @@ __global__ void stream_collide_GILBM_Buffer(
             if (up_k < 2.0) up_k = 2.0;
             if (up_k > (double)(NZ6 - 5)) up_k = (double)(NZ6 - 5);
 
-            F_in_arr[alpha] = interpolate_quadratic_3d(
+            // Phase 4: interpolation with LTS re-estimation
+            F_in_arr[alpha] = interpolate_quadratic_3d_lts(
                 up_i, up_j, up_k,
-                f_old_ptrs[alpha],
+                f_old_ptrs, tau_dt_product_d,
+                alpha, tau_A_minus1_dt_A,
                 NX6, NZ6);
         }
     }
@@ -278,6 +282,7 @@ __global__ void stream_collide_GILBM(
     double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
     double *f15_new, double *f16_new, double *f17_new, double *f18_new,
     double *dk_dz_d, double *dk_dy_d, double *delta_zeta_d,
+    double *dt_local_d, double *tau_local_d, double *tau_dt_product_d,
     double *u_out, double *v_out, double *w_out, double *rho_out,
     double *Force, double *rho_modify
 ) {
@@ -291,11 +296,9 @@ __global__ void stream_collide_GILBM(
     const int idx_jk = j * NZ6 + k;
     const int nface = NX6 * NZ6;
 
-    const double dx_val = LX / (double)(NX6 - 7);
-    const double dy_val = LY / (double)(NY6 - 7);
-    // Phase 3: runtime dt and tau from __constant__ memory
-    const double dt = GILBM_dt;
-    const double tau = GILBM_tau;
+    // Phase 4: local dt and tau from per-point fields
+    const double dt = dt_local_d[idx_jk];
+    const double tau = tau_local_d[idx_jk];
     const double omega = 1.0 / tau;
 
     double F0_in, F1_in, F2_in, F3_in, F4_in, F5_in, F6_in, F7_in, F8_in, F9_in;
@@ -363,6 +366,10 @@ __global__ void stream_collide_GILBM(
     double F_in_arr[19];
     F_in_arr[0] = F0_in;
 
+    // Phase 4: LTS acceleration factor and re-estimation prefactor
+    const double a_local = dt / GILBM_dt;
+    const double tau_A_minus1_dt_A = (tau - 1.0) * dt;
+
     for (int alpha = 1; alpha < 19; alpha++) {
         bool need_bc = false;
         if (is_bottom) {
@@ -376,8 +383,9 @@ __global__ void stream_collide_GILBM(
                 du_x_dk, du_y_dk, du_z_dk,
                 dk_dy_val, dk_dz_val, omega, dt);
         } else {
-            double delta_i = GILBM_delta_eta[alpha];
-            double delta_xi_val = GILBM_delta_xi[alpha];
+            // Phase 4: scale η/ξ displacement by local acceleration factor
+            double delta_i = a_local * GILBM_delta_eta[alpha];
+            double delta_xi_val = a_local * GILBM_delta_xi[alpha];
             double delta_zeta_val = delta_zeta_d[alpha * NYD6 * NZ6 + idx_jk];
 
             double up_i = (double)i - delta_i;
@@ -391,9 +399,10 @@ __global__ void stream_collide_GILBM(
             if (up_k < 2.0) up_k = 2.0;
             if (up_k > (double)(NZ6 - 5)) up_k = (double)(NZ6 - 5);
 
-            F_in_arr[alpha] = interpolate_quadratic_3d(
+            F_in_arr[alpha] = interpolate_quadratic_3d_lts(
                 up_i, up_j, up_k,
-                f_old_ptrs[alpha],
+                f_old_ptrs, tau_dt_product_d,
+                alpha, tau_A_minus1_dt_A,
                 NX6, NZ6);
         }
     }

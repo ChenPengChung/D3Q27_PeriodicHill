@@ -58,6 +58,11 @@ double delta_xi_h[19];               // GILBM ξ-direction displacement (constan
 // Phase 3: Imamura global time step — runtime parameters (extern'd in variables.h)
 double dt;
 double tau;
+
+// Phase 4: Local Time Step fields [NYD6*NZ6]
+double *dt_local_h, *dt_local_d;
+double *tau_local_h, *tau_local_d;
+double *tau_dt_product_h, *tau_dt_product_d;
 //
 // 逆變速度在 GPU kernel 中即時計算（不需全場存儲）：
 //   ẽ_α_η = e[α][0] / dx           (常數)
@@ -184,6 +189,15 @@ int main(int argc, char *argv[])
     // GILBM Phase 1.5: 預計算 δξ (常數) 和 δζ (RK2 空間變化) 位移 (using runtime dt)
     PrecomputeGILBM_DeltaXiZeta(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, NYD6, NZ6);
 
+    // Phase 4: Local Time Step — per-point dt, tau, tau*dt
+    ComputeLocalTimeStep(dt_local_h, tau_local_h, tau_dt_product_h,
+                         dk_dz_h, dk_dy_h, dx_val, dy_val,
+                         niu_target, dt, NYD6, NZ6, CFL, myid);
+
+    // Phase 4: Recompute delta_zeta with local dt (overwrites global-dt values)
+    PrecomputeGILBM_DeltaZeta_Local(delta_zeta_h, dk_dz_h, dk_dy_h,
+                                     dt_local_h, NYD6, NZ6);
+
     // Phase 2: CFL validation — departure point safety check (should now PASS)
     bool cfl_ok = ValidateDepartureCFL(delta_zeta_h, dk_dy_h, dk_dz_h, NYD6, NZ6, myid);
     if (!cfl_ok && myid == 0) {
@@ -200,8 +214,12 @@ int main(int argc, char *argv[])
     CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_eta, delta_eta_h, 19*sizeof(double)) );
     CHECK_CUDA( cudaMemcpyToSymbol(GILBM_dt,  &dt,  sizeof(double)) );
     CHECK_CUDA( cudaMemcpyToSymbol(GILBM_tau, &tau, sizeof(double)) );
+    // Phase 4: LTS fields to GPU
+    CHECK_CUDA( cudaMemcpy(dt_local_d,        dt_local_h,        NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
+    CHECK_CUDA( cudaMemcpy(tau_local_d,       tau_local_h,       NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
+    CHECK_CUDA( cudaMemcpy(tau_dt_product_d,  tau_dt_product_h,  NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
 
-    if (myid == 0) printf("GILBM: dt/tau/delta_eta/delta_xi (__constant__) + delta_zeta (field) copied to GPU.\n");
+    if (myid == 0) printf("GILBM: dt/tau/delta_eta/delta_xi (__constant__) + delta_zeta/LTS (field) copied to GPU.\n");
 
     if ( INIT == 0 ) {
         printf("Initializing by default function...\n");

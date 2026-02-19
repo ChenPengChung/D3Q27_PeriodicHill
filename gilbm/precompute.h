@@ -246,6 +246,192 @@ void PrecomputeGILBM_DeltaEta(
     }
 }
 
+// ============================================================================
+// Phase 4: Local Time Step (Imamura 2005 Eq. 28)
+// ============================================================================
+// dt_local(j,k) = λ / max_α |c̃_α(j,k)|
+// tau_local(j,k) = 0.5 + 3·ν / dt_local(j,k)
+// a(j,k) = dt_local / dt_global  (acceleration factor, ≥ 1)
+//
+// Each (j,k) gets its own CFL-limited time step. Near walls where dk_dz is
+// large, dt_local ≈ dt_global. At channel center where dk_dz is small,
+// dt_local >> dt_global → faster convergence to steady state.
+void ComputeLocalTimeStep(
+    double *dt_local_h,          // 輸出: [NYD6*NZ6]
+    double *tau_local_h,         // 輸出: [NYD6*NZ6]
+    double *tau_dt_product_h,    // 輸出: [NYD6*NZ6] tau*dt for re-estimation
+    const double *dk_dz_h,
+    const double *dk_dy_h,
+    double dx_val, double dy_val,
+    double niu_val, double dt_global,
+    int NYD6_local, int NZ6_local,
+    double cfl_lambda, int myid_local
+) {
+    double e[19][3] = {
+        {0,0,0},
+        {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
+        {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
+        {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
+        {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
+    };
+
+    // Constant contributions from η and ξ directions
+    double c_eta_max = 1.0 / dx_val;   // max|e_x|/dx = 1/dx
+    double c_xi_max  = 1.0 / dy_val;   // max|e_y|/dy = 1/dy
+    double c_uniform = (c_eta_max > c_xi_max) ? c_eta_max : c_xi_max;
+
+    int sz = NYD6_local * NZ6_local;
+    double a_min = 1e30, a_max = 0.0, a_sum = 0.0;
+    int a_count = 0;
+    int a_max_j = -1, a_max_k = -1;
+
+    // Fill all points (including halo) with global dt as default
+    for (int idx = 0; idx < sz; idx++) {
+        dt_local_h[idx] = dt_global;
+        tau_local_h[idx] = 0.5 + 3.0 * niu_val / dt_global;
+        tau_dt_product_h[idx] = tau_local_h[idx] * dt_global;
+    }
+
+    // Compute local dt at interior fluid points
+    for (int j = 3; j < NYD6_local - 4; j++) {
+        for (int k = 3; k < NZ6_local - 3; k++) {
+            int idx_jk = j * NZ6_local + k;
+            double dk_dy_val = dk_dy_h[idx_jk];
+            double dk_dz_val = dk_dz_h[idx_jk];
+
+            // Find max|c̃| across all directions at this (j,k)
+            double max_c = c_uniform;
+            for (int alpha = 1; alpha < 19; alpha++) {
+                if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
+                double c_zeta = fabs(e[alpha][1] * dk_dy_val
+                                   + e[alpha][2] * dk_dz_val);
+                if (c_zeta > max_c) max_c = c_zeta;
+            }
+
+            double dt_l = cfl_lambda / max_c;
+            double tau_l = 0.5 + 3.0 * niu_val / dt_l;
+
+            dt_local_h[idx_jk] = dt_l;
+            tau_local_h[idx_jk] = tau_l;
+            tau_dt_product_h[idx_jk] = tau_l * dt_l;
+
+            // Track acceleration factor statistics
+            double a = dt_l / dt_global;
+            if (a < a_min) a_min = a;
+            if (a > a_max) { a_max = a; a_max_j = j; a_max_k = k; }
+            a_sum += a;
+            a_count++;
+        }
+    }
+
+    if (myid_local == 0 && a_count > 0) {
+        printf("\n=============================================================\n");
+        printf("  Phase 4: Local Time Step (Imamura 2005 Eq. 28)\n");
+        printf("=============================================================\n");
+        printf("  dt_global = %.6e\n", dt_global);
+        printf("  Acceleration factor a(j,k) = dt_local / dt_global:\n");
+        printf("    min(a)  = %.4f  (near wall, CFL-limited)\n", a_min);
+        printf("    max(a)  = %.4f  at j=%d, k=%d (channel center)\n",
+               a_max, a_max_j, a_max_k);
+        printf("    mean(a) = %.4f  (%d interior points)\n",
+               a_sum / a_count, a_count);
+        printf("  tau range: [%.4f, %.4f]\n",
+               0.5 + 3.0 * niu_val / (a_max * dt_global),
+               0.5 + 3.0 * niu_val / (a_min * dt_global));
+        printf("  dt_local range: [%.6e, %.6e]\n",
+               a_min * dt_global, a_max * dt_global);
+
+        // Print k-profile at middle j
+        int j_mid = NYD6_local / 2;
+        printf("\n  k-profile at j=%d:\n", j_mid);
+        printf("  %4s  %12s  %8s  %8s\n", "k", "dt_local", "tau_loc", "a");
+        for (int k = 3; k < NZ6_local - 3; k += 3) {
+            int idx = j_mid * NZ6_local + k;
+            printf("  %4d  %12.6e  %8.4f  %8.4f\n",
+                   k, dt_local_h[idx], tau_local_h[idx],
+                   dt_local_h[idx] / dt_global);
+        }
+        printf("=============================================================\n\n");
+    }
+}
+
+// ============================================================================
+// PrecomputeGILBM_DeltaZeta_Local: ζ-direction RK2 with LOCAL dt
+// ============================================================================
+// Same as PrecomputeGILBM_DeltaZeta but uses dt_local(j,k) instead of global dt.
+// The RK2 midpoint k_half depends on dt, so this is NOT a simple scaling.
+void PrecomputeGILBM_DeltaZeta_Local(
+    double *delta_zeta_h,        // 輸出: [19 * NYD6 * NZ6]
+    const double *dk_dz_h,      // 輸入: [NYD6 * NZ6]
+    const double *dk_dy_h,      // 輸入: [NYD6 * NZ6]
+    const double *dt_local_h,   // 輸入: [NYD6 * NZ6] local time step
+    int NYD6_local,
+    int NZ6_local
+) {
+    double e_y[19] = {
+        0, 0,0,1,-1,0,0, 1,1,-1,-1, 0,0,0,0, 1,-1,1,-1
+    };
+    double e_z[19] = {
+        0, 0,0,0,0,1,-1, 0,0,0,0, 1,1,-1,-1, 1,1,-1,-1
+    };
+
+    int sz = NYD6_local * NZ6_local;
+
+    for (int alpha = 0; alpha < 19; alpha++) {
+        if (e_y[alpha] == 0.0 && e_z[alpha] == 0.0) {
+            // alpha=0 (rest) or pure x-direction: δζ = 0
+            for (int idx = 0; idx < sz; idx++)
+                delta_zeta_h[alpha * sz + idx] = 0.0;
+            continue;
+        }
+
+        for (int j = 0; j < NYD6_local; j++) {
+            for (int k = 0; k < NZ6_local; k++) {
+                int idx_jk = j * NZ6_local + k;
+
+                // Skip non-interior points (keep zero default)
+                if (k < 2 || k >= NZ6_local - 2) {
+                    delta_zeta_h[alpha * sz + idx_jk] = 0.0;
+                    continue;
+                }
+
+                double dk_dy_val = dk_dy_h[idx_jk];
+                double dk_dz_val = dk_dz_h[idx_jk];
+                double dt_l = dt_local_h[idx_jk];
+
+                // Step 1: contravariant velocity at current point
+                double e_tilde_zeta0 = e_y[alpha] * dk_dy_val
+                                     + e_z[alpha] * dk_dz_val;
+
+                // Step 2: RK2 midpoint with LOCAL dt
+                double k_half = (double)k - 0.5 * dt_l * e_tilde_zeta0;
+
+                // Clamp midpoint to valid interpolation range
+                if (k_half < 2.0) k_half = 2.0;
+                if (k_half > (double)(NZ6_local - 3)) k_half = (double)(NZ6_local - 3);
+
+                // Step 3: interpolate dk_dy, dk_dz at midpoint
+                int k_base = (int)k_half;
+                if (k_base < 2) k_base = 2;
+                if (k_base >= NZ6_local - 3) k_base = NZ6_local - 4;
+                double frac = k_half - (double)k_base;
+
+                int idx0 = j * NZ6_local + k_base;
+                int idx1 = j * NZ6_local + k_base + 1;
+
+                double dk_dy_half = dk_dy_h[idx0] * (1.0 - frac) + dk_dy_h[idx1] * frac;
+                double dk_dz_half = dk_dz_h[idx0] * (1.0 - frac) + dk_dz_h[idx1] * frac;
+
+                // Step 4: full RK2 displacement with LOCAL dt
+                double e_tilde_zeta_half = e_y[alpha] * dk_dy_half
+                                         + e_z[alpha] * dk_dz_half;
+
+                delta_zeta_h[alpha * sz + idx_jk] = dt_l * e_tilde_zeta_half;
+            }
+        }
+    }
+}
+
 #endif
 /*
 在曲線座標下的遷移距離計算應該要分開編號，分裏量計算，或者創建二維度陣咧儲存

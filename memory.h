@@ -92,6 +92,10 @@ void AllocateMemory() {
     nBytes = 19 * NYD6 * NZ6 * sizeof(double);
     AllocateHostArray(  nBytes, 1, &delta_zeta_h);
     AllocateDeviceArray(nBytes, 1, &delta_zeta_d);
+    // Phase 4 LTS: local dt, tau, tau*dt fields [NYD6 * NZ6]
+    nBytes = NYD6 * NZ6 * sizeof(double);
+    AllocateHostArray(  nBytes, 3, &dt_local_h, &tau_local_h, &tau_dt_product_h);
+    AllocateDeviceArray(nBytes, 3, &dt_local_d, &tau_local_d, &tau_dt_product_d);
 
     nBytes = NZ6 * sizeof(double);
     CHECK_CUDA( cudaMallocHost( (void**)&xi_h, nBytes ) );
@@ -149,6 +153,9 @@ void FreeSource() {
     FreeDeviceArray(2,  dk_dz_d, dk_dy_d);
     FreeHostArray(  1,  delta_zeta_h);
     FreeDeviceArray(1,  delta_zeta_d);
+    // Phase 4 LTS
+    FreeHostArray(  3,  dt_local_h, tau_local_h, tau_dt_product_h);
+    FreeDeviceArray(3,  dt_local_d, tau_local_d, tau_dt_product_d);
 
     for( int i = 0; i < 3; i++ ){
         FreeHostArray(  3,  Xdep_h[i], Ydep_h[i], Zdep_h[i]);
