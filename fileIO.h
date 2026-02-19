@@ -93,13 +93,13 @@ void result_writebin_velocityandf() {
     out << "LBM Velocity Field\n";
     out << "ASCII\n";
     out << "DATASET STRUCTURED_GRID\n";
-    out << "DIMENSIONS " << NX6-6 << " " << NYD6-6 << " " << NZ6-6 << "\n";
+    out << "DIMENSIONS " << NX6-6 << " " << NYD6-6 << " " << NZ6-4 << "\n";  // Z: 66 計算點 (k=2..NZ6-3)
 
     // 座標點
-    int nPoints = (NX6-6) * (NYD6-6) * (NZ6-6);
+    int nPoints = (NX6-6) * (NYD6-6) * (NZ6-4);
     out << "POINTS " << nPoints << " double\n";
     out << fixed << setprecision(6);
-    for( int k = 3; k < NZ6-3; k++ ){
+    for( int k = 2; k < NZ6-2; k++ ){    // 包含壁面 k=2 和 k=NZ6-3
     for( int j = 3; j < NYD6-3; j++ ){
     for( int i = 3; i < NX6-3; i++ ){
         out << x_h[i] << " " << y_h[j] << " " << z_h[j*NZ6+k] << "\n";
@@ -109,7 +109,7 @@ void result_writebin_velocityandf() {
     out << "\nPOINT_DATA " << nPoints << "\n";
     out << "VECTORS velocity double\n";
     out << setprecision(15);
-    for( int k = 3; k < NZ6-3; k++ ){
+    for( int k = 2; k < NZ6-2; k++ ){    // 包含壁面 k=2 和 k=NZ6-3
     for( int j = 3; j < NYD6-3; j++ ){
     for( int i = 3; i < NX6-3; i++ ){
         int index = j*NZ6*NX6 + k*NX6 + i;
@@ -194,7 +194,7 @@ void statistics_writebin(double *arr_d, const char *fname, const int myid){
     
     // C++ ofstream 寫入二進制
     ofstream file(oss.str().c_str(), ios::binary);
-    for( int k = 3; k < NZ6-3;  k++ ){
+    for( int k = 2; k < NZ6-2;  k++ ){    // 包含壁面 k=2 和 k=NZ6-3
     for( int j = 3; j < NYD6-3; j++ ){
     for( int i = 3; i < NX6-3;  i++ ){
         int index = j*NX6*NZ6 + k*NX6 + i;
@@ -214,7 +214,7 @@ void statistics_readbin(double * arr_d, const char *fname, const int myid){
     
     // C++ ifstream 讀取二進制
     ifstream file(oss.str().c_str(), ios::binary);
-    for( int k = 3; k < NZ6-3;  k++ ){
+    for( int k = 2; k < NZ6-2;  k++ ){    // 包含壁面 k=2 和 k=NZ6-3
     for( int j = 3; j < NYD6-3; j++ ){
     for( int i = 3; i < NX6-3;  i++ ){
         const int index = j*NX6*NZ6 + k*NX6 + i;
@@ -321,7 +321,7 @@ void fileIO_velocity_vtk_merged(int step) {
     // 每個 GPU 內部有效區域的 y 層數 (不含 ghost)
     const int nyLocal = NYD6 - 6;  // 去除上下各3層ghost
     const int nxLocal = NX6 - 6;
-    const int nzLocal = NZ6 - 6;
+    const int nzLocal = NZ6 - 4;  // 66 個 k 計算點 (k=2..NZ6-3)
     
     // 每個 GPU 發送的點數
     const int localPoints = nxLocal * nyLocal * nzLocal;
@@ -340,7 +340,7 @@ void fileIO_velocity_vtk_merged(int step) {
     double *z_local = (double*)malloc(zLocalSize * sizeof(double));
     
     int idx = 0;
-    for( int k = 3; k < NZ6-3; k++ ){
+    for( int k = 2; k < NZ6-2; k++ ){    // 包含壁面
     for( int j = 3; j < NYD6-3; j++ ){
     for( int i = 3; i < NX6-3; i++ ){
         int index = j*NZ6*NX6 + k*NX6 + i;
@@ -349,11 +349,11 @@ void fileIO_velocity_vtk_merged(int step) {
         w_local[idx] = w_h_p[index];
         idx++;
     }}}
-    
+
     // 準備本地 z 座標
     int zidx = 0;
     for( int j = 3; j < NYD6-3; j++ ){
-    for( int k = 3; k < NZ6-3; k++ ){
+    for( int k = 2; k < NZ6-2; k++ ){    // 包含壁面
         z_local[zidx++] = z_h[j*NZ6 + k];
     }}
     

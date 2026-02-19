@@ -31,20 +31,29 @@ void ComputeMetricTerms(
     double dy = y_h[4] - y_h[3];  // 均勻 Y 格距
 
     for (int j = 3; j < NYD6_local - 3; j++) {
-        for (int k = 3; k < NZ6_local - 3; k++) {
+        for (int k = 2; k < NZ6_local - 2; k++) {     // 擴展至壁面 k=2 和 k=NZ6-3
             int idx = j * NZ6_local + k;
+            double dz_dk, dz_dj;
 
-            // ∂z/∂k：Z 方向中心差分（固定 j）
-            double dz_dk = (z_h[j * NZ6_local + (k + 1)] -
-                            z_h[j * NZ6_local + (k - 1)]) / 2.0;
+            // ∂z/∂k：k 方向差分
+            if (k == 2) {
+                // 底壁：一階 forward difference（k=1 是 ghost，不在 tanh 上）
+                dz_dk = z_h[j * NZ6_local + 3] - z_h[j * NZ6_local + 2];
+            } else if (k == NZ6_local - 3) {
+                // 頂壁：一階 backward difference
+                dz_dk = z_h[j * NZ6_local + k] - z_h[j * NZ6_local + (k - 1)];
+            } else {
+                // 內部：中心差分
+                dz_dk = (z_h[j * NZ6_local + (k + 1)] -
+                         z_h[j * NZ6_local + (k - 1)]) / 2.0;
+            }
 
-            // ∂z/∂j：Y 方向中心差分（固定 k）
-            double dz_dj = (z_h[(j + 1) * NZ6_local + k] -
-                            z_h[(j - 1) * NZ6_local + k]) / 2.0;
+            // ∂z/∂j：Y 方向中心差分（所有 k 通用，含壁面）
+            dz_dj = (z_h[(j + 1) * NZ6_local + k] -
+                     z_h[(j - 1) * NZ6_local + k]) / 2.0;
 
             // 度量項（左側元素）
-            //J = (dz_dk * dy_dj) - (dz_dj*dy_dk) = dz_dk*dy - dz_dj*0 = dz_dk*dy 
-            dk_dz_h[idx] = dy / (dy * dz_dk);
+            dk_dz_h[idx] = 1.0 / dz_dk;
             dk_dy_h[idx] = -dz_dj / (dy * dz_dk);
         }
     }
@@ -93,7 +102,7 @@ void DiagnoseMetricTerms(int myid) {
     fout << "# j  k  y  z  H(y)  dz_dk  dk_dz  dz_dj  dk_dy  J\n";
     for (int j = bfr; j < NY6 - bfr; j++) {
         double Hy = HillFunction(y_g[j]);
-        for (int k = bfr; k < NZ6 - bfr; k++) {
+        for (int k = 2; k < NZ6 - 2; k++) {           // 擴展至壁面 k=2 和 k=NZ6-3
             int idx = j * NZ6 + k;
             double dz_dk = 1.0 / dk_dz_g[idx];
             double dz_dj = -dk_dy_g[idx] * dy * dz_dk;
@@ -180,7 +189,7 @@ void DiagnoseMetricTerms(int myid) {
     int fail_count_slope = 0; // 統計判據 6 失敗點數
 
     for (int j = bfr ; j < NY6 - bfr - 1; j++) { //由左到右掃描
-        int k_wall = bfr;  //壁面位置（k=3，對應 z=H(y)+0.5minSize）
+        int k_wall = 2;  //壁面位置（k=2，對應 z=H(y)，wet-node on wall）
         int idx = j * NZ6 + k_wall;//計算空間最下面一排的計算點
         double Hy = HillFunction(y_g[j]);
         double dHdy = (HillFunction(y_g[j + 1]) - HillFunction(y_g[j - 1])) / (2.0 * dy);
@@ -279,10 +288,10 @@ void DiagnoseMetricTerms(int myid) {
     // ====== Pass/Fail 判據匯總 ======
     cout << "\n----- Pass/Fail Criteria -----\n";
 
-    // 判據 1: dk_dz > 0 全場 //因為每一個點都應該存在hyperbolic tangent 伸縮程度 
+    // 判據 1: dk_dz > 0 全場 //因為每一個點都應該存在hyperbolic tangent 伸縮程度
     int pass1 = 1;
     for (int j = bfr; j < NY6 - bfr; j++) {
-        for (int k = bfr; k < NZ6 - bfr; k++) {
+        for (int k = 2; k < NZ6 - 2; k++) {             // 擴展至壁面
             if (dk_dz_g[j * NZ6 + k] <= 0.0) {
                 pass1 = 0;
                 cout << "  FAIL: dk_dz <= 0 at j=" << j << ", k=" << k << "\n";
@@ -291,16 +300,15 @@ void DiagnoseMetricTerms(int myid) {
     }
     cout << "[" << (pass1 ? "PASS" : "FAIL") << "] Criteria 1: dk_dz > 0 everywhere\n";
 
-    // 判據 2: 下壁面 dz_dk 與 tanh 解析值一致（10% 容差）
-    // dz_dk|_(k=3) = (z[k=4] - z[k=2]) / 2 = (minSize/2 + dx_j) / 2
-    // 其中 dx_j = minSize * total_j / total_0（tanh 拉伸的第一個完整格距隨 total 線性縮放）
+    // 判據 2: 下壁面 dz_dk 與解析值一致（10% 容差）
+    // k=2 為壁面（forward difference）: dz_dk = z[3] - z[2]
+    // z[3] = tanhFunction(total, minSize, a, 0, NZ6-7) + H(y) = minSize/2 + H(y)
+    // z[2] = H(y)
+    // 因此 dz_dk(wall) = minSize/2（常數，不隨 j 變化）
     int pass2 = 1;
-    double total_0 = LZ - HillFunction(0.0) - minSize;
+    double expected_dz_dk = minSize / 2.0;  // forward difference at k=2
     for (int j = bfr; j < NY6 - bfr; j++) {
-        double total_j = LZ - HillFunction(y_g[j]) - minSize;
-        double dx_j = minSize * total_j / total_0;            // 第一個完整格距
-        double expected_dz_dk = (minSize / 2.0 + dx_j) / 2.0; // 中心差分期望值
-        double dz_dk_wall = 1.0 / dk_dz_g[j * NZ6 + bfr];
+        double dz_dk_wall = 1.0 / dk_dz_g[j * NZ6 + 2];
         double rel_err = fabs(dz_dk_wall - expected_dz_dk) / expected_dz_dk;
         if (rel_err > 0.1) {
             pass2 = 0;
@@ -310,7 +318,7 @@ void DiagnoseMetricTerms(int myid) {
                  << ", rel_err=" << fixed << setprecision(2) << rel_err * 100 << "%\n";
         }
     }
-    cout << "[" << (pass2 ? "PASS" : "FAIL") << "] Criteria 2: dz_dk(wall) matches tanh analytical value (within 10%)\n";
+    cout << "[" << (pass2 ? "PASS" : "FAIL") << "] Criteria 2: dz_dk(wall) = minSize/2 (within 10%)\n";
 
     // 判據 3: 平坦段 dk_dy ≈ 0（掃描所有平坦 j，與判據 5 同條件）
     //  由於山坡曲率存在所引起的度量係數，在平坦區域應趨近於零
@@ -321,7 +329,7 @@ void DiagnoseMetricTerms(int myid) {
         if (fabs(Hy_c3) < 0.01 && fabs(dHdy_c3) < 0.01
             && fabs(HillFunction(y_g[j - 1])) < 0.01
             && fabs(HillFunction(y_g[j + 1])) < 0.01) {//排除山丘-平坦過渡帶（鄰居也必須平坦）
-            for (int k = bfr; k < NZ6 - bfr; k++) {
+            for (int k = 2; k < NZ6 - 2; k++) {            // 擴展至壁面
                 if (fabs(dk_dy_g[j * NZ6 + k]) > 0.1) {
                     pass3 = 0;
                     cout << "  FAIL: flat region j=" << j << " k=" << k
@@ -389,11 +397,11 @@ void DiagnoseMetricTerms(int myid) {
 
 #endif
 
-//Pass1: 驗證dk_dz計算正確 ： 全場dk_dz >0 
-//Pass2: 驗證dk_dz計算正確 ： k = 3處的dz_dk應與tanh解析值一致（j-dependent期望值）
+//Pass1: 驗證dk_dz計算正確 ： 全場dk_dz >0（含壁面 k=2 和 k=NZ6-3）
+//Pass2: 驗證dk_dz計算正確 ： k=2壁面 dz_dk = minSize/2（forward difference 解析值）
 //Pass3: 驗證dk_dy計算正確 ： 利用雙重for迴圈計算平坦區段的dk_dy都等於0
-//Pass4: 驗證dk_dy計算正確 ： 取最陡峭的j列的垂直中點 ，檢查該點的dk_dy是否與山坡斜率反號：
-//取k=3計算空間下邊界計算點做判斷
-//Pass5: 驗證e_alpha_k的計算正確性：下邊界&&平坦區段：需要做邊界處理的編號個數 = 5 
+//Pass4: 驗證dk_dy計算正確 ： 取最陡峭的j列的垂直中點 ，檢查該點的dk_dy是否與山坡斜率反號
+//取k=2計算空間下邊界壁面計算點做判斷
+//Pass5: 驗證e_alpha_k的計算正確性：下邊界&&平坦區段：需要做邊界處理的編號個數 = 5
 //Pass6: 驗證e_alpha_k計算正確 ： 所有的斜面計算點都應該要有6個以上的編號需要邊界處理
 

@@ -125,12 +125,19 @@ void GenerateMesh_Z() {
         }
         z_h[j*NZ6+2] = HillFunction( y_h[j] );
         z_h[j*NZ6+(NZ6-3)] = (double)LZ;
+
+        // Ghost z values (linear extrapolation, for difference stencils at k=2 and k=NZ6-3)
+        z_h[j*NZ6+1]       = 2.0 * z_h[j*NZ6+2] - z_h[j*NZ6+3];
+        z_h[j*NZ6+(NZ6-2)] = 2.0 * z_h[j*NZ6+(NZ6-3)] - z_h[j*NZ6+(NZ6-4)];
     }
 
     for( int k = bfr; k < NZ6-bfr; k++ ){
         xi_h[k] = tanhFunction( LXi, minSize, a, (k-3), (NZ6-7) ) - minSize/2.0;
     }
-    
+    // Wall xi values (linear extrapolation for k=2 and k=NZ6-3 computation points)
+    xi_h[2]     = 2.0 * xi_h[3] - xi_h[4];
+    xi_h[NZ6-3] = 2.0 * xi_h[NZ6-4] - xi_h[NZ6-5];
+
 
     double y_global[NY6];
     double z_global[NY6*NZ6];
@@ -144,6 +151,10 @@ void GenerateMesh_Z() {
         }
         z_global[j*NZ6+2] = HillFunction( y_global[j] );
         z_global[j*NZ6+(NZ6-3)] = (double)LZ;
+
+        // Ghost z values (linear extrapolation)
+        z_global[j*NZ6+1]       = 2.0 * z_global[j*NZ6+2] - z_global[j*NZ6+3];
+        z_global[j*NZ6+(NZ6-2)] = 2.0 * z_global[j*NZ6+(NZ6-3)] - z_global[j*NZ6+(NZ6-4)];
     }
 
     FILE *meshZ;

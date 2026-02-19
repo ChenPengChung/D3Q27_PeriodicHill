@@ -77,7 +77,7 @@ __global__ void stream_collide_Buffer(
 	const int j = blockIdx.y*blockDim.y + threadIdx.y + start;
     const int k = blockIdx.z*blockDim.z + threadIdx.z;
 
-    if( i <= 2 || i >= NX6-3 || k <= 2 || k >= NZ6-3 ) return;
+    if( i <= 2 || i >= NX6-3 || k <= 1 || k >= NZ6-2 ) return;  // k=2 和 k=NZ6-3 現為壁面計算點
 
     const int index = j*NX6*NZ6 + k*NX6 + i;
           int idx;
@@ -144,14 +144,14 @@ __global__ void stream_collide_Buffer(
     
     
 
-    if( k == 3 ){
+    if( k == 2 ){              // 底壁 wet-node bounce-back (壁面在 k=2)
         F5_in  = f6_old[index];
         F11_in = f14_old[index];
         F12_in = f13_old[index];
         F15_in = f18_old[index];
         F16_in = f17_old[index];
     }
-    if( k == NZ6-4 ){
+    if( k == NZ6-3 ){         // 頂壁 wet-node bounce-back (壁面在 k=NZ6-3)
         F6_in  = f5_old[index];
         F13_in = f12_old[index];
         F14_in = f11_old[index];
@@ -366,7 +366,7 @@ __global__ void stream_collide(
 	const int j = blockIdx.y*blockDim.y + threadIdx.y;
     const int k = blockIdx.z*blockDim.z + threadIdx.z;
 
-    if( i <= 2 || i >= NX6-3 || j <= 6 || j >= NYD6-7 || k <= 2 || k >= NZ6-3 ) return;
+    if( i <= 2 || i >= NX6-3 || j <= 6 || j >= NYD6-7 || k <= 1 || k >= NZ6-2 ) return;  // k=2 和 k=NZ6-3 現為壁面計算點
     //if( i <= 2 || i >= NX6-3 || j <= 2 || j >= NYD6-3 || k <= 2 || k >= NZ6-3 ) return;
 
     const int index = j*NX6*NZ6 + k*NX6 + i;
@@ -435,14 +435,14 @@ __global__ void stream_collide(
     
     
 
-    if( k == 3 ){
+    if( k == 2 ){              // 底壁 wet-node bounce-back (壁面在 k=2)
         F5_in  = f6_old[index];
         F11_in = f14_old[index];
         F12_in = f13_old[index];
         F15_in = f18_old[index];
         F16_in = f17_old[index];
     }
-    if( k == NZ6-4 ){
+    if( k == NZ6-3 ){         // 頂壁 wet-node bounce-back (壁面在 k=NZ6-3)
         F6_in  = f5_old[index];
         F13_in = f12_old[index];
         F14_in = f11_old[index];
@@ -455,7 +455,7 @@ __global__ void stream_collide(
         F12_in = f13_old[index];
     } */
     __syncthreads();
-    //BFL 
+    //BFL
     if( k == 3 || k == 4 ) {
         idx_xi = (k-3)*NYD6+j;
         if ( BFLReqF3_d[(k-3)*NYD6+j] == 1 ){
@@ -767,10 +767,10 @@ __global__ void AccumulateUbulk(
     const int j = blockIdx.y*blockDim.y + threadIdx.y + 3;
     const int k = blockIdx.z*blockDim.z + threadIdx.z;
 
-    if( i <= 2 || i >= NX6-3 || k <= 2 || k >= NZ6-3 ) return;
+    if( i <= 2 || i >= NX6-3 || k <= 1 || k >= NZ6-2 ) return;  // 包含壁面 k=2,NZ6-3
 
     double dx = ( x[i+1] - x[i-1] ) / 2.0;
-    double dz = ( z[j*NZ6+k+1] - z[j*NZ6+k-1] ) / 2.0;
+    double dz = ( z[j*NZ6+k+1] - z[j*NZ6+k-1] ) / 2.0;  // k=2 時讀 z[k=1](ghost) 和 z[k=3]
 
     Ub_avg[k*NX6+i] += v[j*NZ6*NX6+k*NX6+i] * dx * dz;
 }
@@ -925,7 +925,7 @@ void Launch_ModifyForcingTerm()
     CHECK_CUDA( cudaMemcpy(Ub_avg_h, Ub_avg_d, nBytes, cudaMemcpyDeviceToHost) );
     
     double Ub_avg = 0.0;
-    for( int k = 3; k < NZ6-3; k++ ){
+    for( int k = 2; k < NZ6-2; k++ ){    // 包含壁面計算點
     for( int i = 3; i < NX6-4; i++ ){
         Ub_avg = Ub_avg + Ub_avg_h[k*NX6+i];
         Ub_avg_h[k*NX6+i] = 0.0;
