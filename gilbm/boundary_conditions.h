@@ -20,6 +20,16 @@
 
 // Check if direction alpha needs BC at this wall point
 // Uses GILBM_e from __constant__ memory (defined in evolution_gilbm.h)
+//
+// 判定準則：ẽ^ζ_α = e_y[α]·dk_dy + e_z[α]·dk_dz（ζ 方向逆變速度分量）
+//   底壁 (k=2):   ẽ^ζ_α > 0 → streaming 出發點 k_dep = k - δζ < 2（壁外）→ 需要 BC
+//   頂壁 (k=NZ6-3): ẽ^ζ_α < 0 → 出發點 k_dep > NZ6-3（壁外）→ 需要 BC
+//
+// 返回 true 時：該 α 由 Chapman-Enskog BC 處理，跳過 streaming。
+// 對應的 delta_eta[α] / delta_xi[α] / delta_zeta[α,j,k] 不被讀取。
+//
+// 平坦底壁 BC 方向: α={5,11,12,15,16}（共 5 個，皆 e_z > 0）
+// 斜面底壁 (slope<45°): 額外加入 e_y 分量方向，共 8 個 BC 方向
 __device__ __forceinline__ bool NeedsBoundaryCondition(
     int alpha,
     double dk_dy_val, double dk_dz_val,

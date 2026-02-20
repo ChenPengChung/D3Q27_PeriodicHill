@@ -204,7 +204,10 @@ int main(int argc, char *argv[])
             "  This should not happen — check ComputeGlobalTimeStep logic.\n");
     }
 
-    // 拷貝度量項、delta 陣列、runtime 參數到 GPU
+    // 拷貝度量項、位移量陣列、runtime 參數到 GPU
+    // NOTE: delta_eta/delta_xi/delta_zeta 對所有 19 方向統一上傳。
+    // 壁面節點上 BC 方向（ẽ^ζ_α > 0 底壁 / < 0 頂壁）的值雖已上傳，
+    // 但 kernel 中 NeedsBoundaryCondition() 判定後跳過 streaming，不讀取。
     CHECK_CUDA( cudaMemcpy(dk_dz_d,   dk_dz_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaMemcpy(dk_dy_d,   dk_dy_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaMemcpy(delta_zeta_d, delta_zeta_h, 19*NYD6*NZ6*sizeof(double),   cudaMemcpyHostToDevice) );

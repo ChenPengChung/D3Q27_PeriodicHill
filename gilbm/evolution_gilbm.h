@@ -24,6 +24,9 @@ __constant__ double GILBM_dt;
 __constant__ double GILBM_tau;
 
 // Precomputed displacement arrays (constant for uniform x and y)
+// NOTE: 壁面邊界節點上，ẽ^ζ_α > 0（底壁）或 < 0（頂壁）的方向由
+// Chapman-Enskog BC 處理，不走 streaming，因此對該 α 不讀取 delta_eta/delta_xi。
+// 判定邏輯見 NeedsBoundaryCondition()（boundary_conditions.h）。
 __constant__ double GILBM_delta_eta[19]; // δη[α] = dt · e_x[α] / dx
 __constant__ double GILBM_delta_xi[19];  // δξ[α] = dt · e_y[α] / dy
 
@@ -170,6 +173,18 @@ __global__ void stream_collide_GILBM_Buffer(
     const double a_local = dt / GILBM_dt;               // ≥ 1 (local dt / global dt)
     const double tau_A_minus1_dt_A = (tau - 1.0) * dt;  // for re-estimation Eq. 36
 
+    // ====================================================================
+    // Streaming / BC 分歧：每個方向 α 判定是否需要邊界處理
+    // ====================================================================
+    // 判定準則（見 NeedsBoundaryCondition, boundary_conditions.h）：
+    //   ẽ^ζ_α = e_y[α]·dk_dy + e_z[α]·dk_dz
+    //   底壁 (k=2):   ẽ^ζ_α > 0 → 出發點在壁外 → BC（Chapman-Enskog）
+    //   頂壁 (k=NZ6-3): ẽ^ζ_α < 0 → 出發點在壁外 → BC（Chapman-Enskog）
+    //   其他情況 → streaming（使用 delta_eta, delta_xi, delta_zeta 計算出發點）
+    //
+    // BC 方向不讀取 delta_eta[α] / delta_xi[α] / delta_zeta[α,j,k]，
+    // 這些值雖在 precompute 階段已計算，但對壁面 BC 方向無效。
+    // ====================================================================
     for (int alpha = 1; alpha < 19; alpha++) {
         bool need_bc = false;
         if (is_bottom) {
@@ -179,11 +194,13 @@ __global__ void stream_collide_GILBM_Buffer(
         }
 
         if (need_bc) {
-            // Chapman-Enskog BC (uses local omega, dt automatically)
+            // BC 方向：ẽ^ζ_α 指向壁外 → 跳過 streaming → Chapman-Enskog 重建 f_α
+            // delta_eta[α], delta_xi[α], delta_zeta[α,...] 對此 α 不使用
             F_in_arr[alpha] = ChapmanEnskogBC(alpha, rho_wall,
                 du_x_dk, du_y_dk, du_z_dk,
                 dk_dy_val, dk_dz_val, omega, dt);
         } else {
+            // Streaming 方向：ẽ^ζ_α 指向流體內部（或為零）→ 使用位移量計算出發點
             // Phase 4: scale η/ξ displacement by local acceleration factor
             double delta_i = a_local * GILBM_delta_eta[alpha];
             double delta_xi_val = a_local * GILBM_delta_xi[alpha];
@@ -370,6 +387,7 @@ __global__ void stream_collide_GILBM(
     const double a_local = dt / GILBM_dt;
     const double tau_A_minus1_dt_A = (tau - 1.0) * dt;
 
+    // Streaming / BC 分歧（同第一個 kernel，見上方詳細註解）
     for (int alpha = 1; alpha < 19; alpha++) {
         bool need_bc = false;
         if (is_bottom) {
@@ -379,11 +397,12 @@ __global__ void stream_collide_GILBM(
         }
 
         if (need_bc) {
+            // BC 方向：跳過 streaming，Chapman-Enskog 重建（delta_eta/xi/zeta 不使用）
             F_in_arr[alpha] = ChapmanEnskogBC(alpha, rho_wall,
                 du_x_dk, du_y_dk, du_z_dk,
                 dk_dy_val, dk_dz_val, omega, dt);
         } else {
-            // Phase 4: scale η/ξ displacement by local acceleration factor
+            // Streaming 方向：使用位移量計算出發點
             double delta_i = a_local * GILBM_delta_eta[alpha];
             double delta_xi_val = a_local * GILBM_delta_xi[alpha];
             double delta_zeta_val = delta_zeta_d[alpha * NYD6 * NZ6 + idx_jk];

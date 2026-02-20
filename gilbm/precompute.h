@@ -18,6 +18,12 @@
 // → δη[α] = dt · e_x[α] / dx
 // No RK2 correction needed (metric is constant → midpoint = endpoint).
 //
+// NOTE: 壁面邊界節點（k=2 底壁, k=NZ6-3 頂壁）上，若某方向 α 的 ζ 方向
+// 逆變速度 ẽ^ζ_α = e_y·dk_dy + e_z·dk_dz > 0（底壁）或 < 0（頂壁），
+// 則該 α 由 Chapman-Enskog BC 處理，不走 streaming。
+// 此時 delta_eta[α] 雖已計算，但在該壁面節點上不會被 streaming 讀取。
+// η 方向為均勻網格，δη 為常數陣列 [19]，不區分壁面/內部，統一預計算。
+//
 // When x becomes non-uniform, promote delta_eta from [19] to [19*NYD6*NZ6]
 // and add RK2 midpoint interpolation in i-direction.
 void PrecomputeGILBM_DeltaEta(
@@ -45,6 +51,10 @@ void PrecomputeGILBM_DeltaEta(
 // → ẽ^ξ_α = e_y[α] · (1/dy) = e_y[α] / dy
 // → δξ[α] = dt · e_y[α] / dy
 // No RK2 correction needed (metric is constant → midpoint = endpoint).
+//
+// NOTE: 壁面邊界節點上，BC 方向（ẽ^ζ_α > 0 底壁 / < 0 頂壁）的分佈函數
+// 由 Chapman-Enskog BC 處理，不走 streaming，因此 delta_xi[α] 在壁面節點
+// 對該 α 無效（不被讀取）。ξ 為均勻網格，統一預計算所有 α。
 //
 // When y becomes non-uniform, promote delta_xi from [19] to [19*NYD6*NZ6]
 // and add RK2 midpoint interpolation in j-direction.
@@ -74,6 +84,19 @@ void PrecomputeGILBM_DeltaXi(
 //   Step 2: k_half = k - 0.5·dt·ẽ^ζ_α(k)            RK2 midpoint
 //   Step 3: Interpolate dk/dy, dk/dz at k_half
 //   Step 4: δζ[α] = dt · ẽ^ζ_α(k_half)              full RK2 displacement
+//
+// 注意：壁面邊界節點（k=2 底壁, k=NZ6-3 頂壁）的 BC/streaming 分類：
+//   ẽ^ζ_α = e_y[α]·dk_dy + e_z[α]·dk_dz
+//   底壁：ẽ^ζ_α > 0 → 出發點在壁面以下 → BC 方向（Chapman-Enskog 處理）
+//   底壁：ẽ^ζ_α ≤ 0 → 出發點在流體內部 → streaming 方向（使用 δζ 插值）
+//   頂壁：ẽ^ζ_α < 0 → BC 方向；ẽ^ζ_α ≥ 0 → streaming 方向
+//
+//   平坦底壁 (dk_dy=0) 的 BC 方向: α={5,11,12,15,16}（e_z>0，共 5 個）
+//   斜面底壁 (dk_dy≠0, slope<45°): BC 方向增至 8 個（額外含 e_y 分量方向）
+//
+// δζ 對所有 19 方向統一計算（含 BC 方向），但 BC 方向的值不被 streaming 讀取。
+// 統一計算原因：(1) BC 方向隨 (j,k) 的 dk_dy 變化，條件判斷反增複雜度；
+// (2) D3Q19 的 (e_y,e_z)↔(-e_y,-e_z) 對稱性保證 BC 方向的 δζ 值有限且無害。
 void PrecomputeGILBM_DeltaZeta(
     double *delta_zeta_h,    // 輸出: [19 * NYD6 * NZ6]，預計算的位移量
     const double *dk_dz_h,   // 輸入: 度量項 dk/dz [NYD6*NZ6]
@@ -164,6 +187,10 @@ void PrecomputeGILBM_DeltaAll(
     PrecomputeGILBM_DeltaZeta(delta_zeta_h, dk_dz_h, dk_dy_h, NYD6_local, NZ6_local);
 }
 
+
+
+
+
 // ============================================================================
 // Phase 3: Imamura's Global Time Step (Imamura 2005 Eq. 22)
 // ============================================================================
@@ -212,9 +239,13 @@ double ComputeGlobalTimeStep(
         max_dir = 1; max_alpha = 3; max_j = -1; max_k = -1;
     }
 
-    // ζ-direction (non-uniform z): scan all interior fluid points
+    // ζ-direction (non-uniform z): scan all fluid points including wall (k=2, k=NZ6-3)
+    // 壁面 dk_dz 最大（tanh 拉伸最密處），是全場 CFL 最嚴格的約束點。
+    // 雖然壁面有部分方向由 BC 處理（不做 streaming），但 D3Q19 的
+    // (e_y,e_z)↔(-e_y,-e_z) 對稱性保證 max|c̃^ζ| 在 streaming 方向與
+    // BC 方向完全相同，因此掃描所有方向不會高估 CFL 約束。
     for (int j = 3; j < NYD6_local - 4; j++) {
-        for (int k = 3; k < NZ6_local - 3; k++) {
+        for (int k = 2; k < NZ6_local - 2; k++) {
             int idx_jk = j * NZ6_local + k;
             double dk_dy_val = dk_dy_h[idx_jk];
             double dk_dz_val = dk_dz_h[idx_jk];
@@ -237,22 +268,26 @@ double ComputeGlobalTimeStep(
 
     if (myid_local == 0) {
         const char *dir_name[] = {"eta (x)", "xi (y)", "zeta (z)"};
-        printf("\n=============================================================\n");
-        printf("  Phase 3: Imamura Global Time Step (Eq. 22)\n");
-        printf("  CFL lambda = %.4f\n", cfl_lambda);
-        printf("=============================================================\n");
-        printf("  max|c_tilde| = %.6f in %s direction\n",
-               max_c_tilde, dir_name[max_dir]);
+        std::cout << "\n=============================================================\n"
+                  << "  Phase 3: Imamura Global Time Step (Eq. 22)\n"
+                  << "  CFL lambda = " << std::fixed << std::setprecision(4) << cfl_lambda << "\n"
+                  << "=============================================================\n"
+                  << "  max|c_tilde| = " << std::setprecision(6) << max_c_tilde
+                  << " in " << dir_name[max_dir] << " direction\n";
         if (max_dir == 2) {
-            printf("    at alpha=%d (e_y=%+.0f, e_z=%+.0f), j=%d, k=%d\n",
-                   max_alpha, e[max_alpha][1], e[max_alpha][2], max_j, max_k);
+        std::cout << "    at alpha=" << max_alpha
+                  << " (e_y=" << std::showpos << std::setprecision(0) << std::fixed << (double)e[max_alpha][1]
+                  << ", e_z=" << (double)e[max_alpha][2] << std::noshowpos
+                  << "), j=" << max_j << ", k=" << max_k << "\n";
         }
-        printf("  dt_g = lambda / max|c_tilde| = %.6e\n", dt_g);
-        printf("  dt_old = minSize = %.6e\n", (double)minSize);
-        printf("  ratio dt_g / minSize = %.4f\n", dt_g / (double)minSize);
-        printf("  Speedup cost: %.1fx more timesteps per physical time\n",
-               (double)minSize / dt_g);
-        printf("=============================================================\n\n");
+        std::cout << std::noshowpos
+                  << "  dt_g = lambda / max|c_tilde| = " << std::scientific << std::setprecision(6) << dt_g << "\n"
+                  << "  dt_old = minSize = " << (double)minSize << "\n"
+                  << std::fixed << std::setprecision(4)
+                  << "  ratio dt_g / minSize = " << dt_g / (double)minSize << "\n"
+                  << std::setprecision(1)
+                  << "  Speedup cost: " << (double)minSize / dt_g << "x more timesteps per physical time\n"
+                  << "=============================================================\n\n";
     }
 
     return dt_g;
@@ -305,9 +340,11 @@ void ComputeLocalTimeStep(
         tau_dt_product_h[idx] = tau_local_h[idx] * dt_global;
     }
 
-    // Compute local dt at interior fluid points
+    // Compute local dt at all fluid points including wall (k=2, k=NZ6-3)
+    // 壁面 dk_dz 最大 → dt_local 最小（CFL 最嚴格），acceleration factor ≈ 1。
+    // D3Q19 對稱性：max|c̃^ζ| 不受 BC/streaming 方向過濾影響（見 ComputeGlobalTimeStep 註解）。
     for (int j = 3; j < NYD6_local - 4; j++) {
-        for (int k = 3; k < NZ6_local - 3; k++) {
+        for (int k = 2; k < NZ6_local - 2; k++) {
             int idx_jk = j * NZ6_local + k;
             double dk_dy_val = dk_dy_h[idx_jk];
             double dk_dz_val = dk_dz_h[idx_jk];
@@ -373,6 +410,9 @@ void ComputeLocalTimeStep(
 // ============================================================================
 // Same as PrecomputeGILBM_DeltaZeta but uses dt_local(j,k) instead of global dt.
 // The RK2 midpoint k_half depends on dt, so this is NOT a simple scaling.
+//
+// 壁面 BC/streaming 分類同 PrecomputeGILBM_DeltaZeta：BC 方向的 δζ 被計算但
+// 不被 streaming 使用（由 Chapman-Enskog BC 處理）。
 void PrecomputeGILBM_DeltaZeta_Local(
     double *delta_zeta_h,        // 輸出: [19 * NYD6 * NZ6]
     const double *dk_dz_h,      // 輸入: [NYD6 * NZ6]
