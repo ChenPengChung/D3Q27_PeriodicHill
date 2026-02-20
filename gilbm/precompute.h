@@ -1,13 +1,42 @@
 #ifndef GILBM_PRECOMPUTE_H
 #define GILBM_PRECOMPUTE_H
 
-// Phase 1.5: GILBM RK2 upwind displacement precomputation (Imamura 2005 Eq. 19-20)
-// Split into ξ-direction (constant for uniform y) and ζ-direction (space-varying).
+// GILBM displacement precomputation (Imamura 2005 Eq. 19-20)
+// Three directions, called once during initialization; results copied to GPU.
 //
-// δξ[α] = dt · ẽ^ξ_α = dt · e_y[α] / dy   → constant per alpha (19 values)
-// δζ[α,j,k] = dt · ẽ^ζ_α(k_half)           → RK2 midpoint evaluation [19*NYD6*NZ6]
+// δη[α]     = dt · e_x[α] / dx             → constant per alpha (19 values, uniform x)
+// δξ[α]     = dt · e_y[α] / dy             → constant per alpha (19 values, uniform y)
+// δζ[α,j,k] = dt · ẽ^ζ_α(k_half)          → RK2 midpoint evaluation [19*NYD6*NZ6]
 //
-// Called once during initialization; results copied to GPU.
+// Entry point: PrecomputeGILBM_DeltaAll() computes all three in one call.
+
+// ============================================================================
+// PrecomputeGILBM_DeltaEta: η-direction displacement (constant for uniform x)
+// ============================================================================
+// For uniform x-grid: dη/dx = 1/dx (constant), dη/dy = dη/dz = 0
+// → ẽ^η_α = e_x[α] · (1/dx) = e_x[α] / dx
+// → δη[α] = dt · e_x[α] / dx
+// No RK2 correction needed (metric is constant → midpoint = endpoint).
+//
+// When x becomes non-uniform, promote delta_eta from [19] to [19*NYD6*NZ6]
+// and add RK2 midpoint interpolation in i-direction.
+void PrecomputeGILBM_DeltaEta(
+    double *delta_eta_h,   // 輸出: [19]，η 方向位移量（常數）
+    double dx_val          // 輸入: uniform grid spacing dx = LX/(NX6-7)
+) {
+    // D3Q19 離散速度集（與 initialization.h 中一致）
+    double e_x[19] = {
+        0,
+        1, -1, 0, 0, 0, 0,
+        1, -1, 1, -1,
+        1, -1, 1, -1,
+        0, 0, 0, 0
+    };
+
+    for (int alpha = 0; alpha < 19; alpha++) {
+        delta_eta_h[alpha] = dt * e_x[alpha] / dx_val;
+    }
+}
 
 // ============================================================================
 // PrecomputeGILBM_DeltaXi: ξ-direction displacement (constant for uniform y)
@@ -70,8 +99,7 @@ void PrecomputeGILBM_DeltaZeta(
 
     // 遍歷所有離散速度方向（alpha=0 為靜止方向，跳過）
     for (int alpha = 1; alpha < 19; alpha++) {
-        // 若該方向在 y 和 z 分量皆為零，則逆變速度 e_tilde_zeta 恆為零
-        if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
+        if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue; // 若 e_y 和 e_z 皆為零（純 x 方向），則 ẽ^ζ_α ≡ 0，跳過此方向
 
         for (int j = 3; j < NYD6_local - 4; j++) { // 跳過 y 方向 buffer layer
             for (int k = 2; k < NZ6_local - 2; k++) {
@@ -87,8 +115,8 @@ void PrecomputeGILBM_DeltaZeta(
 
                 // 在中間點位置進行度量項的線性插值
                 int k_lo = (int)floor(k_half);
-                if (k_lo < 2) k_lo = 2;
-                if (k_lo > NZ6_local - 4) k_lo = NZ6_local - 4;
+                if (k_lo < 2) k_lo = 2; //k_low最小為2
+                if (k_lo > NZ6_local - 4) k_lo = NZ6_local - 4;//k_lo最大為NZ6-4
                 double frac = k_half - (double)k_lo;
                 if (frac < 0.0) frac = 0.0;
                 if (frac > 1.0) frac = 1.0;
@@ -114,18 +142,24 @@ void PrecomputeGILBM_DeltaZeta(
 }
 
 // ============================================================================
-// Wrapper: precompute both ξ and ζ displacements
+// Wrapper: precompute all three direction displacements (η, ξ, ζ)
 // ============================================================================
-void PrecomputeGILBM_DeltaXiZeta(
+// η: δη[α] = dt · e_x[α] / dx   (constant, [19])
+// ξ: δξ[α] = dt · e_y[α] / dy   (constant, [19])
+// ζ: δζ[α,j,k] = dt · ẽ^ζ(k_half)  (RK2, [19*NYD6*NZ6])
+void PrecomputeGILBM_DeltaAll(
     double *delta_xi_h,      // 輸出: [19]，ξ 方向位移量
+    double *delta_eta_h,     // 輸出: [19]，η 方向位移量
     double *delta_zeta_h,    // 輸出: [19 * NYD6 * NZ6]，ζ 方向位移量
     const double *dk_dz_h,   // 輸入: 度量項 dk/dz [NYD6*NZ6]
     const double *dk_dy_h,   // 輸入: 度量項 dk/dy [NYD6*NZ6]
     int NYD6_local,
     int NZ6_local
 ) {
+    double dx_val = LX / (double)(NX6 - 7);
     double dy_val = LY / (double)(NY6 - 7);
 
+    PrecomputeGILBM_DeltaEta(delta_eta_h, dx_val);
     PrecomputeGILBM_DeltaXi(delta_xi_h, dy_val);
     PrecomputeGILBM_DeltaZeta(delta_zeta_h, dk_dz_h, dk_dy_h, NYD6_local, NZ6_local);
 }
@@ -225,28 +259,6 @@ double ComputeGlobalTimeStep(
 }
 
 // ============================================================================
-// PrecomputeGILBM_DeltaEta: η-direction displacement (constant for uniform x)
-// ============================================================================
-// δη[α] = dt · e_x[α] / dx   (constant per alpha, like delta_xi)
-void PrecomputeGILBM_DeltaEta(
-    double *delta_eta_h,   // 輸出: [19]，η 方向位移量
-    double dx_val,         // 輸入: uniform grid spacing dx = LX/(NX6-7)
-    double dt_val          // 輸入: runtime time step
-) {
-    double e_x[19] = {
-        0,
-        1, -1, 0, 0, 0, 0,
-        1, -1, 1, -1,
-        1, -1, 1, -1,
-        0, 0, 0, 0
-    };
-
-    for (int alpha = 0; alpha < 19; alpha++) {
-        delta_eta_h[alpha] = dt_val * e_x[alpha] / dx_val;
-    }
-}
-
-// ============================================================================
 // Phase 4: Local Time Step (Imamura 2005 Eq. 28)
 // ============================================================================
 // dt_local(j,k) = λ / max_α |c̃_α(j,k)|
@@ -275,6 +287,7 @@ void ComputeLocalTimeStep(
         {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
     };
 
+    
     // Constant contributions from η and ξ directions
     double c_eta_max = 1.0 / dx_val;   // max|e_x|/dx = 1/dx
     double c_xi_max  = 1.0 / dy_val;   // max|e_y|/dy = 1/dy

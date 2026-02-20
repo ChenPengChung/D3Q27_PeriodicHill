@@ -54,6 +54,7 @@ double *dk_dz_h, *dk_dz_d;   // ∂ζ/∂z = 1/(∂z/∂k)
 double *dk_dy_h, *dk_dy_d;   // ∂ζ/∂y = -(∂z/∂j)/(dy·∂z/∂k)
 double *delta_zeta_h, *delta_zeta_d;  // GILBM RK2 ζ-direction displacement [19*NYD6*NZ6]
 double delta_xi_h[19];               // GILBM ξ-direction displacement (constant for uniform y)
+double delta_eta_h[19];              // GILBM η-direction displacement (constant for uniform x)
 
 // Phase 3: Imamura global time step — runtime parameters (extern'd in variables.h)
 double dt;
@@ -182,12 +183,9 @@ int main(int argc, char *argv[])
         printf("  Re  = %.1f, Uref = %.6e\n", (double)Re, Uref);
     }
 
-    // Precompute delta_eta (η-direction, constant, like delta_xi)
-    double delta_eta_h[19];
-    PrecomputeGILBM_DeltaEta(delta_eta_h, dx_val, dt);
-
-    // GILBM Phase 1.5: 預計算 δξ (常數) 和 δζ (RK2 空間變化) 位移 (using runtime dt)
-    PrecomputeGILBM_DeltaXiZeta(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, NYD6, NZ6);
+    // GILBM: 預計算三方向位移 δη (常數), δξ (常數), δζ (RK2 空間變化)
+    PrecomputeGILBM_DeltaAll(delta_xi_h, delta_eta_h, delta_zeta_h,
+                              dk_dz_h, dk_dy_h, NYD6, NZ6);
 
     // Phase 4: Local Time Step — per-point dt, tau, tau*dt
     ComputeLocalTimeStep(dt_local_h, tau_local_h, tau_dt_product_h,
