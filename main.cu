@@ -169,7 +169,7 @@ int main(int argc, char *argv[])
     double niu_target = (0.6833 - 0.5) / 3.0 * (double)minSize;
     double dx_val = LX / (double)(NX6 - 7);
     double dy_val = LY / (double)(NY6 - 7);
-
+    //dt 取為遍歷每一格空間計算點，每一個分量，每一個編號下的速度分量最大值，定義而成
     dt = ComputeGlobalTimeStep(dk_dz_h, dk_dy_h, dx_val, dy_val, NYD6, NZ6, CFL, myid);
     tau = 0.5 + 3.0 * niu_target / dt;
 

@@ -336,22 +336,22 @@ void ComputeLocalTimeStep(
     // Constant contributions from η and ξ directions
     double c_eta_max = 1.0 / dx_val;   // max|e_x|/dx = 1/dx
     double c_xi_max  = 1.0 / dy_val;   // max|e_y|/dy = 1/dy
-    double c_uniform = (c_eta_max > c_xi_max) ? c_eta_max : c_xi_max;
+    double c_uniform = (c_eta_max > c_xi_max) ? c_eta_max : c_xi_max; //先比較兩者中較大者
 
-    int sz = NYD6_local * NZ6_local;
-    double a_min = 1e30, a_max = 0.0, a_sum = 0.0;
-    int a_count = 0;
+    int sz = NYD6_local * NZ6_local;//k-j平面總計算點數量
+    double a_min = 1e30, a_max = 0.0, a_sum = 0.0; //加速因子記錄器
+    int a_count = 0 ; //加速因子累加器
     int a_max_j = -1, a_max_k = -1;
 
     // Fill all points (including halo) with global dt as default
-    for (int idx = 0; idx < sz; idx++) {
-        dt_local_h[idx] = dt_global;
-        tau_local_h[idx] = 0.5 + 3.0 * niu_val / dt_global;
-        tau_dt_product_h[idx] = tau_local_h[idx] * dt_global;
+    for (int idx_xi = 0; idx_xi < sz; idx_xi++) {
+        dt_local_h[idx_xi] = dt_global;
+        tau_local_h[idx_xi] = 0.5 + 3.0 * niu_val / dt_global; //鬆弛時間計算公式：3/(Re*dt_local*c^{2})+0.5
+        tau_dt_product_h[idx_xi] = tau_local_h[idx_xi] * dt_global;
     }
 
     // Compute local dt at all fluid points including wall (k=2, k=NZ6-3)
-    // 壁面 dk_dz 最大 → dt_local 最小（CFL 最嚴格），acceleration factor ≈ 1。
+    // 壁面 dk_dz 最大 → dt_local 最小（CFL 最嚴格），acceleration factor ≈ 1。 //加速因子通常>1
     // D3Q19 對稱性：max|c̃^ζ| 不受 BC/streaming 方向過濾影響（見 ComputeGlobalTimeStep 註解）。
     for (int j = 3; j < NYD6_local - 4; j++) {
         for (int k = 2; k < NZ6_local - 2; k++) {
@@ -371,12 +371,12 @@ void ComputeLocalTimeStep(
             double dt_l = cfl_lambda / max_c;
             double tau_l = 0.5 + 3.0 * niu_val / dt_l;
 
-            dt_local_h[idx_jk] = dt_l;
+            dt_local_h[idx_jk] = dt_l; //一個點存一個最小值，形成local time step 
             tau_local_h[idx_jk] = tau_l;
-            tau_dt_product_h[idx_jk] = tau_l * dt_l;
+            tau_dt_product_h[idx_jk] = tau_l * dt_l; //這才是真正的relaxation time，一般定義
 
             // Track acceleration factor statistics
-            double a = dt_l / dt_global;
+            double a = dt_l / dt_global;//加速因子計算公式
             if (a < a_min) a_min = a;
             if (a > a_max) { a_max = a; a_max_j = j; a_max_k = k; }
             a_sum += a;
@@ -385,33 +385,40 @@ void ComputeLocalTimeStep(
     }
 
     if (myid_local == 0 && a_count > 0) {
-        printf("\n=============================================================\n");
-        printf("  Phase 4: Local Time Step (Imamura 2005 Eq. 28)\n");
-        printf("=============================================================\n");
-        printf("  dt_global = %.6e\n", dt_global);
-        printf("  Acceleration factor a(j,k) = dt_local / dt_global:\n");
-        printf("    min(a)  = %.4f  (near wall, CFL-limited)\n", a_min);
-        printf("    max(a)  = %.4f  at j=%d, k=%d (channel center)\n",
-               a_max, a_max_j, a_max_k);
-        printf("    mean(a) = %.4f  (%d interior points)\n",
-               a_sum / a_count, a_count);
-        printf("  tau range: [%.4f, %.4f]\n",
-               0.5 + 3.0 * niu_val / (a_max * dt_global),
-               0.5 + 3.0 * niu_val / (a_min * dt_global));
-        printf("  dt_local range: [%.6e, %.6e]\n",
-               a_min * dt_global, a_max * dt_global);
+        std::cout << "\n=============================================================\n"
+                  << "  Phase 4: Local Time Step Calulating (Imamura 2005 Eq. 28)\n"
+                  << "=============================================================\n"
+                  << "  dt_global = " << std::scientific << std::setprecision(6) << dt_global << "\n"
+                  << "  Acceleration factor a(j,k) = dt_local / dt_global:\n"
+                  << std::fixed << std::setprecision(4)
+                  << "    min(a)  = " << a_min << "  (near wall, CFL-limited)\n"
+                  << "    max(a)  = " << a_max
+                  << "  at j=" << a_max_j << ", k=" << a_max_k << " (channel center)\n"
+                  << "    mean(a) = " << a_sum / a_count
+                  << "  (" << a_count << " interior points)\n"
+                  << "  tau range: ["
+                  << 0.5 + 3.0 * niu_val / (a_max * dt_global) << ", "
+                  << 0.5 + 3.0 * niu_val / (a_min * dt_global) << "]\n"
+                  << "  dt_local range: ["
+                  << std::scientific << std::setprecision(6)
+                  << a_min * dt_global << ", "
+                  << a_max * dt_global << "]\n";
 
         // Print k-profile at middle j
         int j_mid = NYD6_local / 2;
-        printf("\n  k-profile at j=%d:\n", j_mid);
-        printf("  %4s  %12s  %8s  %8s\n", "k", "dt_local", "tau_loc", "a");
+        std::cout << "\n  k-profile at j=" << j_mid << ":\n"
+                  << "  " << std::setw(4) << "k"
+                  << "  " << std::setw(12) << "dt_local"
+                  << "  " << std::setw(8) << "tau_loc"
+                  << "  " << std::setw(8) << "a" << "\n";
         for (int k = 3; k < NZ6_local - 3; k += 3) {
             int idx = j_mid * NZ6_local + k;
-            printf("  %4d  %12.6e  %8.4f  %8.4f\n",
-                   k, dt_local_h[idx], tau_local_h[idx],
-                   dt_local_h[idx] / dt_global);
+            std::cout << "  " << std::setw(4) << k
+                      << "  " << std::scientific << std::setprecision(6) << std::setw(12) << dt_local_h[idx]
+                      << "  " << std::fixed << std::setprecision(4) << std::setw(8) << tau_local_h[idx]
+                      << "  " << std::setw(8) << dt_local_h[idx] / dt_global << "\n";
         }
-        printf("=============================================================\n\n");
+        std::cout << "=============================================================\n\n";
     }
 }
 
@@ -423,7 +430,7 @@ void ComputeLocalTimeStep(
 //
 // 壁面 BC/streaming 分類同 PrecomputeGILBM_DeltaZeta：BC 方向的 δζ 被計算但
 // 不被 streaming 使用（由 Chapman-Enskog BC 處理）。
-void PrecomputeGILBM_DeltaZeta_Local(
+void PrecomputeGILBM_DeltaZeta_Local( //函數是在main.cu中被呼叫的，目的是為了計算每個空間點(j,k)在每個速度方向alpha下的zeta方向的位移量delta_zeta
     double *delta_zeta_h,        // 輸出: [19 * NYD6 * NZ6]
     const double *dk_dz_h,      // 輸入: [NYD6 * NZ6]
     const double *dk_dy_h,      // 輸入: [NYD6 * NZ6]
@@ -433,10 +440,10 @@ void PrecomputeGILBM_DeltaZeta_Local(
 ) {
     double e_y[19] = {
         0, 0,0,1,-1,0,0, 1,1,-1,-1, 0,0,0,0, 1,-1,1,-1
-    };
+    };//正規化離離散化粒子速度集y分量 
     double e_z[19] = {
         0, 0,0,0,0,1,-1, 0,0,0,0, 1,1,-1,-1, 1,1,-1,-1
-    };
+    };//正規化離離散化粒子速度集Z分量 
 
     int sz = NYD6_local * NZ6_local;
 
