@@ -1,14 +1,16 @@
 #ifndef GILBM_EVOLUTION_H
 #define GILBM_EVOLUTION_H
 
-// Phase 1: GILBM streaming + MRT collision kernel (Imamura 2005)
+// Phase 5: GILBM streaming + per-stencil BGK kernel
 //
 // Replaces ISLBM stream_collide_Buffer / stream_collide.
 // Key differences from ISLBM:
-//   - Streaming: contravariant velocity RK2 + 2nd-order quadratic interpolation (vs 7th-order Lagrange)
+//   - Streaming: contravariant velocity RK2 + 7-point Lagrange interpolation
+//   - Collision: per-stencil BGK (τ_B) at all 7³=343 stencil nodes, then interpolate
+//                f_post_B = f_B - (1/τ_B)(f_B - feq_B), stored in f_re[7][7][7] buffer
+//                No arrival-point MRT; macroscopic at A computed for output only
 //   - Wall BC: Chapman-Enskog (vs bounce-back + BFL)
 //   - No Xi coordinate, no BFL parameters
-//   - Collision: MRT unchanged (reuses MRT_Matrix.h + MRT_Process.h)
 
 // __constant__ device memory for D3Q19 velocity set and weights
 __constant__ double GILBM_e[19][3] = {
@@ -95,16 +97,9 @@ __global__ void stream_collide_GILBM_Buffer(
     const double tau = tau_local_d[idx_jk];
     const double omega = 1.0 / tau;
 
-    // MRT variables
+    // Distribution function variables (post-streaming, pre-output)
     double F0_in, F1_in, F2_in, F3_in, F4_in, F5_in, F6_in, F7_in, F8_in, F9_in;
     double F10_in, F11_in, F12_in, F13_in, F14_in, F15_in, F16_in, F17_in, F18_in;
-    double m0,m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17,m18;
-    double s0,s1,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,s12,s13,s14,s15,s16,s17,s18;
-    double meq0,meq1,meq2,meq3,meq4,meq5,meq6,meq7,meq8,meq9,meq10,meq11,meq12,meq13,meq14,meq15,meq16,meq17,meq18;
-
-    Matrix;
-    Inverse_Matrix;
-    Relaxation;
 
     // Pointers array for interpolation access
     double *f_old_ptrs[19] = {
@@ -169,36 +164,22 @@ __global__ void stream_collide_GILBM_Buffer(
     double F_in_arr[19];
     F_in_arr[0] = F0_in;
 
-    // Phase 4: LTS acceleration factor and re-estimation prefactor
-    const double a_local = dt / GILBM_dt;               // ≥ 1 (local dt / global dt)
-    const double tau_A_minus1_dt_A = (tau - 1.0) * dt;  // for re-estimation Eq. 36
+    // Phase 4: LTS acceleration factor for η/ξ displacement scaling
+    const double a_local = dt / GILBM_dt;  // ≥ 1 (local dt / global dt)
 
     // ====================================================================
-    // Step 1 插值 + Step 2 Re-estimation + Step 3 Streaming（合併迴圈）
-    // ====================================================================
-    // 【注意事項 Step 1 插值】
-    //   插值在 departure point D 的 stencil 鄰近點執行，非在計算點 A，
-    //   插值誤差直接影響後續所有步驟精度。
-    //
-    // 【注意事項 Step 2 Re-estimation】
-    //   此處的 f_eq 使用 stencil 點 B 的宏觀量計算（非 A 點），
-    //   對應 Imamura Eq.36 的 LTS 重估項：
-    //   f̃_B = feq_B + (f_B - feq_B) × R_AB，
-    //   R_AB = (τ_A - 1)dt_A / (τ_B · dt_B) 處理 τ 空間不均勻性。
-    //
-    // 【注意事項 Step 3 Streaming】
-    //   Streaming 本質為資料傳遞，不涉及物理計算。
-    //   雖然 Imamura 原文將碰撞寫在 streaming 之前，兩者在數學上等價，
-    //   因為碰撞固定使用 A 點的 τ_A，與傳遞順序無關。
+    // Step 1: 位移量計算 → departure point (up_i, up_j, up_k)
+    // Step 2+3: Per-stencil BGK + 7-point Lagrange 插值
+    //           （均在 interpolate_lagrange7_3d_bgk 內執行）
+    //   Step 2: f_re[7][7][7] = f_post at 343 stencil nodes, BGK with τ_B
+    //           f_post_B = f_B - (1/τ_B) × (f_B - feq_B)
+    //   Step 3: Lagrange 插值 f_re → F_in_arr[alpha]（Streaming 至 A 點）
     //
     // 判定準則（見 NeedsBoundaryCondition, boundary_conditions.h）：
     //   ẽ^ζ_α = e_y[α]·dk_dy + e_z[α]·dk_dz
-    //   底壁 (k=2):   ẽ^ζ_α > 0 → 出發點在壁外 → BC（Chapman-Enskog）
+    //   底壁 (k=2):     ẽ^ζ_α > 0 → 出發點在壁外 → BC（Chapman-Enskog）
     //   頂壁 (k=NZ6-3): ẽ^ζ_α < 0 → 出發點在壁外 → BC（Chapman-Enskog）
     //   其他情況 → streaming（使用 delta_eta, delta_xi, delta_zeta 計算出發點）
-    //
-    // BC 方向不讀取 delta_eta[α] / delta_xi[α] / delta_zeta[α,j,k]，
-    // 這些值雖在 precompute 階段已計算，但對壁面 BC 方向無效。
     // ====================================================================
     for (int alpha = 1; alpha < 19; alpha++) {
         bool need_bc = false;
@@ -209,13 +190,12 @@ __global__ void stream_collide_GILBM_Buffer(
         }
 
         if (need_bc) {
-            // BC 方向：ẽ^ζ_α 指向壁外 → 跳過 streaming → Chapman-Enskog 重建 f_α
-            // delta_eta[α], delta_xi[α], delta_zeta[α,...] 對此 α 不使用
+            // BC 方向：ẽ^ζ_α 指向壁外 → Chapman-Enskog 重建 f_α（跳過 streaming）
             F_in_arr[alpha] = ChapmanEnskogBC(alpha, rho_wall,
                 du_x_dk, du_y_dk, du_z_dk,
                 dk_dy_val, dk_dz_val, omega, dt);
         } else {
-            // Streaming 方向：ẽ^ζ_α 指向流體內部（或為零）→ 使用位移量計算出發點
+            // Step 1: 計算 departure point
             // Phase 4: scale η/ξ displacement by local acceleration factor
             double delta_i = a_local * GILBM_delta_eta[alpha];
             double delta_xi_val = a_local * GILBM_delta_xi[alpha];
@@ -234,17 +214,16 @@ __global__ void stream_collide_GILBM_Buffer(
             if (up_k < 2.0) up_k = 2.0;
             if (up_k > (double)(NZ6 - 5)) up_k = (double)(NZ6 - 5);
 
-            // Step 1 插值 + Step 2 Re-estimation（均在 interpolate_quadratic_3d_lts 內執行）
-            // Step 3 Streaming：下行賦值即為 f 從 departure point D 傳遞至計算點 A
-            F_in_arr[alpha] = interpolate_quadratic_3d_lts(
+            // Step 2 Per-stencil BGK + Step 3 Streaming（插值至 A 點）
+            F_in_arr[alpha] = interpolate_lagrange7_3d_bgk(
                 up_i, up_j, up_k,
-                f_old_ptrs, tau_dt_product_d,
-                alpha, tau_A_minus1_dt_A,
-                NX6, NZ6);
+                f_old_ptrs, tau_local_d,
+                alpha,
+                NX6, NYD6, NZ6);
         }
     }
 
-    // Assign to named variables for MRT macros
+    // Assign to named variables
     F0_in = F_in_arr[0];   F1_in = F_in_arr[1];   F2_in = F_in_arr[2];
     F3_in = F_in_arr[3];   F4_in = F_in_arr[4];   F5_in = F_in_arr[5];
     F6_in = F_in_arr[6];   F7_in = F_in_arr[7];   F8_in = F_in_arr[8];
@@ -254,56 +233,22 @@ __global__ void stream_collide_GILBM_Buffer(
     F18_in = F_in_arr[18];
 
     // ====================================================================
-    // Step 3 Streaming 完成：F_in_arr[α] 已將各方向 f 從 departure point D 傳遞至計算點 A
+    // Step 3 完成：F_in_arr[α] 已含 per-stencil BGK 後的插值結果（arrival point A）
     // ====================================================================
 
     // ===== Global mass correction =====
     F0_in = F0_in + rho_modify[0];
 
     // ====================================================================
-    // Step 4：碰撞 Collision（在計算點 A，使用 τ_A）
+    // Step 4：宏觀量計算 at A（僅用於輸出，BGK 已在 stencil 節點完成，不再做 MRT）
     // ====================================================================
-    // 【注意事項 Step 4 碰撞】
-    //   碰撞使用計算點 A 的 τ_A（非 departure point 的 τ_D），
-    //   此為 GILBM 與標準 LBM 的關鍵差異。此步的 f_eq 使用 A 點宏觀量重新計算，
-    //   確保 Σf_i = ρ 在碰撞步精確成立（離散守恆性）。
-    // ====================================================================
-
-    // ===== Macroscopic quantities =====
     double rho_s = F0_in + F1_in + F2_in + F3_in + F4_in + F5_in + F6_in + F7_in + F8_in + F9_in
                  + F10_in + F11_in + F12_in + F13_in + F14_in + F15_in + F16_in + F17_in + F18_in;
     double u1 = (F1_in + F7_in + F9_in + F11_in + F13_in - (F2_in + F8_in + F10_in + F12_in + F14_in)) / rho_s;
     double v1 = (F3_in + F7_in + F8_in + F15_in + F17_in - (F4_in + F9_in + F10_in + F16_in + F18_in)) / rho_s;
     double w1 = (F5_in + F11_in + F12_in + F15_in + F16_in - (F6_in + F13_in + F14_in + F17_in + F18_in)) / rho_s;
-    double udot = u1 * u1 + v1 * v1 + w1 * w1;
 
-    // ===== Equilibrium =====
-    const double F0_eq  = (1./3.)  * rho_s * (1.0 - 1.5 * udot);
-    const double F1_eq  = (1./18.) * rho_s * (1.0 + 3.0 * u1 + 4.5 * u1 * u1 - 1.5 * udot);
-    const double F2_eq  = (1./18.) * rho_s * (1.0 - 3.0 * u1 + 4.5 * u1 * u1 - 1.5 * udot);
-    const double F3_eq  = (1./18.) * rho_s * (1.0 + 3.0 * v1 + 4.5 * v1 * v1 - 1.5 * udot);
-    const double F4_eq  = (1./18.) * rho_s * (1.0 - 3.0 * v1 + 4.5 * v1 * v1 - 1.5 * udot);
-    const double F5_eq  = (1./18.) * rho_s * (1.0 + 3.0 * w1 + 4.5 * w1 * w1 - 1.5 * udot);
-    const double F6_eq  = (1./18.) * rho_s * (1.0 - 3.0 * w1 + 4.5 * w1 * w1 - 1.5 * udot);
-    const double F7_eq  = (1./36.) * rho_s * (1.0 + 3.0 * (u1 + v1) + 4.5 * (u1 + v1) * (u1 + v1) - 1.5 * udot);
-    const double F8_eq  = (1./36.) * rho_s * (1.0 + 3.0 * (-u1 + v1) + 4.5 * (-u1 + v1) * (-u1 + v1) - 1.5 * udot);
-    const double F9_eq  = (1./36.) * rho_s * (1.0 + 3.0 * (u1 - v1) + 4.5 * (u1 - v1) * (u1 - v1) - 1.5 * udot);
-    const double F10_eq = (1./36.) * rho_s * (1.0 + 3.0 * (-u1 - v1) + 4.5 * (-u1 - v1) * (-u1 - v1) - 1.5 * udot);
-    const double F11_eq = (1./36.) * rho_s * (1.0 + 3.0 * (u1 + w1) + 4.5 * (u1 + w1) * (u1 + w1) - 1.5 * udot);
-    const double F12_eq = (1./36.) * rho_s * (1.0 + 3.0 * (-u1 + w1) + 4.5 * (-u1 + w1) * (-u1 + w1) - 1.5 * udot);
-    const double F13_eq = (1./36.) * rho_s * (1.0 + 3.0 * (u1 - w1) + 4.5 * (u1 - w1) * (u1 - w1) - 1.5 * udot);
-    const double F14_eq = (1./36.) * rho_s * (1.0 + 3.0 * (-u1 - w1) + 4.5 * (-u1 - w1) * (-u1 - w1) - 1.5 * udot);
-    const double F15_eq = (1./36.) * rho_s * (1.0 + 3.0 * (v1 + w1) + 4.5 * (v1 + w1) * (v1 + w1) - 1.5 * udot);
-    const double F16_eq = (1./36.) * rho_s * (1.0 + 3.0 * (-v1 + w1) + 4.5 * (-v1 + w1) * (-v1 + w1) - 1.5 * udot);
-    const double F17_eq = (1./36.) * rho_s * (1.0 + 3.0 * (v1 - w1) + 4.5 * (v1 - w1) * (v1 - w1) - 1.5 * udot);
-    const double F18_eq = (1./36.) * rho_s * (1.0 + 3.0 * (-v1 - w1) + 4.5 * (-v1 - w1) * (-v1 - w1) - 1.5 * udot);
-
-    // ===== MRT Collision (reused from existing code) =====
-    m_matrix;
-    meq;
-    collision;
-
-    // ===== Write output =====
+    // ===== Write output (F_in_arr already post-BGK, no MRT at A) =====
     __syncthreads();
     f0_new[index]  = F0_in;   f1_new[index]  = F1_in;   f2_new[index]  = F2_in;
     f3_new[index]  = F3_in;   f4_new[index]  = F4_in;   f5_new[index]  = F5_in;
@@ -349,13 +294,6 @@ __global__ void stream_collide_GILBM(
 
     double F0_in, F1_in, F2_in, F3_in, F4_in, F5_in, F6_in, F7_in, F8_in, F9_in;
     double F10_in, F11_in, F12_in, F13_in, F14_in, F15_in, F16_in, F17_in, F18_in;
-    double m0,m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17,m18;
-    double s0,s1,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,s12,s13,s14,s15,s16,s17,s18;
-    double meq0,meq1,meq2,meq3,meq4,meq5,meq6,meq7,meq8,meq9,meq10,meq11,meq12,meq13,meq14,meq15,meq16,meq17,meq18;
-
-    Matrix;
-    Inverse_Matrix;
-    Relaxation;
 
     double *f_old_ptrs[19] = {
         f0_old, f1_old, f2_old, f3_old, f4_old, f5_old, f6_old,
@@ -412,29 +350,18 @@ __global__ void stream_collide_GILBM(
     double F_in_arr[19];
     F_in_arr[0] = F0_in;
 
-    // Phase 4: LTS acceleration factor and re-estimation prefactor
-    const double a_local = dt / GILBM_dt;
-    const double tau_A_minus1_dt_A = (tau - 1.0) * dt;
+    // Phase 4: LTS acceleration factor for η/ξ displacement scaling
+    const double a_local = dt / GILBM_dt;  // ≥ 1 (local dt / global dt)
 
     // ====================================================================
-    // Step 1 插值 + Step 2 Re-estimation + Step 3 Streaming（合併迴圈）
-    // ====================================================================
-    // 【注意事項 Step 1 插值】
-    //   插值在 departure point D 的 stencil 鄰近點執行，非在計算點 A，
-    //   插值誤差直接影響後續所有步驟精度。
+    // Step 1: 位移量計算 → departure point (up_i, up_j, up_k)
+    // Step 2+3: Per-stencil BGK + 7-point Lagrange 插值
+    //           （均在 interpolate_lagrange7_3d_bgk 內執行）
+    //   Step 2: f_re[7][7][7] = f_post at 343 stencil nodes, BGK with τ_B
+    //           f_post_B = f_B - (1/τ_B) × (f_B - feq_B)
+    //   Step 3: Lagrange 插值 f_re → F_in_arr[alpha]（Streaming 至 A 點）
     //
-    // 【注意事項 Step 2 Re-estimation】
-    //   此處的 f_eq 使用 stencil 點 B 的宏觀量計算（非 A 點），
-    //   對應 Imamura Eq.36 的 LTS 重估項：
-    //   f̃_B = feq_B + (f_B - feq_B) × R_AB，
-    //   R_AB = (τ_A - 1)dt_A / (τ_B · dt_B) 處理 τ 空間不均勻性。
-    //
-    // 【注意事項 Step 3 Streaming】
-    //   Streaming 本質為資料傳遞，不涉及物理計算。
-    //   雖然 Imamura 原文將碰撞寫在 streaming 之前，兩者在數學上等價，
-    //   因為碰撞固定使用 A 點的 τ_A，與傳遞順序無關。
-    //
-    // （詳細判定準則見第一個 kernel 同名區段）
+    // （詳細判定準則見 Buffer kernel 同名區段）
     // ====================================================================
     for (int alpha = 1; alpha < 19; alpha++) {
         bool need_bc = false;
@@ -445,12 +372,12 @@ __global__ void stream_collide_GILBM(
         }
 
         if (need_bc) {
-            // BC 方向：跳過 streaming，Chapman-Enskog 重建（delta_eta/xi/zeta 不使用）
+            // BC 方向：Chapman-Enskog 重建（跳過 streaming）
             F_in_arr[alpha] = ChapmanEnskogBC(alpha, rho_wall,
                 du_x_dk, du_y_dk, du_z_dk,
                 dk_dy_val, dk_dz_val, omega, dt);
         } else {
-            // Streaming 方向：使用位移量計算出發點
+            // Step 1: 計算 departure point
             double delta_i = a_local * GILBM_delta_eta[alpha];
             double delta_xi_val = a_local * GILBM_delta_xi[alpha];
             double delta_zeta_val = delta_zeta_d[alpha * NYD6 * NZ6 + idx_jk];
@@ -466,16 +393,16 @@ __global__ void stream_collide_GILBM(
             if (up_k < 2.0) up_k = 2.0;
             if (up_k > (double)(NZ6 - 5)) up_k = (double)(NZ6 - 5);
 
-            // Step 1 插值 + Step 2 Re-estimation（均在 interpolate_quadratic_3d_lts 內執行）
-            // Step 3 Streaming：下行賦值即為 f 從 departure point D 傳遞至計算點 A
-            F_in_arr[alpha] = interpolate_quadratic_3d_lts(
+            // Step 2 Per-stencil BGK + Step 3 Streaming（插值至 A 點）
+            F_in_arr[alpha] = interpolate_lagrange7_3d_bgk(
                 up_i, up_j, up_k,
-                f_old_ptrs, tau_dt_product_d,
-                alpha, tau_A_minus1_dt_A,
-                NX6, NZ6);
+                f_old_ptrs, tau_local_d,
+                alpha,
+                NX6, NYD6, NZ6);
         }
     }
 
+    // Assign to named variables
     F0_in = F_in_arr[0];   F1_in = F_in_arr[1];   F2_in = F_in_arr[2];
     F3_in = F_in_arr[3];   F4_in = F_in_arr[4];   F5_in = F_in_arr[5];
     F6_in = F_in_arr[6];   F7_in = F_in_arr[7];   F8_in = F_in_arr[8];
@@ -485,51 +412,21 @@ __global__ void stream_collide_GILBM(
     F18_in = F_in_arr[18];
 
     // ====================================================================
-    // Step 3 Streaming 完成：F_in_arr[α] 已將各方向 f 從 departure point D 傳遞至計算點 A
+    // Step 3 完成：F_in_arr[α] 已含 per-stencil BGK 後的插值結果（arrival point A）
     // ====================================================================
 
     F0_in = F0_in + rho_modify[0];
 
     // ====================================================================
-    // Step 4：碰撞 Collision（在計算點 A，使用 τ_A）
+    // Step 4：宏觀量計算 at A（僅用於輸出，BGK 已在 stencil 節點完成，不再做 MRT）
     // ====================================================================
-    // 【注意事項 Step 4 碰撞】
-    //   碰撞使用計算點 A 的 τ_A（非 departure point 的 τ_D），
-    //   此為 GILBM 與標準 LBM 的關鍵差異。此步的 f_eq 使用 A 點宏觀量重新計算，
-    //   確保 Σf_i = ρ 在碰撞步精確成立（離散守恆性）。
-    // ====================================================================
-
     double rho_s = F0_in + F1_in + F2_in + F3_in + F4_in + F5_in + F6_in + F7_in + F8_in + F9_in
                  + F10_in + F11_in + F12_in + F13_in + F14_in + F15_in + F16_in + F17_in + F18_in;
     double u1 = (F1_in + F7_in + F9_in + F11_in + F13_in - (F2_in + F8_in + F10_in + F12_in + F14_in)) / rho_s;
     double v1 = (F3_in + F7_in + F8_in + F15_in + F17_in - (F4_in + F9_in + F10_in + F16_in + F18_in)) / rho_s;
     double w1 = (F5_in + F11_in + F12_in + F15_in + F16_in - (F6_in + F13_in + F14_in + F17_in + F18_in)) / rho_s;
-    double udot = u1 * u1 + v1 * v1 + w1 * w1;
 
-    const double F0_eq  = (1./3.)  * rho_s * (1.0 - 1.5 * udot);
-    const double F1_eq  = (1./18.) * rho_s * (1.0 + 3.0 * u1 + 4.5 * u1 * u1 - 1.5 * udot);
-    const double F2_eq  = (1./18.) * rho_s * (1.0 - 3.0 * u1 + 4.5 * u1 * u1 - 1.5 * udot);
-    const double F3_eq  = (1./18.) * rho_s * (1.0 + 3.0 * v1 + 4.5 * v1 * v1 - 1.5 * udot);
-    const double F4_eq  = (1./18.) * rho_s * (1.0 - 3.0 * v1 + 4.5 * v1 * v1 - 1.5 * udot);
-    const double F5_eq  = (1./18.) * rho_s * (1.0 + 3.0 * w1 + 4.5 * w1 * w1 - 1.5 * udot);
-    const double F6_eq  = (1./18.) * rho_s * (1.0 - 3.0 * w1 + 4.5 * w1 * w1 - 1.5 * udot);
-    const double F7_eq  = (1./36.) * rho_s * (1.0 + 3.0 * (u1 + v1) + 4.5 * (u1 + v1) * (u1 + v1) - 1.5 * udot);
-    const double F8_eq  = (1./36.) * rho_s * (1.0 + 3.0 * (-u1 + v1) + 4.5 * (-u1 + v1) * (-u1 + v1) - 1.5 * udot);
-    const double F9_eq  = (1./36.) * rho_s * (1.0 + 3.0 * (u1 - v1) + 4.5 * (u1 - v1) * (u1 - v1) - 1.5 * udot);
-    const double F10_eq = (1./36.) * rho_s * (1.0 + 3.0 * (-u1 - v1) + 4.5 * (-u1 - v1) * (-u1 - v1) - 1.5 * udot);
-    const double F11_eq = (1./36.) * rho_s * (1.0 + 3.0 * (u1 + w1) + 4.5 * (u1 + w1) * (u1 + w1) - 1.5 * udot);
-    const double F12_eq = (1./36.) * rho_s * (1.0 + 3.0 * (-u1 + w1) + 4.5 * (-u1 + w1) * (-u1 + w1) - 1.5 * udot);
-    const double F13_eq = (1./36.) * rho_s * (1.0 + 3.0 * (u1 - w1) + 4.5 * (u1 - w1) * (u1 - w1) - 1.5 * udot);
-    const double F14_eq = (1./36.) * rho_s * (1.0 + 3.0 * (-u1 - w1) + 4.5 * (-u1 - w1) * (-u1 - w1) - 1.5 * udot);
-    const double F15_eq = (1./36.) * rho_s * (1.0 + 3.0 * (v1 + w1) + 4.5 * (v1 + w1) * (v1 + w1) - 1.5 * udot);
-    const double F16_eq = (1./36.) * rho_s * (1.0 + 3.0 * (-v1 + w1) + 4.5 * (-v1 + w1) * (-v1 + w1) - 1.5 * udot);
-    const double F17_eq = (1./36.) * rho_s * (1.0 + 3.0 * (v1 - w1) + 4.5 * (v1 - w1) * (v1 - w1) - 1.5 * udot);
-    const double F18_eq = (1./36.) * rho_s * (1.0 + 3.0 * (-v1 - w1) + 4.5 * (-v1 - w1) * (-v1 - w1) - 1.5 * udot);
-
-    m_matrix;
-    meq;
-    collision;
-
+    // ===== Write output (F_in_arr already post-BGK, no MRT at A) =====
     __syncthreads();
     f0_new[index]  = F0_in;   f1_new[index]  = F1_in;   f2_new[index]  = F2_in;
     f3_new[index]  = F3_in;   f4_new[index]  = F4_in;   f5_new[index]  = F5_in;
