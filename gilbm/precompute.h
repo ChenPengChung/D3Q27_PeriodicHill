@@ -154,7 +154,7 @@ void PrecomputeGILBM_DeltaZeta(
                 //給k_low設定最小為2，最大為NZ6_local-4，確保內插的兩個物理空間計算點都在有效範圍內
                 if(k_low < 2) k_low = 2;
                 if(k_low > NZ6_local - 4) k_low = NZ6_local - 3 -1 ; 
-                double frac = k_half - (double)k_lo;
+                double frac = k_half - (double)k_low;
                 if (frac < 0.0) frac = 0.0;
                 if (frac > 1.0) frac = 1.0;
                 int idx_xi_low = j * NZ6_local + k_low;
