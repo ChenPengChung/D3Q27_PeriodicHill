@@ -174,8 +174,23 @@ __global__ void stream_collide_GILBM_Buffer(
     const double tau_A_minus1_dt_A = (tau - 1.0) * dt;  // for re-estimation Eq. 36
 
     // ====================================================================
-    // Streaming / BC 分歧：每個方向 α 判定是否需要邊界處理
+    // Step 1 插值 + Step 2 Re-estimation + Step 3 Streaming（合併迴圈）
     // ====================================================================
+    // 【注意事項 Step 1 插值】
+    //   插值在 departure point D 的 stencil 鄰近點執行，非在計算點 A，
+    //   插值誤差直接影響後續所有步驟精度。
+    //
+    // 【注意事項 Step 2 Re-estimation】
+    //   此處的 f_eq 使用 stencil 點 B 的宏觀量計算（非 A 點），
+    //   對應 Imamura Eq.36 的 LTS 重估項：
+    //   f̃_B = feq_B + (f_B - feq_B) × R_AB，
+    //   R_AB = (τ_A - 1)dt_A / (τ_B · dt_B) 處理 τ 空間不均勻性。
+    //
+    // 【注意事項 Step 3 Streaming】
+    //   Streaming 本質為資料傳遞，不涉及物理計算。
+    //   雖然 Imamura 原文將碰撞寫在 streaming 之前，兩者在數學上等價，
+    //   因為碰撞固定使用 A 點的 τ_A，與傳遞順序無關。
+    //
     // 判定準則（見 NeedsBoundaryCondition, boundary_conditions.h）：
     //   ẽ^ζ_α = e_y[α]·dk_dy + e_z[α]·dk_dz
     //   底壁 (k=2):   ẽ^ζ_α > 0 → 出發點在壁外 → BC（Chapman-Enskog）
@@ -219,7 +234,8 @@ __global__ void stream_collide_GILBM_Buffer(
             if (up_k < 2.0) up_k = 2.0;
             if (up_k > (double)(NZ6 - 5)) up_k = (double)(NZ6 - 5);
 
-            // Phase 4: interpolation with LTS re-estimation
+            // Step 1 插值 + Step 2 Re-estimation（均在 interpolate_quadratic_3d_lts 內執行）
+            // Step 3 Streaming：下行賦值即為 f 從 departure point D 傳遞至計算點 A
             F_in_arr[alpha] = interpolate_quadratic_3d_lts(
                 up_i, up_j, up_k,
                 f_old_ptrs, tau_dt_product_d,
@@ -237,8 +253,21 @@ __global__ void stream_collide_GILBM_Buffer(
     F15_in = F_in_arr[15];  F16_in = F_in_arr[16];  F17_in = F_in_arr[17];
     F18_in = F_in_arr[18];
 
+    // ====================================================================
+    // Step 3 Streaming 完成：F_in_arr[α] 已將各方向 f 從 departure point D 傳遞至計算點 A
+    // ====================================================================
+
     // ===== Global mass correction =====
     F0_in = F0_in + rho_modify[0];
+
+    // ====================================================================
+    // Step 4：碰撞 Collision（在計算點 A，使用 τ_A）
+    // ====================================================================
+    // 【注意事項 Step 4 碰撞】
+    //   碰撞使用計算點 A 的 τ_A（非 departure point 的 τ_D），
+    //   此為 GILBM 與標準 LBM 的關鍵差異。此步的 f_eq 使用 A 點宏觀量重新計算，
+    //   確保 Σf_i = ρ 在碰撞步精確成立（離散守恆性）。
+    // ====================================================================
 
     // ===== Macroscopic quantities =====
     double rho_s = F0_in + F1_in + F2_in + F3_in + F4_in + F5_in + F6_in + F7_in + F8_in + F9_in
@@ -387,7 +416,26 @@ __global__ void stream_collide_GILBM(
     const double a_local = dt / GILBM_dt;
     const double tau_A_minus1_dt_A = (tau - 1.0) * dt;
 
-    // Streaming / BC 分歧（同第一個 kernel，見上方詳細註解）
+    // ====================================================================
+    // Step 1 插值 + Step 2 Re-estimation + Step 3 Streaming（合併迴圈）
+    // ====================================================================
+    // 【注意事項 Step 1 插值】
+    //   插值在 departure point D 的 stencil 鄰近點執行，非在計算點 A，
+    //   插值誤差直接影響後續所有步驟精度。
+    //
+    // 【注意事項 Step 2 Re-estimation】
+    //   此處的 f_eq 使用 stencil 點 B 的宏觀量計算（非 A 點），
+    //   對應 Imamura Eq.36 的 LTS 重估項：
+    //   f̃_B = feq_B + (f_B - feq_B) × R_AB，
+    //   R_AB = (τ_A - 1)dt_A / (τ_B · dt_B) 處理 τ 空間不均勻性。
+    //
+    // 【注意事項 Step 3 Streaming】
+    //   Streaming 本質為資料傳遞，不涉及物理計算。
+    //   雖然 Imamura 原文將碰撞寫在 streaming 之前，兩者在數學上等價，
+    //   因為碰撞固定使用 A 點的 τ_A，與傳遞順序無關。
+    //
+    // （詳細判定準則見第一個 kernel 同名區段）
+    // ====================================================================
     for (int alpha = 1; alpha < 19; alpha++) {
         bool need_bc = false;
         if (is_bottom) {
@@ -418,6 +466,8 @@ __global__ void stream_collide_GILBM(
             if (up_k < 2.0) up_k = 2.0;
             if (up_k > (double)(NZ6 - 5)) up_k = (double)(NZ6 - 5);
 
+            // Step 1 插值 + Step 2 Re-estimation（均在 interpolate_quadratic_3d_lts 內執行）
+            // Step 3 Streaming：下行賦值即為 f 從 departure point D 傳遞至計算點 A
             F_in_arr[alpha] = interpolate_quadratic_3d_lts(
                 up_i, up_j, up_k,
                 f_old_ptrs, tau_dt_product_d,
@@ -434,7 +484,20 @@ __global__ void stream_collide_GILBM(
     F15_in = F_in_arr[15];  F16_in = F_in_arr[16];  F17_in = F_in_arr[17];
     F18_in = F_in_arr[18];
 
+    // ====================================================================
+    // Step 3 Streaming 完成：F_in_arr[α] 已將各方向 f 從 departure point D 傳遞至計算點 A
+    // ====================================================================
+
     F0_in = F0_in + rho_modify[0];
+
+    // ====================================================================
+    // Step 4：碰撞 Collision（在計算點 A，使用 τ_A）
+    // ====================================================================
+    // 【注意事項 Step 4 碰撞】
+    //   碰撞使用計算點 A 的 τ_A（非 departure point 的 τ_D），
+    //   此為 GILBM 與標準 LBM 的關鍵差異。此步的 f_eq 使用 A 點宏觀量重新計算，
+    //   確保 Σf_i = ρ 在碰撞步精確成立（離散守恆性）。
+    // ====================================================================
 
     double rho_s = F0_in + F1_in + F2_in + F3_in + F4_in + F5_in + F6_in + F7_in + F8_in + F9_in
                  + F10_in + F11_in + F12_in + F13_in + F14_in + F15_in + F16_in + F17_in + F18_in;
