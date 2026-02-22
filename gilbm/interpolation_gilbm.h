@@ -1,6 +1,10 @@
 #ifndef GILBM_INTERPOLATION_H
 #define GILBM_INTERPOLATION_H
 
+// 7-point Lagrange weighted sum (from interpolationHillISLBM.h)
+#define Intrpl7(f1, a1, f2, a2, f3, a3, f4, a4, f5, a5, f6, a6, f7, a7) \
+    ((f1)*(a1)+(f2)*(a2)+(f3)*(a3)+(f4)*(a4)+(f5)*(a5)+(f6)*(a6)+(f7)*(a7))
+
 // Phase 1: GILBM 2nd-order quadratic Lagrange interpolation (Imamura 2005 Eq. 23-24)
 //
 // 1D coefficients: 3-point stencil at base = floor(upwind_position)
@@ -31,6 +35,24 @@ __device__ __forceinline__ void lagrange_7point_coeffs(double t, double a[7]) {
             if (j != k) L *= (t - (double)j) / (double)(k - j);
         }
         a[k] = L;
+    }
+}
+
+// Compute 7-point Lagrange weights with explicit offset (Imamura GILBM)
+//   alpha_frac: fractional position in [0,1) = up - floor(up)
+//   offset: stencil points before floor(up) (3=centered, adapts near zeta walls)
+//   Equivalence: compute_lagrange_weights(alpha, offset, w) == lagrange_7point_coeffs(alpha+offset, w)
+__device__ __forceinline__ void compute_lagrange_weights(
+    double alpha_frac, int offset, double weights[7]
+) {
+    for (int k = 0; k < 7; k++) {
+        double L = 1.0;
+        for (int j = 0; j < 7; j++) {
+            if (j != k) {
+                L *= (alpha_frac - (double)(j - offset)) / (double)(k - j);
+            }
+        }
+        weights[k] = L;
     }
 }
 
