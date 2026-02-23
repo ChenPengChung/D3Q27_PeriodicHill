@@ -263,7 +263,16 @@ __device__ void gilbm_compute_point(
         // Write post-streaming to f_new (this IS streaming)
         f_new_ptrs[q][index] = f_streamed;
 
-        // Accumulate macroscopic
+        // ── 宏觀量累加 (物理直角坐標) ────────────────────────────
+        // ρ  = Σ_q f_q             (密度)
+        // ρu = Σ_q e_{q,x} · f_q  (x-動量)
+        // ρv = Σ_q e_{q,y} · f_q  (y-動量)
+        // ρw = Σ_q e_{q,z} · f_q  (z-動量)
+        //
+        // GILBM_e[q] = 物理直角坐標系的離散速度 (e_x, e_y, e_z)，
+        // 不是曲線坐標系的逆變速度分量。f_i 的速度空間定義不受座標映射影響。
+        // 曲線坐標映射只影響 streaming 步驟 (位移 δη, δξ, δζ 含度量項)。
+        // → Σ f_i·e_i 直接得到物理直角坐標的動量，不需要 Jacobian 映射。
         rho_stream += f_streamed;
         mx_stream  += GILBM_e[q][0] * f_streamed;
         my_stream  += GILBM_e[q][1] * f_streamed;
@@ -276,17 +285,38 @@ __device__ void gilbm_compute_point(
     // Mass correctiondj3g4
     rho_stream += rho_modify[0];
     f_new_ptrs[0][index] += rho_modify[0];
-
+    // ── Audit 結論：此處不需要映射回直角坐標系 ─────────────────
+    // (u_A, v_A, w_A) 已是物理直角坐標系的速度分量，可直接代入 feq。
+    //
+    // 理由：GILBM 中 f_i 的離散速度 e_i 始終是物理直角坐標向量：
+    //   GILBM_e[q] = {0,±1} (D3Q19 標準整數向量)
+    //   → mx_stream = Σ e_{q,x}·f_q = 物理 x-動量 (非曲線坐標分量)
+    //
+    // 曲線坐標映射只進入 streaming 位移 (precompute.h):
+    //   δη = dt · e_x / dx           ← 度量項在此
+    //   δξ = dt · e_y / dy           ← 度量項在此
+    //   δζ = dt · (e_y·dk_dy + e_z·dk_dz)  ← 度量項在此
+    //   → 位移量 = dt × 逆變速度 (e_i × ∂ξ/∂x)
+    //   → e_i 本身不被座標映射修改
+    //
+    // 驗證：
+    //   (1) initialization.h 用相同公式初始化 feq，無映射
+    //   (2) fileIO.h 將 u,v,w 直接輸出為 VTK 物理速度，無映射
+    //   (3) Imamura 2005 Eq. 2: c_i = c·e_i (物理速度)
+    //       Eq. 13: c̃ = c·e·∂ξ/∂x (逆變速度僅用於位移)
+    //       碰撞算子始終在物理速度空間執行
     double rho_A = rho_stream;
     double u_A   = mx_stream / rho_A;
     double v_A   = my_stream / rho_A;
     double w_A   = mz_stream / rho_A;
-
+    // 計算平衡態分佈函數 (物理直角坐標，標準 D3Q19 BGK 公式)
+    // feq_α = w_α · ρ · (1 + 3·(e_α·u) + 4.5·(e_α·u)² − 1.5·|u|²)
+    // 此處 (ρ_A, u_A, v_A, w_A) 皆為物理量，feq 公式無需曲線坐標修正
     // Write feq to persistent global array
     for (int q = 0; q < 19; q++) {
         feq_d[q * GRID_SIZE + index] = compute_feq_alpha(q, rho_A, u_A, v_A, w_A);
     }
-
+    //計算宏觀參數
     // Write macroscopic output
     rho_out_arr[index] = rho_A;
     u_out[index] = u_A;
