@@ -7,10 +7,25 @@
 //   Bottom wall k=2: e_tilde_k > 0 -> upwind point outside domain -> need C-E BC
 //   Top wall k=NZ6-3: e_tilde_k < 0 -> upwind point outside domain -> need C-E BC
 //
-// C-E BC formula at no-slip wall (u=0):
-//   f_alpha|wall = w_alpha * rho_wall * (1 + C_alpha)
-//   C_alpha = -omega*dt * sum_i du_i/dk * [(9*e_i*e_j - delta_ij) * dk/dx_j]
-//   where 9 = 3/c^2 (c^2 = 1/3 for D3Q19)
+// C-E BC formula at no-slip wall (u=v=w=0), Imamura Eq.(A.9):
+//   f_i|wall = w_i * rho_wall * (1 + C_i)
+//
+//   Eq.(A.9) 張量: (c_{iα} - u_α)(c_{iβ} - u_β) / c_s^4 - δ_{αβ}/c_s^2
+//   壁面 u=0 → 退化為: 9·c_{iα}·c_{iβ} - δ_{αβ}  (1/c_s^4 = 9)
+//   α = 1~3 (x,y,z 速度分量),  β = 2~3 (ξ,ζ 方向; β=1(η) 因 dk/dx=0 消去)
+//
+//   C_i = -ω·Δt · Σ_α Σ_{β=y,z} [9·c_{iα}·c_{iβ} - δ_{αβ}] · (∂u_α/∂x_β)
+//
+//   壁面 chain rule: ∂u_α/∂x_β = (du_α/dk)·(dk/dx_β)，展開 3α × 2β = 6 項：
+//
+//   C_i = -ω·Δt × {
+//     ① 9·c_{ix}·c_{iy} · (du/dk)·(dk/dy)        α=x, β=y  (δ_{xy}=0)
+//   + ② 9·c_{ix}·c_{iz} · (du/dk)·(dk/dz)        α=x, β=z  (δ_{xz}=0)
+//   + ③ (9·c_{iy}²−1)   · (dv/dk)·(dk/dy)        α=y, β=y  (δ_{yy}=1)
+//   + ④ 9·c_{iy}·c_{iz} · (dv/dk)·(dk/dz)        α=y, β=z  (δ_{yz}=0)
+//   + ⑤ 9·c_{iz}·c_{iy} · (dw/dk)·(dk/dy)        α=z, β=y  (δ_{zy}=0)
+//   + ⑥ (9·c_{iz}²−1)   · (dw/dk)·(dk/dz)        α=z, β=z  (δ_{zz}=1)
+//   }
 //
 // Wall velocity gradient: 2nd-order one-sided finite difference (u[wall]=0):
 //   du/dk|wall = (4*u[k=3] - u[k=4]) / 2     (bottom wall k=2)
@@ -43,7 +58,7 @@ __device__ __forceinline__ bool NeedsBoundaryCondition(
 __device__ double ChapmanEnskogBC(
     int alpha,
     double rho_wall,
-    double du_x_dk, double du_y_dk, double du_z_dk,  // velocity gradients at wall
+    double du_dk, double dv_dk, double dw_dk,  // velocity gradients at wall
     double dk_dy_val, double dk_dz_val,
     double omega_val, double dt_val
 ) {
@@ -51,26 +66,25 @@ __device__ double ChapmanEnskogBC(
     double ey = GILBM_e[alpha][1];
     double ez = GILBM_e[alpha][2];
 
-    // C-E correction: C = -omega*dt * sum_i du_i/dk * [(9*e_i*e_j - delta_ij) * dk/dx_j]
-    // dk/dx = 0, dk/dy = dk_dy, dk/dz = dk_dz
+    // 展開 6 項 (dk/dx=0，僅 β=y,z 存活)
     double C_alpha = 0.0;
 
-    // i = x component: delta_{x,y}=0, delta_{x,z}=0
-    C_alpha += du_x_dk * (
-        (9.0 * ex * ey) * dk_dy_val +
-        (9.0 * ex * ez) * dk_dz_val
+    // α=x: ①② 項
+    C_alpha += (
+        (9.0 * ex * ey) * du_dk * dk_dy_val +       // ① 9·c_x·c_y · (du/dk)·(dk/dy)//x->u;y->y
+        (9.0 * ex * ez) * du_dk * dk_dz_val          // ② 9·c_x·c_z · (du/dk)·(dk/dz)//x->u;z->z
     );
 
-    // i = y component: delta_{y,y}=1, delta_{y,z}=0
-    C_alpha += du_y_dk * (
-        (9.0 * ey * ey - 1.0) * dk_dy_val +
-        (9.0 * ey * ez) * dk_dz_val
+    // α=y: ③④ 項
+    C_alpha += (
+        (9.0 * ey * ey - 1.0) * dv_dk * dk_dy_val + // ③ (9·c_y²−1) · (dv/dk)·(dk/dy)//y->v;y->y
+        (9.0 * ey * ez) * dv_dk * dk_dz_val          // ④ 9·c_y·c_z · (dv/dk)·(dk/dz)//y->v;z->z
     );
 
-    // i = z component: delta_{z,y}=0, delta_{z,z}=1
-    C_alpha += du_z_dk * (
-        (9.0 * ez * ey) * dk_dy_val +
-        (9.0 * ez * ez - 1.0) * dk_dz_val
+    // α=z: ⑤⑥ 項
+    C_alpha += (
+        (9.0 * ez * ey) * dw_dk * dk_dy_val +       // ⑤ 9·c_z·c_y · (dw/dk)·(dk/dy)//z->w;y->y
+        (9.0 * ez * ez - 1.0) * dw_dk * dk_dz_val   // ⑥ (9·c_z²−1) · (dw/dk)·(dk/dz)//z->w;z->z
     );
 
     C_alpha *= -omega_val * dt_val;

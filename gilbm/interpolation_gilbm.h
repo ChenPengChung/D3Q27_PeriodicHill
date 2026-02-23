@@ -19,10 +19,10 @@ __device__ __forceinline__ void lagrange_7point_coeffs(double t, double a[7]) {
 
 // Compute equilibrium distribution for a single alpha at given macroscopic state
 __device__ __forceinline__ double compute_feq_alpha(
-    int alpha, double rho, double ux, double uy, double uz
+    int alpha, double rho, double u, double v, double w
 ) {
-    double eu = GILBM_e[alpha][0]*ux + GILBM_e[alpha][1]*uy + GILBM_e[alpha][2]*uz;
-    double udot = ux*ux + uy*uy + uz*uz;
+    double eu = GILBM_e[alpha][0]*u + GILBM_e[alpha][1]*v + GILBM_e[alpha][2]*w;
+    double udot = u*u + v*v + w*w;
     return GILBM_W[alpha] * rho * (1.0 + 3.0*eu + 4.5*eu*eu - 1.5*udot);
 }
 

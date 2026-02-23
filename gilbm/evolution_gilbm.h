@@ -33,7 +33,7 @@ __constant__ double GILBM_W[19] = {
 
 // Runtime parameters (set once via cudaMemcpyToSymbol)
 __constant__ double GILBM_dt;
-__constant__ double GILBM_tau;
+
 
 // Precomputed displacement arrays (constant for uniform x and y)
 __constant__ double GILBM_delta_eta[19];
@@ -49,16 +49,7 @@ constexpr int STENCIL_VOL  = 343;  // 7*7*7
 // Grid size for f_pc_d / feq_d indexing
 #define GRID_SIZE (NX6 * NYD6 * NZ6)
 
-// ============================================================================
-// Helper: compute zeta offset for boundary-adaptive stencil
-// ============================================================================
-__device__ __forceinline__ int compute_zeta_offset(int k) {
-    const int kmin = 2;
-    const int kmax = NZ6 - 3;
-    if (k - 3 < kmin)      return k - kmin;        // 0,1,2 near bottom
-    else if (k + 3 > kmax) return 6 - (kmax - k);  // 4,5,6 near top
-    else                    return 3;               // standard centered
-}
+
 
 // ============================================================================
 // Helper: compute stencil base with boundary clamping
@@ -83,16 +74,16 @@ __device__ __forceinline__ void compute_stencil_base(
 // ============================================================================
 __device__ __forceinline__ void compute_macroscopic_at(
     double *f_ptrs[19], int idx,
-    double &rho_out, double &ux_out, double &uy_out, double &uz_out
+    double &rho_out, double &u_out, double &v_out, double &w_out
 ) {
     double f[19];
     for (int q = 0; q < 19; q++) f[q] = f_ptrs[q][idx];
 
     rho_out = f[0]+f[1]+f[2]+f[3]+f[4]+f[5]+f[6]+f[7]+f[8]+f[9]
              +f[10]+f[11]+f[12]+f[13]+f[14]+f[15]+f[16]+f[17]+f[18];
-    ux_out = (f[1]+f[7]+f[9]+f[11]+f[13] - (f[2]+f[8]+f[10]+f[12]+f[14])) / rho_out;
-    uy_out = (f[3]+f[7]+f[8]+f[15]+f[17] - (f[4]+f[9]+f[10]+f[16]+f[18])) / rho_out;
-    uz_out = (f[5]+f[11]+f[12]+f[15]+f[16] - (f[6]+f[13]+f[14]+f[17]+f[18])) / rho_out;
+    u_out = (f[1]+f[7]+f[9]+f[11]+f[13] - (f[2]+f[8]+f[10]+f[12]+f[14])) / rho_out;
+    v_out = (f[3]+f[7]+f[8]+f[15]+f[17] - (f[4]+f[9]+f[10]+f[16]+f[18])) / rho_out;
+    w_out = (f[5]+f[11]+f[12]+f[15]+f[16] - (f[6]+f[13]+f[14]+f[17]+f[18])) / rho_out;
 }
 
 // ============================================================================
@@ -114,48 +105,63 @@ __device__ void gilbm_compute_point(
     const int idx_jk = j * NZ6 + k;
 
     // Local dt and tau at point A
-    const double dt_A    = dt_local_d[idx_jk];//A點的local time step 
-    const double tau_A   = tau_local_d[idx_jk];//A點的真實鬆弛時間 relaxation time 
-    const double omegadt_A = omega_dt_d[index];
+    const double dt_A    = dt_local_d[idx_jk];  // Δt_A (local time step)
+    const double tau_A   = tau_local_d[idx_jk]; // ω_A (Imamura無因次鬆弛時間 ≡ τ/Δt, Eq.1)
+    const double omegadt_A = omega_dt_d[index];  // ω_A × Δt_A = τ_A (教科書鬆弛時間)
 
     // LTS acceleration factor for eta/xi displacement scaling
-    const double a_local = dt_A / GILBM_dt;
+    const double a_local = dt_A / GILBM_dt;//計算該點上的加速因子，此參數為loca的值，此值隨空間變化 
 
     // Stencil base with boundary clamping
     int bi, bj, bk;
     compute_stencil_base(i, j, k, bi, bj, bk);
 
     // A's position within stencil
-    const int ci = i - bi;
+    const int ci = i - bi;//X
     const int cj = j - bj;
     const int ck = k - bk;
 
-    // Wall BC pre-computation
+    // ── Wall BC pre-computation ──────────────────────────────────────
+    // Chapman-Enskog BC 需要物理空間速度梯度張量 ∂u_α/∂x_β。
+    // 由 chain rule:
+    //   ∂u_α/∂x_β = ∂u_α/∂η · ∂η/∂x_β + ∂u_α/∂ξ · ∂ξ/∂x_β + ∂u_α/∂ζ · ∂ζ/∂x_β
+    // 一般情況需要 9 個計算座標梯度 (3 速度分量 × 3 計算座標方向)。
+    //
+    // 但在 no-slip 壁面 (等 k 面) 上，u=v=w=0 對所有 (η,ξ) 恆成立，因此：
+    //   ∂u_α/∂η = 0,  ∂u_α/∂ξ = 0   (切向微分為零)
+    //   ∂u_α/∂ζ ≠ 0                   (唯一非零：法向梯度)
+    // 9 個量退化為 3 個：du/dk, dv/dk, dw/dk
+    //
+    // Chain rule 簡化為：∂u_α/∂x_β = (∂u_α/∂k) · (∂k/∂x_β)
+    // 度量係數 ∂k/∂x_β 由 dk_dy, dk_dz 提供 (dk_dx 目前假設為 0)。
+    // 二階單邊差分 (壁面 u=0): du/dk|_wall = (4·u_{k±1} - u_{k±2}) / 2
     bool is_bottom = (k == 2);
     bool is_top    = (k == NZ6 - 3);
     double dk_dy_val = dk_dy_d[idx_jk];
     double dk_dz_val = dk_dz_d[idx_jk];
 
-    double rho_wall = 0.0, du_x_dk = 0.0, du_y_dk = 0.0, du_z_dk = 0.0;
+    double rho_wall = 0.0, du_dk = 0.0, dv_dk = 0.0, dw_dk = 0.0;
     if (is_bottom) {
-        int idx3 = j * nface + 3 * NX6 + i;
-        int idx4 = j * nface + 4 * NX6 + i;
-        double rho3, ux3, uy3, uz3, rho4, ux4, uy4, uz4;
-        compute_macroscopic_at(f_new_ptrs, idx3, rho3, ux3, uy3, uz3);
-        compute_macroscopic_at(f_new_ptrs, idx4, rho4, ux4, uy4, uz4);
-        du_x_dk = (4.0 * ux3 - ux4) / 2.0;
-        du_y_dk = (4.0 * uy3 - uy4) / 2.0;
-        du_z_dk = (4.0 * uz3 - uz4) / 2.0;
-        rho_wall = rho3;
+        // k=2 為底壁，用 k=3, k=4 兩層做二階外推
+        int idx3 = j * nface + i *NZ6 + 3 ;
+        int idx4 = j * nface + i *NZ6 + 4;
+        double rho3, u3, v3, w3, rho4, u4, v4, w4;
+        compute_macroscopic_at(f_new_ptrs, idx3, rho3, u3, v3, w3);
+        compute_macroscopic_at(f_new_ptrs, idx4, rho4, u4, v4, w4);
+        du_dk = (4.0 * u3 - u4) / 2.0;  // ∂u/∂k|_wall //採用二階精度單邊差分計算法向速度梯度
+        dv_dk = (4.0 * v3 - v4) / 2.0;  // ∂v/∂k|_wall //採用二階精度單邊差分計算法向速度梯度
+        dw_dk = (4.0 * w3 - w4) / 2.0;  // ∂w/∂k|_wall //採用二階精度單邊差分計算法向速度梯度
+        rho_wall = rho3;  // 零法向壓力梯度近似 (Imamura S3.2)
     } else if (is_top) {
-        int idxm1 = j * nface + (NZ6 - 4) * NX6 + i;
-        int idxm2 = j * nface + (NZ6 - 5) * NX6 + i;
-        double rhom1, uxm1, uym1, uzm1, rhom2, uxm2, uym2, uzm2;
-        compute_macroscopic_at(f_new_ptrs, idxm1, rhom1, uxm1, uym1, uzm1);
-        compute_macroscopic_at(f_new_ptrs, idxm2, rhom2, uxm2, uym2, uzm2);
-        du_x_dk = -(4.0 * uxm1 - uxm2) / 2.0;
-        du_y_dk = -(4.0 * uym1 - uym2) / 2.0;
-        du_z_dk = -(4.0 * uzm1 - uzm2) / 2.0;
+        // k=NZ6-3 為頂壁，用 k=NZ6-4, k=NZ6-5 兩層 (反向差分)
+        int idxm1 = j * nface + i *NZ6 + (NZ6 - 4);
+        int idxm2 = j * nface + i *NZ6 + (NZ6 - 5);
+        double rhom1, um1, vm1, wm1, rhom2, um2, vm2, wm2;
+        compute_macroscopic_at(f_new_ptrs, idxm1, rhom1, um1, vm1, wm1);
+        compute_macroscopic_at(f_new_ptrs, idxm2, rhom2, um2, vm2, wm2);
+        du_dk = -(4.0 * um1 - um2) / 2.0;  // ∂u/∂k|_wall (頂壁法向反向)
+        dv_dk = -(4.0 * vm1 - vm2) / 2.0;  // ∂v/∂k|_wall (頂壁法向反向)
+        dw_dk = -(4.0 * wm1 - wm2) / 2.0;  // ∂w/∂k|_wall (頂壁法向反向)
         rho_wall = rhom1;
     }
 
@@ -178,8 +184,8 @@ __device__ void gilbm_compute_point(
 
             if (need_bc) {
                 f_streamed = ChapmanEnskogBC(q, rho_wall,
-                    du_x_dk, du_y_dk, du_z_dk,
-                    dk_dy_val, dk_dz_val, omega_A, dt_A);
+                    du_dk, dv_dk, dw_dk,
+                    dk_dy_val, dk_dz_val, tau_A, dt_A);
             } else {
                 // Load 343 values from f_pc into local stencil
                 double f_stencil[STENCIL_SIZE][STENCIL_SIZE][STENCIL_SIZE];
@@ -267,32 +273,32 @@ __device__ void gilbm_compute_point(
     // ==================================================================
     // STEP 1.5: Macroscopic + feq -> persistent arrays
     // ==================================================================
-    // Mass correction
+    // Mass correctiondj3g4
     rho_stream += rho_modify[0];
     f_new_ptrs[0][index] += rho_modify[0];
 
     double rho_A = rho_stream;
-    double ux_A  = mx_stream / rho_A;
-    double uy_A  = my_stream / rho_A;
-    double uz_A  = mz_stream / rho_A;
+    double u_A   = mx_stream / rho_A;
+    double v_A   = my_stream / rho_A;
+    double w_A   = mz_stream / rho_A;
 
     // Write feq to persistent global array
     for (int q = 0; q < 19; q++) {
-        feq_d[q * GRID_SIZE + index] = compute_feq_alpha(q, rho_A, ux_A, uy_A, uz_A);
+        feq_d[q * GRID_SIZE + index] = compute_feq_alpha(q, rho_A, u_A, v_A, w_A);
     }
 
     // Write macroscopic output
     rho_out_arr[index] = rho_A;
-    u_out[index] = ux_A;
-    v_out[index] = uy_A;
-    w_out[index] = uz_A;
+    u_out[index] = u_A;
+    v_out[index] = v_A;
+    w_out[index] = w_A;
 
     // ==================================================================
-    // STEPS 2+3: Re-estimation (Eq.35) + Collision (Eq.36) per q
-    //   Eq.35: f̃_B = feq_B + (f_B - feq_B) * R_AB
-    //   Eq.36: f̂_B = f̃_B - (1/ω_A)(f̃_B - feq_B)
-    //        = f̃_B + ω_A * (feq_B - f̃_B)
-    //   ω_A shared across all 343 nodes; feq_B is per-node B.
+    // STEPS 2+3: Re-estimation (Eq.35) + Collision (Eq.3) per q
+    //   Eq.35: f̃_B = feq_B + (f_B - feq_B) × R_AB
+    //          R_AB = (ω_A·Δt_A)/(ω_B·Δt_B) = omegadt_A / omegadt_B
+    //   Eq.3:  f*_B = f̃_B - (1/ω_A)(f̃_B - feq_B)
+    //   ω_A = tau_A (code variable), feq_B is per-stencil-node B.
     // ==================================================================
     for (int q = 0; q < 19; q++) {
         // Skip BC directions: f_pc not needed, f_new already has BC value
@@ -317,23 +323,24 @@ __device__ void gilbm_compute_point(
                     double feq_B;
                     if (gj < 3 || gj >= NYD6 - 3) {
                         // Ghost zone: compute on-the-fly
-                        double rho_B, ux_B, uy_B, uz_B;
+                        double rho_B, u_B, v_B, w_B;
                         compute_macroscopic_at(f_new_ptrs, idx_B,
-                                               rho_B, ux_B, uy_B, uz_B);
-                        feq_B = compute_feq_alpha(q, rho_B, ux_B, uy_B, uz_B);
+                                               rho_B, u_B, v_B, w_B);
+                        feq_B = compute_feq_alpha(q, rho_B, u_B, v_B, w_B);
                     } else {
                         feq_B = feq_d[q * GRID_SIZE + idx_B];
                     }
 
                     // Read omega_dt at B
                     double omegadt_B = omega_dt_d[idx_B];
-                    double R_AB = omegadt_A*dt_A / omegadt_B*dt_B;
+                    // Eq.35: R_AB = (ω_A·Δt_A)/(ω_B·Δt_B) = omegadt_A / omegadt_B
+                    double R_AB = omegadt_A / omegadt_B;
 
                     // Eq.35: Re-estimation
                     double f_re = feq_B + (f_B - feq_B) * R_AB;
 
-                    // Eq.36: Collision with ω_A and feq_B
-                    f_re += 1/(omegadt_A) * (feq_B - f_re);
+                    // Eq.3: Collision with ω_A → f* = f - (1/ω_A)(f - feq_B)
+                    f_re -= (1.0 / tau_A) * (f_re - feq_B);
 
                     // Write to A's PRIVATE f_pc
                     f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index] = f_re;
@@ -482,12 +489,12 @@ __global__ void Init_Feq_Kernel(
 
     double rho = f[0]+f[1]+f[2]+f[3]+f[4]+f[5]+f[6]+f[7]+f[8]+f[9]
                 +f[10]+f[11]+f[12]+f[13]+f[14]+f[15]+f[16]+f[17]+f[18];
-    double ux = (f[1]+f[7]+f[9]+f[11]+f[13] - (f[2]+f[8]+f[10]+f[12]+f[14])) / rho;
-    double uy = (f[3]+f[7]+f[8]+f[15]+f[17] - (f[4]+f[9]+f[10]+f[16]+f[18])) / rho;
-    double uz = (f[5]+f[11]+f[12]+f[15]+f[16] - (f[6]+f[13]+f[14]+f[17]+f[18])) / rho;
+    double u = (f[1]+f[7]+f[9]+f[11]+f[13] - (f[2]+f[8]+f[10]+f[12]+f[14])) / rho;
+    double v = (f[3]+f[7]+f[8]+f[15]+f[17] - (f[4]+f[9]+f[10]+f[16]+f[18])) / rho;
+    double w = (f[5]+f[11]+f[12]+f[15]+f[16] - (f[6]+f[13]+f[14]+f[17]+f[18])) / rho;
 
     for (int q = 0; q < 19; q++) {
-        feq_d[q * GRID_SIZE + index] = compute_feq_alpha(q, rho, ux, uy, uz);
+        feq_d[q * GRID_SIZE + index] = compute_feq_alpha(q, rho, u, v, w);
     }
 }
 
@@ -506,10 +513,10 @@ __global__ void Init_OmegaDt_Kernel(
     const int index = j * NX6 * NZ6 + k * NX6 + i;
     const int idx_jk = j * NZ6 + k;
 
-    // Imamura convention: ω = τ (dimensionless relaxation TIME, in denominator of collision)
-    // omega_dt = ω × Δt = τ × Δt
-    // R_35 = omegadt_A / omegadt_B = (τ_A·Δt_A)/(τ_B·Δt_B)
-    // Combined Eq.35+36 gives: (τ_A−1)·Δt_A/(τ_B·Δt_B) ✓
+    // Imamura Eq.1: ω ≡ τ/Δt (無因次鬆弛時間, 碰撞項分母)
+    // tau_local = ω, dt_local = Δt
+    // omega_dt = ω × Δt = τ (教科書鬆弛時間)
+    // Eq.35: R_AB = omegadt_A / omegadt_B = (ω_A·Δt_A)/(ω_B·Δt_B)
     omega_dt_d[index] = tau_local_d[idx_jk] * dt_local_d[idx_jk];
 }
 
