@@ -64,6 +64,11 @@ double tau;
 double *dt_local_h, *dt_local_d;
 double *tau_local_h, *tau_local_d;
 double *tau_dt_product_h, *tau_dt_product_d;
+
+// GILBM two-pass architecture: persistent global arrays
+double *f_pc_d;       // Per-point post-collision stencil data [19 * 343 * NX6*NYD6*NZ6]
+double *feq_d;        // Equilibrium distribution [19 * NX6*NYD6*NZ6]
+double *omega_dt_d;   // Precomputed ω·Δt = τ·Δt at each grid point [NX6*NYD6*NZ6]
 //
 // 逆變速度在 GPU kernel 中即時計算（不需全場存儲）：
 //   ẽ_α_η = e[α][0] / dx           (常數)
@@ -235,6 +240,33 @@ int main(int argc, char *argv[])
     DiagnoseGILBM_Phase1(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, fh_p, NYD6, NZ6, myid);
 
     SendDataToGPU();
+
+    // GILBM two-pass initialization: omega_dt, feq, f_pc
+    {
+        dim3 init_block(8, 8, 4);
+        dim3 init_grid((NX6 + init_block.x - 1) / init_block.x,
+                       (NYD6 + init_block.y - 1) / init_block.y,
+                       (NZ6 + init_block.z - 1) / init_block.z);
+
+        Init_OmegaDt_Kernel<<<init_grid, init_block>>>(
+            dt_local_d, tau_local_d, omega_dt_d
+        );
+
+        Init_Feq_Kernel<<<init_grid, init_block>>>(
+            fd[0], fd[1], fd[2], fd[3], fd[4], fd[5], fd[6], fd[7], fd[8], fd[9],
+            fd[10], fd[11], fd[12], fd[13], fd[14], fd[15], fd[16], fd[17], fd[18],
+            feq_d
+        );
+
+        Init_FPC_Kernel<<<init_grid, init_block>>>(
+            fd[0], fd[1], fd[2], fd[3], fd[4], fd[5], fd[6], fd[7], fd[8], fd[9],
+            fd[10], fd[11], fd[12], fd[13], fd[14], fd[15], fd[16], fd[17], fd[18],
+            f_pc_d
+        );
+
+        CHECK_CUDA( cudaDeviceSynchronize() );
+        if (myid == 0) printf("GILBM two-pass: omega_dt, feq, f_pc initialized.\n");
+    }
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
     CHECK_CUDA( cudaEventRecord(start,0) );

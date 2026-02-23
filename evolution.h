@@ -5,19 +5,21 @@
 #include "MRT_Process.h"
 #include "MRT_Matrix.h"
 __global__ void periodicSW(
-    double *f0_old, double *f1_old, double *f2_old, double *f3_old, double *f4_old, double *f5_old, double *f6_old, double *f7_old, double *f8_old, double *f9_old, double *f10_old, double *f11_old, double *f12_old, double *f13_old, double *f14_old, double *f15_old, double *f16_old, double *f17_old, double *f18_old, 
-    double *f0_new, double *f1_new, double *f2_new, double *f3_new, double *f4_new, double *f5_new, double *f6_new, double *f7_new, double *f8_new, double *f9_new, double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new, double *f15_new, double *f16_new, double *f17_new, double *f18_new, 
+    double *f0_old, double *f1_old, double *f2_old, double *f3_old, double *f4_old, double *f5_old, double *f6_old, double *f7_old, double *f8_old, double *f9_old, double *f10_old, double *f11_old, double *f12_old, double *f13_old, double *f14_old, double *f15_old, double *f16_old, double *f17_old, double *f18_old,
+    double *f0_new, double *f1_new, double *f2_new, double *f3_new, double *f4_new, double *f5_new, double *f6_new, double *f7_new, double *f8_new, double *f9_new, double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new, double *f15_new, double *f16_new, double *f17_new, double *f18_new,
     double *y_d,       double *x_d,      double *z_d,
-    double *u,         double *v,        double *w,         double *rho_d)
+    double *u,         double *v,        double *w,         double *rho_d,
+    double *feq_d_arg)
 {
     const int i = blockIdx.x*blockDim.x + threadIdx.x;
     const int j = blockIdx.y*blockDim.y + threadIdx.y;
     const int k = blockIdx.z*blockDim.z + threadIdx.z;
           int idx, idx_buffer;
           int buffer = 3;
+    const int grid_size = NX6 * NYD6 * NZ6;
 
     if( j >= NYD6 || k >= NZ6 ) return;
-    
+
     idx_buffer = j*NZ6*NX6 + k*NX6 + i;
     idx = idx_buffer + (NX6-2*buffer-1);
 
@@ -32,6 +34,9 @@ __global__ void periodicSW(
     v[idx_buffer] = v[idx];
     w[idx_buffer] = w[idx];
     rho_d[idx_buffer] = rho_d[idx];
+    // feq_d periodic copy (19 planes)
+    for (int q = 0; q < 19; q++)
+        feq_d_arg[q * grid_size + idx_buffer] = feq_d_arg[q * grid_size + idx];
 
     idx_buffer = j*NX6*NZ6 + k*NX6 + (NX6-1-i);
     idx = idx_buffer - (NX6-2*buffer-1);
@@ -47,6 +52,9 @@ __global__ void periodicSW(
     v[idx_buffer] = v[idx];
     w[idx_buffer] = w[idx];
     rho_d[idx_buffer] = rho_d[idx];
+    // feq_d periodic copy (19 planes)
+    for (int q = 0; q < 19; q++)
+        feq_d_arg[q * grid_size + idx_buffer] = feq_d_arg[q * grid_size + idx];
 
 }
 
@@ -70,9 +78,14 @@ __global__ void AccumulateUbulk(
 void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     int buffer = 3;
 
+    // Option B double-buffer: pre-copy f_old → f_new so kernel starts with last iteration's values
+    const size_t grid_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
+    for (int q = 0; q < 19; q++)
+        CHECK_CUDA( cudaMemcpyAsync(f_new[q], f_old[q], grid_bytes, cudaMemcpyDeviceToDevice, stream0) );
+    CHECK_CUDA( cudaStreamSynchronize(stream0) );
+
     dim3 griddimSW(  1,      NYD6/NT+1, NZ6);
     dim3 blockdimSW( buffer, NT,        1 );
-
 
     dim3 griddim(  NX6/NT+1, NYD6, NZ6);
     dim3 blockdim( NT, 1, 1);
@@ -80,19 +93,19 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     dim3 griddimBuf(NX6/NT+1, 1, NZ6);
     dim3 blockdimBuf(NT, 4, 1);
 
-    // ===== GILBM kernel dispatch =====
-    stream_collide_GILBM_Buffer<<<griddimBuf, blockdimBuf, 0, stream1>>>(
-    f_old[0], f_old[1], f_old[2], f_old[3], f_old[4], f_old[5], f_old[6], f_old[7], f_old[8], f_old[9], f_old[10], f_old[11], f_old[12], f_old[13], f_old[14], f_old[15], f_old[16], f_old[17], f_old[18],
+    // ===== GILBM two-pass kernel dispatch =====
+    GILBM_StreamCollide_Buffer_Kernel<<<griddimBuf, blockdimBuf, 0, stream1>>>(
     f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6], f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12], f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
+    f_pc_d, feq_d, omega_dt_d,
     dk_dz_d, dk_dy_d, delta_zeta_d,
-    dt_local_d, tau_local_d, tau_dt_product_d,
+    dt_local_d, tau_local_d,
     u, v, w, rho_d, Force_d, rho_modify_d, 3
     );
-    stream_collide_GILBM_Buffer<<<griddimBuf, blockdimBuf, 0, stream1>>>(
-    f_old[0], f_old[1], f_old[2], f_old[3], f_old[4], f_old[5], f_old[6], f_old[7], f_old[8], f_old[9], f_old[10], f_old[11], f_old[12], f_old[13], f_old[14], f_old[15], f_old[16], f_old[17], f_old[18],
+    GILBM_StreamCollide_Buffer_Kernel<<<griddimBuf, blockdimBuf, 0, stream1>>>(
     f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6], f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12], f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
+    f_pc_d, feq_d, omega_dt_d,
     dk_dz_d, dk_dy_d, delta_zeta_d,
-    dt_local_d, tau_local_d, tau_dt_product_d,
+    dt_local_d, tau_local_d,
     u, v, w, rho_d, Force_d, rho_modify_d, NYD6-7
     );
 
@@ -102,11 +115,11 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     Ub_avg_d, v, x_d, z_d
     );
 
-    stream_collide_GILBM<<<griddim, blockdim, 0, stream0>>>(
-    f_old[0], f_old[1], f_old[2], f_old[3], f_old[4], f_old[5], f_old[6], f_old[7], f_old[8], f_old[9], f_old[10], f_old[11], f_old[12], f_old[13], f_old[14], f_old[15], f_old[16], f_old[17], f_old[18],
+    GILBM_StreamCollide_Kernel<<<griddim, blockdim, 0, stream0>>>(
     f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6], f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12], f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
+    f_pc_d, feq_d, omega_dt_d,
     dk_dz_d, dk_dy_d, delta_zeta_d,
-    dt_local_d, tau_local_d, tau_dt_product_d,
+    dt_local_d, tau_local_d,
     u, v, w, rho_d, Force_d, rho_modify_d
     );
 
@@ -129,7 +142,7 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     periodicSW<<<griddimSW, blockdimSW, 0, stream0>>>(
         f_old[0] ,f_old[1] ,f_old[2] ,f_old[3] ,f_old[4] ,f_old[5] ,f_old[6] ,f_old[7] ,f_old[8] ,f_old[9] ,f_old[10] ,f_old[11] ,f_old[12] ,f_old[13] ,f_old[14] ,f_old[15] ,f_old[16] ,f_old[17] ,f_old[18],
         f_new[0] ,f_new[1] ,f_new[2] ,f_new[3] ,f_new[4] ,f_new[5] ,f_new[6] ,f_new[7] ,f_new[8] ,f_new[9] ,f_new[10] ,f_new[11] ,f_new[12] ,f_new[13] ,f_new[14] ,f_new[15] ,f_new[16] ,f_new[17] ,f_new[18],
-        y_d, x_d, z_d, u, v, w, rho_d
+        y_d, x_d, z_d, u, v, w, rho_d, feq_d
     );
 }
 

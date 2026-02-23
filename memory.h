@@ -97,6 +97,22 @@ void AllocateMemory() {
     AllocateHostArray(  nBytes, 3, &dt_local_h, &tau_local_h, &tau_dt_product_h);
     AllocateDeviceArray(nBytes, 3, &dt_local_d, &tau_local_d, &tau_dt_product_d);
 
+    // GILBM two-pass: f_pc_d [19 * 343 * grid_size], feq_d [19 * grid_size], omega_dt_d [NYD6*NZ6]
+    {
+        size_t grid_size = (size_t)NX6 * NYD6 * NZ6;
+        size_t f_pc_bytes = 19ULL * 343ULL * grid_size * sizeof(double);
+        CHECK_CUDA( cudaMalloc(&f_pc_d, f_pc_bytes) );
+        CHECK_CUDA( cudaMemset(f_pc_d, 0, f_pc_bytes) );
+
+        size_t feq_bytes = 19ULL * grid_size * sizeof(double);
+        CHECK_CUDA( cudaMalloc(&feq_d, feq_bytes) );
+        CHECK_CUDA( cudaMemset(feq_d, 0, feq_bytes) );
+
+        size_t omega_bytes = grid_size * sizeof(double);
+        CHECK_CUDA( cudaMalloc(&omega_dt_d, omega_bytes) );
+        CHECK_CUDA( cudaMemset(omega_dt_d, 0, omega_bytes) );
+    }
+
     nBytes = NZ6 * sizeof(double);
     CHECK_CUDA( cudaMallocHost( (void**)&xi_h, nBytes ) );
     CHECK_CUDA( cudaMalloc( &xi_d, nBytes ) );
@@ -156,6 +172,8 @@ void FreeSource() {
     // Phase 4 LTS
     FreeHostArray(  3,  dt_local_h, tau_local_h, tau_dt_product_h);
     FreeDeviceArray(3,  dt_local_d, tau_local_d, tau_dt_product_d);
+    // GILBM two-pass arrays
+    FreeDeviceArray(3,  f_pc_d, feq_d, omega_dt_d);
 
     for( int i = 0; i < 3; i++ ){
         FreeHostArray(  3,  Xdep_h[i], Ydep_h[i], Zdep_h[i]);
