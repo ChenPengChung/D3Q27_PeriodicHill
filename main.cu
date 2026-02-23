@@ -175,6 +175,7 @@ int main(int argc, char *argv[])
     double dx_val = LX / (double)(NX6 - 7);
     double dy_val = LY / (double)(NY6 - 7);
     //dt 取為遍歷每一格空間計算點，每一個分量，每一個編號下的速度分量最大值，定義而成
+    //dt指的就是global tiem step 
     dt = ComputeGlobalTimeStep(dk_dz_h, dk_dy_h, dx_val, dy_val, NYD6, NZ6, CFL, myid);
     tau = 0.5 + 3.0 * niu_target / dt;
 
@@ -200,7 +201,7 @@ int main(int argc, char *argv[])
     // Phase 4: Recompute delta_zeta with local dt (overwrites global-dt values)
     PrecomputeGILBM_DeltaZeta_Local(delta_zeta_h, dk_dz_h, dk_dy_h,
                                      dt_local_h, NYD6, NZ6);
-
+    //在初始化階段就已計算zeta方向的偏移量以local time step 為單位
     // Phase 2: CFL validation — departure point safety check (should now PASS)
     bool cfl_ok = ValidateDepartureCFL(delta_zeta_h, dk_dy_h, dk_dz_h, NYD6, NZ6, myid);
     if (!cfl_ok && myid == 0) {

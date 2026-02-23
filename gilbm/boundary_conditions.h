@@ -52,6 +52,8 @@ __device__ __forceinline__ bool NeedsBoundaryCondition(
 ) {
     double e_tilde_k = GILBM_e[alpha][1] * dk_dy_val + GILBM_e[alpha][2] * dk_dz_val;
     return is_bottom_wall ? (e_tilde_k > 0.0) : (e_tilde_k < 0.0);
+    // if e_tilde_k > 0.0 then 回傳 is_bottom_wall
+    // if e_tilde_k < 0.0 then 回傳 !is_bottom_wall
 }
 
 // Chapman-Enskog BC: compute f_alpha at no-slip wall
@@ -60,7 +62,7 @@ __device__ double ChapmanEnskogBC(
     double rho_wall,
     double du_dk, double dv_dk, double dw_dk,  // velocity gradients at wall
     double dk_dy_val, double dk_dz_val,
-    double omega_val, double dt_val
+    double omega_val, double localtimestep
 ) {
     double ex = GILBM_e[alpha][0];
     double ey = GILBM_e[alpha][1];
@@ -87,10 +89,10 @@ __device__ double ChapmanEnskogBC(
         (9.0 * ez * ez - 1.0) * dw_dk * dk_dz_val   // ⑥ (9·c_z²−1) · (dw/dk)·(dk/dz)//z->w;z->z
     );
 
-    C_alpha *= -omega_val * dt_val;
-
-    // f_alpha = w_alpha * rho_wall * (1 + C_alpha)
-    return GILBM_W[alpha] * rho_wall * (1.0 + C_alpha);
-}
+    C_alpha *= -omega_val * localtimestep;
+    // equibilirium distribution function = GILBM_W[alpha] * rho_wall 
+    // f_alpha = equibilirium distribution function * (C_alpha)
+    double f_eq_atwall = GILBM_W[alpha] * rho_wall;
+    return f_eq_atwall * (1.0 + C_alpha) ;  //計算壁面上的插值後分佈函數
 
 #endif

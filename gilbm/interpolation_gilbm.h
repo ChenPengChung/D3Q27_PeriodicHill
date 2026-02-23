@@ -33,8 +33,8 @@ __device__ __forceinline__ void lagrange_7point_coeffs(double t, double a[7]) {
 //
 // 參考：Imamura 2005
 //   Eq. 2:  c_i = c × e_i     — 物理速度 (直角坐標)
-//   Eq. 13: c̃ = c·e·∂ξ/∂x   — 逆變速度 (僅用於計算 streaming 位移)
-//   → 碰撞算子 (feq, MRT) 始終在物理速度空間中執行
+//   Eq. 13: c̃ = c·e·∂ξ/∂x     — 逆變速度 (僅用於計算 streaming 位移)
+//   → 碰撞算子 (feq, MRT)        始終在物理速度空間中執行
 __device__ __forceinline__ double compute_feq_alpha(
     int alpha, double rho, double u, double v, double w
 ) {

@@ -175,52 +175,54 @@ __device__ void gilbm_compute_point(
 
         if (q == 0) {
             // Rest direction: read center value from f_pc (no interpolation)
-            int center_flat = ci * 49 + cj * 7 + ck;
+            int center_flat = ci * 49 + cj * 7 + ck; //當前計算點的內差系統位置轉換為一維座標 
             f_streamed = f_pc[(q * STENCIL_VOL + center_flat) * GRID_SIZE + index];
         } else {
             bool need_bc = false;
             if (is_bottom) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
             else if (is_top) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
-
             if (need_bc) {
                 f_streamed = ChapmanEnskogBC(q, rho_wall,
                     du_dk, dv_dk, dw_dk,
-                    dk_dy_val, dk_dz_val, tau_A, dt_A);
+                    dk_dy_val, dk_dz_val, 
+                    tau_A, dt_A //權重係數//localtimestep 
+                );
             } else {
                 // Load 343 values from f_pc into local stencil
                 double f_stencil[STENCIL_SIZE][STENCIL_SIZE][STENCIL_SIZE];
-                for (int si = 0; si < 7; si++)
-                    for (int sj = 0; sj < 7; sj++)
+                for (int si = 0; si < 7; si++){
+                    for (int sj = 0; sj < 7; sj++){
                         for (int sk = 0; sk < 7; sk++) {
-                            int flat = si * 49 + sj * 7 + sk;
-                            f_stencil[si][sj][sk] = f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index];
+                            int interpolation = si * 49 + sj * 7 + sk; //遍歷內插成員系統的每一個點 
+                            f_stencil[si][sj][sk] = f_pc[(q * STENCIL_VOL + interpolation) * GRID_SIZE + index];//拿個桶子紀錄本計算點上相對應的內插成員系統的分佈函數
                         }
+                    }
+                }
+                // Departure point  //a_local 為本地local accerleration factor
+                double delta_eta_loc    = a_local * GILBM_delta_eta[q];
+                double delta_xi_loc   = a_local * GILBM_delta_xi[q];
+                double delta_zeta_loc = delta_zeta_d[q * NYD6 * NZ6 + idx_jk];
 
-                // Departure point
-                double delta_i_val   = a_local * GILBM_delta_eta[q];
-                double delta_xi_val  = a_local * GILBM_delta_xi[q];
-                double delta_zeta_val = delta_zeta_d[q * NYD6 * NZ6 + idx_jk];
-
-                double up_i = (double)i - delta_i_val;
-                double up_j = (double)j - delta_xi_val;
-                double up_k = (double)k - delta_zeta_val;
-
+                double up_i = (double)i - delta_eta_loc;
+                double up_j = (double)j - delta_xi_loc;
+                double up_k = (double)k - delta_zeta_loc;
+                
                 if (up_i < 1.0)               up_i = 1.0;
-                if (up_i > (double)(NX6 - 3))  up_i = (double)(NX6 - 3);
+                if (up_i > (double)(NX6 - 3)) up_i = (double)(NX6 - 3);
                 if (up_j < 1.0)               up_j = 1.0;
-                if (up_j > (double)(NYD6 - 3)) up_j = (double)(NYD6 - 3);
+                if (up_j > (double)(NYD6 - 3))up_j = (double)(NYD6 - 3);
                 if (up_k < 2.0)               up_k = 2.0;
-                if (up_k > (double)(NZ6 - 5))  up_k = (double)(NZ6 - 5);
+                if (up_k > (double)(NZ6 - 3)) up_k = (double)(NZ6 - 3);
 
                 // Lagrange weights relative to stencil base
                 double t_i = up_i - (double)bi;
                 double t_j = up_j - (double)bj;
                 double t_k = up_k - (double)bk;
 
-                double Lxi[7], Leta[7], Lzeta[7];
-                lagrange_7point_coeffs(t_i, Lxi);
-                lagrange_7point_coeffs(t_j, Leta);
-                lagrange_7point_coeffs(t_k, Lzeta);
+                double Lagrangarray_xi[7], Lagrangarray_eta[7], Lagrangarray_zeta[7];
+                lagrange_7point_coeffs(t_i, Lagrangarray_xi);
+                lagrange_7point_coeffs(t_j, Lagrangarray_eta);
+                lagrange_7point_coeffs(t_k, Lagrangarray_zeta);
 
                 // Tensor-product interpolation
                 // Step A: xi reduction -> val_ez[7][7]
@@ -228,35 +230,35 @@ __device__ void gilbm_compute_point(
                 for (int sj = 0; sj < 7; sj++)
                     for (int sk = 0; sk < 7; sk++)
                         val_ez[sj][sk] = Intrpl7(
-                            f_stencil[0][sj][sk], Lxi[0],
-                            f_stencil[1][sj][sk], Lxi[1],
-                            f_stencil[2][sj][sk], Lxi[2],
-                            f_stencil[3][sj][sk], Lxi[3],
-                            f_stencil[4][sj][sk], Lxi[4],
-                            f_stencil[5][sj][sk], Lxi[5],
-                            f_stencil[6][sj][sk], Lxi[6]);
+                            f_stencil[0][sj][sk], Lagrangarray_xi[0],
+                            f_stencil[1][sj][sk], Lagrangarray_xi[1],
+                            f_stencil[2][sj][sk], Lagrangarray_xi[2],
+                            f_stencil[3][sj][sk], Lagrangarray_xi[3],
+                            f_stencil[4][sj][sk], Lagrangarray_xi[4],
+                            f_stencil[5][sj][sk], Lagrangarray_xi[5],
+                            f_stencil[6][sj][sk], Lagrangarray_xi[6]);
 
                 // Step B: eta reduction -> val_z[7]
                 double val_z[7];
                 for (int sk = 0; sk < 7; sk++)
                     val_z[sk] = Intrpl7(
-                        val_ez[0][sk], Leta[0],
-                        val_ez[1][sk], Leta[1],
-                        val_ez[2][sk], Leta[2],
-                        val_ez[3][sk], Leta[3],
-                        val_ez[4][sk], Leta[4],
-                        val_ez[5][sk], Leta[5],
-                        val_ez[6][sk], Leta[6]);
+                        val_ez[0][sk], Lagrangarray_eta[0],
+                        val_ez[1][sk], Lagrangarray_eta[1],
+                        val_ez[2][sk], Lagrangarray_eta[2],
+                        val_ez[3][sk], Lagrangarray_eta[3],
+                        val_ez[4][sk], Lagrangarray_eta[4],
+                        val_ez[5][sk], Lagrangarray_eta[5],
+                        val_ez[6][sk], Lagrangarray_eta[6]);
 
                 // Step C: zeta reduction -> scalar
                 f_streamed = Intrpl7(
-                    val_z[0], Lzeta[0],
-                    val_z[1], Lzeta[1],
-                    val_z[2], Lzeta[2],
-                    val_z[3], Lzeta[3],
-                    val_z[4], Lzeta[4],
-                    val_z[5], Lzeta[5],
-                    val_z[6], Lzeta[6]);
+                    val_z[0], Lagrangarray_zeta[0],
+                    val_z[1], Lagrangarray_zeta[1],
+                    val_z[2], Lagrangarray_zeta[2],
+                    val_z[3], Lagrangarray_zeta[3],
+                    val_z[4], Lagrangarray_zeta[4],
+                    val_z[5], Lagrangarray_zeta[5],
+                    val_z[6], Lagrangarray_zeta[6]);
             }
         }
 

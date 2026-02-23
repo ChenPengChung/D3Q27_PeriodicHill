@@ -87,7 +87,7 @@ __device__ void gilbm_compute_point(
     double *Force, double *rho_modify
 ) {
     const int nface = NX6 * NZ6;
-    const int index = j * nface + k * NX6 + i;
+    const int index = j * nface + k * NX6 + i;//當前空間座標位置 
     const int idx_jk = j * NZ6 + k;
 
     // Local dt and tau at point A
@@ -106,6 +106,20 @@ __device__ void gilbm_compute_point(
     const int cj = j - bj;//xi方向相對座標
     const int ck = k - bk;
     //定義下邊界計算底計算空間座標以及上邊界
+    // ── Wall BC pre-computation ──────────────────────────────────────
+    // Chapman-Enskog BC 需要物理空間速度梯度張量 ∂u_α/∂x_β。
+    // 由 chain rule:
+    //   ∂u_α/∂x_β = ∂u_α/∂η · ∂η/∂x_β + ∂u_α/∂ξ · ∂ξ/∂x_β + ∂u_α/∂ζ · ∂ζ/∂x_β
+    // 一般情況需要 9 個計算座標梯度 (3 速度分量 × 3 計算座標方向)。
+    //
+    // 但在 no-slip 壁面 (等 k 面) 上，u=v=w=0 對所有 (η,ξ) 恆成立，因此：
+    //   ∂u_α/∂η = 0,  ∂u_α/∂ξ = 0   (切向微分為零)
+    //   ∂u_α/∂ζ ≠ 0                   (唯一非零：法向梯度)
+    // 9 個量退化為 3 個：du/dk, dv/dk, dw/dk
+    //
+    // Chain rule 簡化為：∂u_α/∂x_β = (∂u_α/∂k) · (∂k/∂x_β)
+    // 度量係數 ∂k/∂x_β 由 dk_dy, dk_dz 提供 (dk_dx 目前假設為 0)。
+    // 二階單邊差分 (壁面 u=0): du/dk|_wall = (4·u_{k±1} - u_{k±2}) / 2
     bool is_bottom = (k == 2);
     bool is_top    = (k == NZ6 - 3);
     //對當前點寫入度量係數
@@ -139,12 +153,70 @@ __device__ void gilbm_compute_point(
     //為了計算邊界上的六個值 = d(u,v,w)/dy , d(u,v,w)/dz，這六個值在壁面邊界條件的計算中會用到，這裡先行計算好以供後續使用
     //你需要計算六個偏微分在曲線坐標系中，d(u,v,w)/dk三個值 以及 兩個度量係數 dk_dy , dk_dz 一共五個資訊你需要知道，才可以處理"邊界問題"
     //===========================================================
-    //             第一步驟(Lagrange Interpolation+Streaming)
+    //         第一步驟(Lagrange Interpolation+Streaming)
     //============================================================
-    
-
-
-
+    double rho_stream = 0.0, mx_stream = 0.0, my_stream = 0.0, mz_stream = 0.0; 
+    //stream = 這些值來自「遷移步驟完成後」的分佈函數，是碰撞步驟的輸入。
+    //(ci,cj,ck):物理空間計算點的內插系統空間座標
+    //f_pc:陣列元素物理命名意義:1.pc=post-collision 
+    //2.f_pc[(q * 343 + flat) * GRID_SIZE + index]
+    //        ↑編號(1~18) ↑stencil內位置      ↑物理空間計算點A   ->這就是post-collision 的命名意義
+    //在迴圈之外，對於某一個空間點
+    for (int q = 0; q < 19; q++) {
+    //在迴圈內部，對於某一個空間點，對於某一個離散度方向
+        double f_streamed;
+        if(q == 0){
+            int center_flat = ci * 49 + cj * 7 + ck; //當前計算點的內差系統位置轉換為一維座標 
+            //不需要經過差過程，直接取上一輪碰撞後分佈函數post-collision的中心點分佈函數作為該計算點上的"插值後分佈函數"
+            //在f_pc的命名意義有有三層資訊需納入考慮，1.index(當前座標網格點)2.alpha(編號)3.stencil(內插系統座標)，為了不要讓這三層資訊彼此混淆而誤用同一直，採如下命名方式:
+            f_streamed = f_pc[(q * STENCIL_VOL + center_flat) * GRID_SIZE + index];//其中，index<=GRID_SIZE ; center_flat<=STENCIL_VOL
+        }else{
+             bool need_bc = false ; //初始化邊界條件判斷子為否
+             //如果是"下邊界計算點" ，且編號對應的粒子速度zeta分量>0則把 false 改為 true 
+            if (is_bottom) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true); //>0 -> true 
+            else if (is_top) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false); //<0 -> true 
+            if (need_bc) { f_streamed = ChapmanEnskogBC(q, rho_wall,
+                    du_dk, dv_dk, dw_dk,
+                    dk_dy_val, dk_dz_val, 
+                    tau_A, dt_A //權重係數//localtimestep 
+                );
+            } else {
+                // Load 343 values from f_pc into local stencil
+                double f_stencil[STENCIL_SIZE][STENCIL_SIZE][STENCIL_SIZE];
+                for (int si = 0; si < 7; si++){
+                    for (int sj = 0; sj < 7; sj++){
+                        for (int sk = 0; sk < 7; sk++) {
+                            int interpolation = si * 49 + sj * 7 + sk; //遍歷內插成員系統的每一個點 
+                            f_stencil[si][sj][sk] = f_pc[(q * STENCIL_VOL + interpolation) * GRID_SIZE + index];//拿個桶子紀錄本計算點上相對應的內插成員系統的分佈函數
+                        }
+                    }
+                }
+                // Departure point  //a_local 為本地local accerleration factor
+                //計算local timed stepo 版本的偏移量
+                double delta_eta_loc    = a_local * GILBM_delta_eta[q];
+                double delta_xi_loc   = a_local * GILBM_delta_xi[q];
+                double delta_zeta_loc = delta_zeta_d[q * NYD6 * NZ6 + idx_jk];
+                //(up_i,up_j,up_k)為非物理空間計算點的空間座標//因為整個streaming過程為流入計算點，所以要減去偏移量
+                //對於某一格物理計算點，對於某一個離散速度編號Q而言，
+                double up_i = (double)i - delta_eta_loc;
+                double up_j = (double)j - delta_xi_loc;
+                double up_k = (double)k - delta_zeta_loc;
+                //i,j,k為計算區域內的物理聰間計算點(不含buffer layer)
+                if (up_i < 1.0)               up_i = 1.0; //up_i >= 2 
+                if (up_i > (double)(NX6 - 3)) up_i = (double)(NX6 - 3);//up_i <= NX6-3
+                if (up_j < 1.0)               up_j = 1.0; //up_j >= 2
+                if (up_j > (double)(NYD6 - 3))up_j = (double)(NYD6 - 3);//up_j <= NYD6-3
+                if (up_k < 2.0)               up_k = 2.0; //up_k >=2 因為如果小於2對於該點該方向已邊界條件做處理 
+                if (up_k > (double)(NZ6 - 3)) up_k = (double)(NZ6 - 3); //up_k <= NZ6-3 因為如果大於NZ6-3對於該點該方向已邊界條件做處理 
+                //上面這段if語句的作用是確保up_i, up_j, up_k的值在物理空間計算區域內，避免越界訪問f_pc陣列
+                // Lagrange weights relative to stencil base
+                //(t_i,t_j,t_k)為 非物理空間計算點在內插成員系統中的座標位置
+                double t_i = up_i - (double)bi;
+                double t_j = up_j - (double)bj;
+                double t_k = up_k - (double)bk;
+            
+        }
+    }
 
 
 
