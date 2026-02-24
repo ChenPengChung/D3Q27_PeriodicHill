@@ -341,6 +341,12 @@ __device__ void gilbm_compute_point(
         else if (is_top) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
         if (need_bc) continue;
 
+        // Body force source term for this q (y-direction pressure gradient)
+        // Streamwise = y in this code (AccumulateUbulk uses v, hill H(y))
+        // S_q = w_q * (e · F) / c_s^2 * dt_A = w_q * 3 * e_y[q] * F[0] * dt_A
+        // Precomputed outside stencil loop: same for all 343 nodes
+        double force_source_q = GILBM_W[q] * 3.0 * (double)GILBM_e[q][1] * Force[0] * dt_A;
+
         for (int si = 0; si < 7; si++) {
             int gi = bi + si;
             for (int sj = 0; sj < 7; sj++) {
@@ -376,6 +382,9 @@ __device__ void gilbm_compute_point(
                     // Eq.3: Collision with ω_A → f* = f - (1/ω_A)(f - feq_B)
                     f_re -= (1.0 / omega_A) * (f_re - feq_B);
 
+                    // Add body force source term
+                    f_re += force_source_q;
+
                     // Write to A's PRIVATE f_pc
                     f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index] = f_re;
                 }
@@ -402,7 +411,8 @@ __global__ void GILBM_StreamCollide_Kernel(
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
     const int k = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (i <= 2 || i >= NX6 - 3 || k <= 1 || k >= NZ6 - 2) return;
+    // j-guard: 跳過 ghost zone (j<3, j>=NYD6-3)，避免與 MPI 交換競爭寫入
+    if (i <= 2 || i >= NX6 - 3 || j < 3 || j >= NYD6 - 3 || k <= 1 || k >= NZ6 - 2) return;
 
     double *f_new_ptrs[19] = {
         f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,

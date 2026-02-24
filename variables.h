@@ -44,7 +44,7 @@
 //how many time steps to output val of monitor point(NX/2, NY/2, NZ/2)
 #define		NDTMIT	   50
 //how many time steps to modify the forcing term
-#define     NDTFRC     10000
+#define     NDTFRC     1000 //更新外力
 
 //whether to initial from the backup file
 //0 : from initialization

@@ -57,8 +57,7 @@ extern double tau;  // 鬆弛時間
 | `common.h` | 95 | CHECK_CUDA/CHECK_MPI 巨集 |
 | `memory.h` | 202 | GPU 記憶體配置/釋放 |
 | `evolution.h` | 191 | kernel 調度 + Launch_CollisionStreaming() |
-| `gilbm/evolution_gilbm.h` | 556 | **完整參考版本** 4-step kernel |
-| `gilbm/evolution_gilbm_mine.h` | 264+ | **你的實作**（進行中） |
+| `gilbm/evolution_gilbm.h` | 553 | **完整 4-step kernel** (已完成) |
 | `gilbm/interpolation_gilbm.h` | 55 | Intrpl7, lagrange_7point_coeffs, compute_feq_alpha |
 | `gilbm/boundary_conditions.h` | 100 | NeedsBoundaryCondition, ChapmanEnskogBC |
 | `gilbm/precompute.h` | 513 | δη/δξ/δζ 預計算 |
@@ -106,10 +105,10 @@ f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index]
 feq_d[q * GRID_SIZE + index]
 ```
 
-### omega_dt_d 索引
+### omegadt_local_d 索引
 ```cpp
 // 大小: GRID_SIZE (每格點一個值，雖然只跟 j,k 相關但展開成全場)
-omega_dt_d[index]  // = tau_local * dt_local
+omegadt_local_d[index]  // = omega_local * dt_local (由 Init_OmegaDt_Kernel 計算)
 ```
 
 ### delta_zeta_d 索引
@@ -134,9 +133,9 @@ delta_zeta_d[q * NYD6 * NZ6 + idx_jk]
 |------|------|------|
 | `f_pc_d[19×343×grid]` | ~5.55 GB | 每格點私有 post-collision |
 | `feq_d[19×grid]` | ~16 MB | 全域平衡分佈 |
-| `omega_dt_d[grid]` | ~1.6 MB | ω·Δt = tau_local × dt_local |
+| `omegadt_local_d[grid]` | ~1.6 MB | ω·Δt = omega_local × dt_local |
 | `dt_local_d[NYD6×NZ6]` | ~21 KB | 局部時間步長 |
-| `tau_local_d[NYD6×NZ6]` | ~21 KB | 局部鬆弛時間 |
+| `omega_local_d[NYD6×NZ6]` | ~21 KB | 局部鬆弛頻率 ω = 1/τ_local |
 | `dk_dz_d[NYD6×NZ6]` | ~21 KB | ∂ζ/∂z 度量項 |
 | `dk_dy_d[NYD6×NZ6]` | ~21 KB | ∂ζ/∂y 度量項 |
 | `delta_zeta_d[19×NYD6×NZ6]` | ~408 KB | ζ 方向 RK2 位移 |
@@ -159,7 +158,7 @@ for q = 0..18:
         f_streamed = f_pc[(0*343 + center_flat)*GRID_SIZE + index]
     elif NeedsBoundaryCondition(q, dk_dy, dk_dz, is_bottom/top):
         f_streamed = ChapmanEnskogBC(q, rho_wall, du_dk, dv_dk, dw_dk,
-                                      dk_dy, dk_dz, tau_A, dt_A)
+                                      dk_dy, dk_dz, omega_A, dt_A)
     else:
         // 載入 7³=343 個 f_pc 值 → f_stencil[7][7][7]
         // 計算 departure point: up_i = i - a_local*delta_eta[q], ...
@@ -195,12 +194,12 @@ for q = 0..18:
         // Step 2: 讀取 f_B, feq_B (Gauss-Seidel: 從 f_new 讀)
         f_B = f_new_ptrs[q][idx_B];
         feq_B = feq_d[q*GRID_SIZE + idx_B]; // ghost zone 用 on-the-fly 計算
-        omegadt_B = omega_dt_d[idx_B];
+        omegadt_B = omegadt_local_d[idx_B];
         R_AB = omegadt_A / omegadt_B;
         f_re = feq_B + (f_B - feq_B) * R_AB;  // Eq.35
 
         // Step 3: BGK 碰撞
-        f_re -= (1.0/tau_A) * (f_re - feq_B);  // Eq.3
+        f_re -= (1.0/omega_A) * (f_re - feq_B);  // Eq.3
 
         // 寫回 A 的私有 f_pc
         f_pc[(q*343 + flat)*GRID_SIZE + index] = f_re;
@@ -230,10 +229,11 @@ __device__ double compute_feq_alpha(int alpha, double rho, double u, double v, d
 // ẽ^ζ_α = e_y[α]·dk_dy + e_z[α]·dk_dz
 __device__ bool NeedsBoundaryCondition(int alpha, double dk_dy, double dk_dz, bool is_bottom);
 
-// Chapman-Enskog BC (Imamura Eq. A.9, 6 項張量展開)
+// Chapman-Enskog BC (Imamura Eq. A.9, 6 項張量展開, c=1 約定)
 // f = w_α · ρ_wall · (1 + C_α)
-// C_α = -ω·Δt × Σ [9·c_iα·c_iβ - δ_αβ] · (du_α/dk)·(dk/dx_β)
-// 輸入: du_dk, dv_dk, dw_dk (二階單邊差分), dk_dy, dk_dz, omega=tau_A, localtimestep=dt_A
+// C_α = -ω·Δt × Σ [3·c_iα·c_iβ - δ_αβ] · (du_α/dk)·(dk/dx_β)
+// 注意: c=1 時係數為 3 (= 1/c_s^4 = 1/(1/3)^2 = 9 → ×c² = 9×(1/3) = 3)
+// 輸入: du_dk, dv_dk, dw_dk (二階單邊差分), dk_dy, dk_dz, omega=omega_A, localtimestep=dt_A
 __device__ double ChapmanEnskogBC(int alpha, double rho_wall,
     double du_dk, double dv_dk, double dw_dk,
     double dk_dy, double dk_dz, double omega, double localtimestep);
@@ -242,7 +242,7 @@ __device__ double ChapmanEnskogBC(int alpha, double rho_wall,
 ### evolution_gilbm.h 核心函數
 ```cpp
 // 計算 stencil 起始點，含邊界 clamping
-// k 方向: bk ∈ [2, NZ6-9] (確保 bk+6 ≤ NZ6-3)
+// k 方向: bk ∈ [2, NZ6-9] (確保 bk+6 = NZ6-3，stencil 不超出壁面)
 __device__ void compute_stencil_base(int i, int j, int k, int &bi, int &bj, int &bk);
 
 // 讀取 19 個 f_new 計算宏觀量
@@ -251,9 +251,9 @@ __device__ void compute_macroscopic_at(double *f_ptrs[19], int idx,
 
 // 核心 4-step 函數 (Buffer 和 Full kernel 共用)
 __device__ void gilbm_compute_point(int i, int j, int k,
-    double *f_new_ptrs[19], double *f_pc, double *feq_d, double *omega_dt_d,
+    double *f_new_ptrs[19], double *f_pc, double *feq_d, double *omegadt_local_d,
     double *dk_dz_d, double *dk_dy_d, double *delta_zeta_d,
-    double *dt_local_d, double *tau_local_d,
+    double *dt_local_d, double *omega_local_d,
     double *u_out, double *v_out, double *w_out, double *rho_out,
     double *Force, double *rho_modify);
 ```
@@ -304,32 +304,29 @@ for step = 0..loop:
 
 ## 七、當前進度
 
-### evolution_gilbm_mine.h 狀態
+### evolution_gilbm.h 狀態 — 全部完成
 
 | 部分 | 狀態 | 備註 |
 |------|------|------|
 | `__constant__` 宣告 | ✅ | GILBM_e, GILBM_W, GILBM_dt, delta_eta/xi |
-| `compute_stencil_base()` | ✅ | 含邊界 clamping |
+| `compute_stencil_base()` | ✅ | 含邊界 clamping (k: [2, NZ6-9]) |
 | `compute_macroscopic_at()` | ✅ | D3Q19 宏觀量計算 |
-| **Step 1: 插值 + Streaming** | ✅ 大部分 | 有重複宣告 `interpolation2order` 的 bug |
-| **Step 1.5: 宏觀量 + feq** | ⏳ 待完成 | 只有累加，未寫入 feq_d |
-| **Step 2: 重估** | ⏳ 待完成 | |
-| **Step 3: 碰撞** | ⏳ 待完成 | |
-| **Kernel 包裝函數** | ⏳ 待完成 | Buffer/Full/Init kernels |
+| **Step 1: 插值 + Streaming** | ✅ | 7pt Lagrange 三步張量積, wall BC |
+| **Step 1.5: 宏觀量 + feq** | ✅ | 質量修正 + feq_d + rho/u/v/w_out |
+| **Step 2: 重估 (Eq.35)** | ✅ | R_AB = omegadt_A/omegadt_B, ghost zone on-the-fly feq |
+| **Step 3: 碰撞 (Eq.3)** | ✅ | BGK with 1/omega_A → f_pc |
+| **Kernel 包裝函數** | ✅ | Full/Buffer/Init_FPC/Init_Feq/Init_OmegaDt |
 
-### evolution_gilbm_mine.h 已知問題
-1. `interpolation2order[7]` 重複宣告（第一次在 StepB 前已經宣告）
-2. Step 1 的 for 迴圈大括號不匹配（else 分支缺少右括號）
-3. Step 1.5/2/3 尚未實作（目前檔案只有空白結尾）
-4. 缺少 Buffer/Full kernel 函數和 Init kernels
+### 模擬狀態
+- 所有診斷測試通過 (Phase 0, 1.5, 2, 3, 4)
+- 已可完整運行，VTK 輸出正常
+- Force driving 已啟用，Ub_avg 從 0 開始增長
 
-### 待辦
-
-1. **修復 Step 1 語法**: 移除重複宣告, 修復大括號匹配
-2. **實作 Step 1.5**: 質量修正 → feq → 寫入 feq_d / rho_out / u_out
-3. **實作 Step 2+3**: 合併迴圈, Eq.35 重估 + BGK 碰撞 → 寫回 f_pc
-4. **加入 Kernel 包裝**: GILBM_StreamCollide_Kernel, Buffer_Kernel, Init kernels
-5. **替換 evolution.h 的 include**: 從 evolution_gilbm.h 改為 evolution_gilbm_mine.h
+### 已完成的驗證 (Audit)
+- **feq 審計**: 確認 `compute_feq_alpha` 在曲線坐標 GILBM 中不需 Jacobian 修正
+- **CE BC 張量**: c=1 約定下係數為 `3.0` (非 `9.0`)
+- **位移公式**: δη/δξ 以 dt_global 預計算，kernel 中乘 a_local 縮放至 dt_local
+- **Departure point clamp**: CFL < 1 保證 |位移| < 1 格，clamp 為安全網不會觸發
 
 ---
 
@@ -341,24 +338,27 @@ R_AB = (ω_A·Δt_A) / (ω_B·Δt_B) = omegadt_A / omegadt_B
 ```
 uniform grid 時 R_AB = 1 → f̃ = f（退化為標準 LBM）
 
-### 壁面 BC (Chapman-Enskog, Eq. A.9)
+### 壁面 BC (Chapman-Enskog, Eq. A.9, c=1)
 ```
 f_α = w_α · ρ_wall · (1 + C_α)
 C_α = -ω·Δt × { 6 項 tensor 展開 }
-    = -omega*dt × Σ_α,β [9·c_iα·c_iβ - δ_αβ] · (du_α/dk)·(dk/dx_β)
+    = -omega*dt × Σ_α,β [3·c_iα·c_iβ - δ_αβ] · (du_α/dk)·(dk/dx_β)
 ```
+- 係數 3 = 1/c_s^2 (c=1 時 c_s²=1/3 → 1/c_s^2=3)；c≠1 時為 9·c_iα·c_iβ - 3·δ_αβ
 - `du/dk|wall = (4·u[k±1] - u[k±2]) / 2` (二階單邊差分, u[wall]=0)
 - `rho_wall = rho[k=3]` (零法向壓力梯度近似)
 - dk/dx = 0 → 只有 β=y,z 存活 → 3α × 2β = 6 項
 
 ### 位移公式
 ```
-δη = dt_local × e_x / dx         (均勻 x, __constant__)
-δξ = dt_local × e_y / dy         (均勻 y, __constant__)
-δζ = dt_local × ẽ^ζ(k_half)      (非均勻 z, RK2 中點, [19×NYD6×NZ6])
+δη = dt_global × e_x / dx        (均勻 x, __constant__ GILBM_delta_eta[19])
+δξ = dt_global × e_y / dy        (均勻 y, __constant__ GILBM_delta_xi[19])
+δζ = dt_local × ẽ^ζ(k_half)      (非均勻 z, RK2 中點, delta_zeta_d[19×NYD6×NZ6])
 ```
-Step 1 中使用 LTS 加速: `delta_eta_loc = a_local * GILBM_delta_eta[q]`
-其中 `a_local = dt_A / GILBM_dt`
+- δη/δξ 以 `dt_global` 預計算，存在 __constant__ memory
+- Kernel 中乘 LTS 加速因子: `delta_eta_loc = a_local * GILBM_delta_eta[q]`
+- `a_local = dt_A / GILBM_dt` (dt_A = dt_local, GILBM_dt = dt_global)
+- δζ 已用 `dt_local` 預計算 (precompute.h)，kernel 中直接使用不需縮放
 
 ---
 
@@ -421,7 +421,19 @@ nvcc -O2 -arch=sm_80 main.cu -lmpi -o main.exe
 
 ---
 
-## 十二、參考文件
+## 十二、變數命名對照 (Imamura ↔ 程式碼)
+
+| Imamura 符號 | 程式碼變數 | 說明 |
+|-------------|-----------|------|
+| ω (鬆弛頻率) | `omega_A`, `omega_local_d` | = 1/τ_local |
+| ω·Δt (教科書 τ) | `omegadt_A`, `omegadt_local_d` | = omega_local × dt_local |
+| Δt_local | `dt_A`, `dt_local_d` | 局部時間步長 |
+| τ_local | (非直接儲存) | = 0.5 + 1/(3·Re·dt_local) |
+| a (LTS 加速因子) | `a_local` | = dt_A / GILBM_dt |
+
+---
+
+## 十三、參考文件
 
 - Imamura 2005, J. Comput. Phys. 202, 645-663
 - `Claude_GILBM.md` — 完整理論推導 (399 行)

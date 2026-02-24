@@ -125,12 +125,14 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
 
     CHECK_CUDA( cudaStreamSynchronize(stream1) );
 
-    ISend_LtRtBdry( f_new, iToLeft,    l_nbr, itag_f4, 0, 10,   4,9,10,16,18, 3,7,8,15,17  );
-    IRecv_LtRtBdry( f_new, iFromRight, r_nbr, itag_f4, 1, 10,   4,9,10,16,18, 3,7,8,15,17  );
-    ISend_LtRtBdry( f_new, iToRight,   r_nbr, itag_f3, 2, 10,   4,9,10,16,18, 3,7,8,15,17  );
-    IRecv_LtRtBdry( f_new, iFromLeft,  l_nbr, itag_f3, 3, 10,   4,9,10,16,18, 3,7,8,15,17  );
+    // GILBM: 必須交換全部 19 個 f 方向（不只 y-moving 的 10 個）
+    // 原因: Step 2+3 讀取 ghost zone 所有 q 的 f_new[q][idx_B] 做重估+碰撞
+    ISend_LtRtBdry( f_new, iToLeft,    l_nbr, itag_f4, 0, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
+    IRecv_LtRtBdry( f_new, iFromRight, r_nbr, itag_f4, 1, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
+    ISend_LtRtBdry( f_new, iToRight,   r_nbr, itag_f3, 2, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
+    IRecv_LtRtBdry( f_new, iFromLeft,  l_nbr, itag_f3, 3, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
 
-    for( int i = 0;  i < 10; i++ ){
+    for( int i = 0;  i < 19; i++ ){
         CHECK_MPI( MPI_Waitall(4, request[i], status[i]) );
     }
     for( int i = 19; i < 23; i++ ){

@@ -197,7 +197,50 @@ int main(int argc, char *argv[])
                          dk_dz_h, dk_dy_h, dx_val, dy_val,
                          niu, dt_global, NYD6, NZ6, CFL, myid);
 
-    
+    // Bug 3 fix: Exchange dt_local_h and omega_local_h ghost zones between MPI ranks.
+    // ComputeLocalTimeStep only fills j=3..NYD6-4 with actual local values;
+    // ghost j=0,1,2 and j=NYD6-3..NYD6-1 retain dt_global defaults.
+    // Without this fix, omegadt_local_d at ghost j is wrong → R_AB ratio in
+    // GILBM Step 2+3 is incorrect at MPI boundaries → causes divergence.
+    {
+        int ghost_count = Buffer * NZ6;  // 3 j-slices × NZ6 doubles
+        int j_send_left  = (Buffer + 1) * NZ6;            // j=4
+        int j_recv_right = (NYD6 - Buffer) * NZ6;         // j=36
+        int j_send_right = (NYD6 - 2*Buffer - 1) * NZ6;   // j=32
+        int j_recv_left  = 0;                               // j=0
+
+        // dt_local_h: send j=4..6 to left, receive from right into j=36..38
+        MPI_Sendrecv(&dt_local_h[j_send_left],  ghost_count, MPI_DOUBLE, l_nbr, 500,
+                     &dt_local_h[j_recv_right], ghost_count, MPI_DOUBLE, r_nbr, 500,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        // dt_local_h: send j=32..34 to right, receive from left into j=0..2
+        MPI_Sendrecv(&dt_local_h[j_send_right], ghost_count, MPI_DOUBLE, r_nbr, 501,
+                     &dt_local_h[j_recv_left],  ghost_count, MPI_DOUBLE, l_nbr, 501,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+        // omega_local_h: same exchange pattern
+        MPI_Sendrecv(&omega_local_h[j_send_left],  ghost_count, MPI_DOUBLE, l_nbr, 502,
+                     &omega_local_h[j_recv_right], ghost_count, MPI_DOUBLE, r_nbr, 502,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Sendrecv(&omega_local_h[j_send_right], ghost_count, MPI_DOUBLE, r_nbr, 503,
+                     &omega_local_h[j_recv_left],  ghost_count, MPI_DOUBLE, l_nbr, 503,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+        // Recompute omegadt_local_h at exchanged ghost zones for host-side consistency
+        for (int j = 0; j < Buffer; j++)
+            for (int k = 0; k < NZ6; k++) {
+                int idx = j * NZ6 + k;
+                omegadt_local_h[idx] = omega_local_h[idx] * dt_local_h[idx];
+            }
+        for (int j = NYD6 - Buffer; j < NYD6; j++)
+            for (int k = 0; k < NZ6; k++) {
+                int idx = j * NZ6 + k;
+                omegadt_local_h[idx] = omega_local_h[idx] * dt_local_h[idx];
+            }
+
+        if (myid == 0) printf("GILBM: dt_local/omega_local ghost zones exchanged between MPI ranks.\n");
+    }
+
     // Phase 4: Recompute delta_zeta with local dt (overwrites global-dt values)
     PrecomputeGILBM_DeltaZeta_Local(delta_zeta_h, dk_dz_h, dk_dy_h,
                                      dt_local_h, NYD6, NZ6);

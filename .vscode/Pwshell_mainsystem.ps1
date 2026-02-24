@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     MobaXterm-style Sync Commands for D3Q27_PeriodicHill
 .DESCRIPTION
@@ -95,8 +95,8 @@ $script:Config = @{
     SshPassword = "1256"
     SshOpts = "-o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"
     # 排除的檔案，例如 .git 和 .vscode 設定檔等
-    ExcludePatterns = @(".git/*", ".vscode/*", "a.out", "*.o", "*.exe",
-        "*.swp", "*.swo", "*~", "__pycache__/*", "*.pyc", ".DS_Store", "*.vtu")
+    ExcludePatterns = @(".git/*", ".vscode/*", "a.out", "*/a.out", "*.o", "*.exe",
+        "*.swp", "*.swo", "*~", "__pycache__/*", "*.pyc", ".DS_Store", "*/.DS_Store", "*.vtu")
     # 同步的副檔名
     SyncExtensions = @("*")
     SyncAll = $true  # 同步所有類型的檔案
@@ -306,8 +306,8 @@ function Get-LocalFiles {
 function Get-RemoteFiles {
     param([hashtable]$Server)
     
-    # 排除 .git 和 .vscode 目錄
-    $excludeGrep = "grep -v '/.git/' | grep -v '/.vscode/' | grep -v '\.o$' | grep -v '\.swp$' | grep -v '\.swo$' | grep -v '~$' | grep -v '__pycache__' | grep -v '\.pyc$' | grep -v '\.DS_Store' | grep -v '\.vtu$'"
+    # 排除 .git, .vscode, 編譯產物等 (與 Config.ExcludePatterns 一致)
+    $excludeGrep = "grep -v '/.git/' | grep -v '/.vscode/' | grep -v '/a\.out$' | grep -v '\.o$' | grep -v '\.exe$' | grep -v '\.swp$' | grep -v '\.swo$' | grep -v '~$' | grep -v '__pycache__' | grep -v '\.pyc$' | grep -v '\.DS_Store' | grep -v '\.vtu$'"
     $cmd = "find $($Config.RemotePath) -type f -exec md5sum {} \; 2>/dev/null | $excludeGrep"
     $result = Invoke-Ssh -Server $Server -Command $cmd
     
@@ -1394,9 +1394,19 @@ switch ($Command) {
     "push" {
         $opts = Parse-DiffOptions -Args_ $Arguments
         $opts.Confirm = $true  # push defaults to confirm
+        # Server selection (like pull/autopush): push 87, push .87, push all
+        $targetServers = @()
+        foreach ($posArg in $opts.Positional) {
+            foreach ($s in $Config.Servers) {
+                if ($posArg -eq $s.Name -or $posArg -eq $s.Name.TrimStart('.') -or $posArg -eq ".$($s.Name.TrimStart('.'))") {
+                    $targetServers = @($s); break
+                }
+            }
+        }
+        if ($targetServers.Count -eq 0) { $targetServers = $Config.Servers }  # Default: all
         $idx = 0
-        $total = $Config.Servers.Count
-        foreach ($server in $Config.Servers) {
+        $total = $targetServers.Count
+        foreach ($server in $targetServers) {
             $idx++
             # Run diff analysis before transfer
             if ($opts.DiffMode -ne "no-diff") {
