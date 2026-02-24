@@ -106,8 +106,8 @@ __device__ void gilbm_compute_point(
 
     // Local dt and tau at point A
     const double dt_A    = dt_local_d[idx_jk];  // Δt_A (local time step)
-    const double tau_A   = tau_local_d[idx_jk]; // ω_A (Imamura無因次鬆弛時間 ≡ τ/Δt, Eq.1)
-    const double omegadt_A = omega_dt_d[index];  // ω_A × Δt_A = τ_A (教科書鬆弛時間)
+    const double omega_A   = omega_local_d[idx_jk]; // ω_A (Imamura無因次鬆弛時間 ≡ τ/Δt, Eq.1)
+    const double omegadt_A = omegadt_local_d[index];  // ω_A × Δt_A = τ_A (教科書鬆弛時間)
 
     // LTS acceleration factor for eta/xi displacement scaling
     const double a_local = dt_A / GILBM_dt;//計算該點上的加速因子，此參數為loca的值，此值隨空間變化 
@@ -365,7 +365,7 @@ __device__ void gilbm_compute_point(
                     }
 
                     // Read omega_dt at B
-                    double omegadt_B = omega_dt_d[idx_B];
+                    double omegadt_B = omegadt_local_d[idx_B];
                     // Eq.35: R_AB = (ω_A·Δt_A)/(ω_B·Δt_B) = omegadt_A / omegadt_B
                     double R_AB = omegadt_A / omegadt_B;
 
@@ -373,7 +373,7 @@ __device__ void gilbm_compute_point(
                     double f_re = feq_B + (f_B - feq_B) * R_AB;
 
                     // Eq.3: Collision with ω_A → f* = f - (1/ω_A)(f - feq_B)
-                    f_re -= (1.0 / tau_A) * (f_re - feq_B);
+                    f_re -= (1.0 / omega_A) * (f_re - feq_B);
 
                     // Write to A's PRIVATE f_pc
                     f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index] = f_re;
@@ -532,10 +532,10 @@ __global__ void Init_Feq_Kernel(
 }
 
 // ============================================================================
-// Initialization kernel: compute omega_dt_d from dt_local and tau_local
+// Initialization kernel: compute omega_dt_d from dt_local_d and omega_local_d
 // ============================================================================
 __global__ void Init_OmegaDt_Kernel(
-    double *dt_local_d, double *tau_local_d, double *omega_dt_d
+    double *dt_local_d, double *omega_local_d, double *omegadt_local_d
 ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -546,11 +546,7 @@ __global__ void Init_OmegaDt_Kernel(
     const int index = j * NX6 * NZ6 + k * NX6 + i;
     const int idx_jk = j * NZ6 + k;
 
-    // Imamura Eq.1: ω ≡ τ/Δt (無因次鬆弛時間, 碰撞項分母)
-    // tau_local = ω, dt_local = Δt
-    // omega_dt = ω × Δt = τ (教科書鬆弛時間)
-    // Eq.35: R_AB = omegadt_A / omegadt_B = (ω_A·Δt_A)/(ω_B·Δt_B)
-    omega_dt_d[index] = tau_local_d[idx_jk] * dt_local_d[idx_jk];
+    omegadt_local_d[index] = omega_local_d[idx_jk] * dt_local_d[idx_jk];
 }
 
 #endif

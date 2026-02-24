@@ -7,7 +7,7 @@
 #include <stdarg.h>
 
 #include "variables.h"
-
+using namespace std;
 /************************** Host Variables **************************/
 double  *fh_p[19];
 double  *rho_h_p,  *u_h_p,  *v_h_p,  *w_h_p;
@@ -170,23 +170,22 @@ int main(int argc, char *argv[])
     ComputeMetricTerms(dk_dz_h, dk_dy_h, z_h, y_h, NYD6, NZ6);
 
     // Phase 3: Imamura's global time step (Eq. 22)
-    // Compute ν_target from original parameters: tau_orig=0.6833, dt_orig=minSize
-    double niu_target = (0.6833 - 0.5) / 3.0 * (double)minSize;
     double dx_val = LX / (double)(NX6 - 7);
     double dy_val = LY / (double)(NY6 - 7);
     //dt 取為遍歷每一格空間計算點，每一個分量，每一個編號下的速度分量最大值，定義而成
     //dt指的就是global tiem step 
     dt = ComputeGlobalTimeStep(dk_dz_h, dk_dy_h, dx_val, dy_val, NYD6, NZ6, CFL, myid);
-    tau = 0.5 + 3.0 * niu_target / dt;
-
+    //整體區分為tau , delta_t_global , delta_t_local 
+    //tau只用於計算宏觀參數，例如運動黏滯係數
+    //在曲線座標做對戲改為omega , 正確一點應該是無因次化鬆弛時間 
+    //在還未使用local time steo之前，我是使用 delta_t_global/tau作為碰撞算子
+    //在使用local time step之後，我使用 1/w_local作為碰撞算子, 其中，w_local = 0.5+3/(9*dt_local*Re) 其意義為無因次化鬆弛時間 
     if (myid == 0) {
         printf("Phase 3: Imamura CFL time step\n");
-        printf("  dt  = %.6e (was minSize = %.6e, ratio = %.4f)\n",
-               dt, (double)minSize, dt / (double)minSize);
-        printf("  tau = %.6f (was 0.6833)\n", tau);
-        printf("  niu = %.6e (target = %.6e, match = %s)\n",
-               niu, niu_target, fabs(niu - niu_target) < 1e-15 ? "YES" : "NO");
-        printf("  Re  = %.1f, Uref = %.6e\n", (double)Re, Uref);
+        cout << "  Global time step (dt) = " << dt << endl;
+        cout << "  The real relaxation time(unuse the local times step)" << " tau = " << tau << endl;
+        cout << "In Curvilinear coordinates , the real collision operator" << endl ;
+        cout << "dt_g/tau_real = " << dt/tau << endl;
     }
 
     // GILBM: 預計算三方向位移 δη (常數), δξ (常數), δζ (RK2 空間變化)

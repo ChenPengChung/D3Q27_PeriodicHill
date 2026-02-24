@@ -75,28 +75,16 @@
 /****************** SECDONARY PARAMETER ******************/
 // Phase 3: dt and tau are now runtime variables (Imamura global time step).
 // Host globals defined in main.cu; device uses __constant__ GILBM_dt, GILBM_tau.
-extern double dt;
-extern double tau;
+extern double dt; //(global time step)
+
 #define     cs                  (1.0/1.732050807568877)
 
-//Parameters of 3-D Taylor-Green vortex
-//#define     niu                 (U_0*LX/2.0/pi/Re)
-//#define     tau                 (niu*3.0/dt+0.5)
-
-//Parameters of test case
-//#define     Force               0.0001
-//#define     tau                 1.0
-//#define     niu                 ((tau-0.5)/3.0*dt)
-
-//Parameters of turbulent channel flow
-//#define     niu         (Ma*cs*LZ/Umax/2.0/Retau)
-//#define     tauw        (Ma*Ma/Umax/Umax/3.0)
-//#define     Force       (tauw*2.0/LZ)
-//#define     tau         (3.0*niu/dt+0.5)
 
 //Parameters of periodic hills (dt, tau set at runtime by Imamura CFL)
-// Original: tau=0.6833, dt=minSize
+//Original: tau=0.6833, dt=minSize
 //#define     alpha       10.0
+
+#define     tau         0.6833
 #define     niu         ((tau-0.5)/3.0*dt)
 //#define     Uref        (Re*niu/LZ)
 #define     Uref        (Re*niu)
