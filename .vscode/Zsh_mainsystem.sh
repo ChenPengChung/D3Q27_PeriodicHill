@@ -802,11 +802,20 @@ function push_args() {
   rsh_cmd="$(rsync_rsh_cmd)"
   local args=(
     -az
+    # --- Protected directories: never synced, never deleted on remote ---
+    --filter='P .git/'
     --exclude=.git/
+    --filter='P .vscode/'
     --exclude=.vscode/
+    --filter='P backup/'
     --exclude=backup/
+    --filter='P result/'
     --exclude=result/
+    --filter='P statistics/'
     --exclude=statistics/
+    --filter='P __pycache__/'
+    --exclude=__pycache__/
+    # --- Build/data artifacts: not synced, deleted on remote with --delete-excluded ---
     --exclude=a.out
     --exclude=*.o
     --exclude=*.exe
@@ -820,7 +829,6 @@ function push_args() {
     --exclude=*.swp
     --exclude=*.swo
     --exclude=*~
-    --exclude=__pycache__/
     --exclude=*.pyc
     --exclude=.DS_Store
     -e
@@ -828,7 +836,7 @@ function push_args() {
   )
 
   if [[ "$delete_mode" == "delete" ]]; then
-    args+=(--delete)
+    args+=(--delete --delete-excluded)
   fi
 
   printf '%s\n' "${args[@]}"

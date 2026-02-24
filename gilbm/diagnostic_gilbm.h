@@ -15,7 +15,8 @@ void DiagnoseGILBM_Phase1(
     double **fh_p_local,     // host distribution pointers [19]
     int NYD6_local,
     int NZ6_local,
-    int myid_local
+    int myid_local,
+    double dt_global_val         // dt_global (delta_xi/eta 的預計算時間步長)
 ) {
     if (myid_local != 0) return;
 
@@ -41,21 +42,21 @@ void DiagnoseGILBM_Phase1(
     printf("\n");
     printf("=============================================================\n");
     printf("  GILBM Phase 1.5 Acceptance Diagnostic (Rank 0, t=0)\n");
-    printf("  NYD6=%d, NZ6=%d, NX6=%d, dt=%.6e, tau=%.4f\n",
-           NYD6_local, NZ6_local, (int)NX6, dt, tau);
+    printf("  NYD6=%d, NZ6=%d, NX6=%d, dt_global=%.6e, tau=%.4f\n",
+           NYD6_local, NZ6_local, (int)NX6, dt_global_val, tau);
     printf("=============================================================\n");
 
     // ==================================================================
     // TEST 0: delta_xi validation (constant for uniform y)
     // ==================================================================
-    printf("\n[Test 0] delta_xi validation: delta_xi[a] == dt*e_y[a]/dy\n");
-    printf("  dy = %.10f, dt = %.10f\n", dy_val, dt);
+    printf("\n[Test 0] delta_xi validation: delta_xi[a] == dt_global*e_y[a]/dy\n");
+    printf("  dy = %.10f, dt_global = %.10f\n", dy_val, dt_global_val);
     printf("  %5s  %5s  %14s  %14s  %10s\n",
-           "alpha", "e_y", "delta_xi", "dt*e_y/dy", "error");
+           "alpha", "e_y", "delta_xi", "dt_g*e_y/dy", "error");
 
     double max_xi_err = 0.0;
     for (int alpha = 0; alpha < 19; alpha++) {
-        double expected = dt * e[alpha][1] / dy_val;
+        double expected = dt_global_val * e[alpha][1] / dy_val;
         double err = fabs(delta_xi_h[alpha] - expected);
         if (err > max_xi_err) max_xi_err = err;
         printf("  %5d  %+4.0f  %+14.10e  %+14.10e  %10.2e\n",

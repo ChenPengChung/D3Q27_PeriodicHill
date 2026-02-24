@@ -37,11 +37,11 @@ __constant__ double GILBM_delta_eta[19];
 __constant__ double GILBM_delta_xi[19];
 
 // Include sub-modules (after __constant__ declarations they depend on)
-#include "gilbm/interpolation_gilbm.h"
-#include "gilbm/boundary_conditions.h"
+#include "interpolation_gilbm.h"
+#include "boundary_conditions.h"
 
-constexpr int STENCIL_SIZE = 7;
-constexpr int STENCIL_VOL  = 343;  // 7*7*7
+#define STENCIL_SIZE 7
+#define STENCIL_VOL  343  // 7*7*7
 
 // Grid size for f_pc_d / feq_d indexing
 #define GRID_SIZE (NX6 * NYD6 * NZ6)

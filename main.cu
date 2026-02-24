@@ -183,9 +183,8 @@ int main(int argc, char *argv[])
    
     if (myid == 0) {
         printf("Phase 3: Imamura CFL time step\n");
-        cout << "  Global time step (dt_global) = " << dt_global << endl;
-        cout << "In Curvilinear coordinates , the real collision operator" << endl ;
-        cout << "1/omega_global = " << 1.0/omega_global << endl;//因為timestep跟relaxation time 是兩個自由度 透過omega合併為一個自由度且有計算公式 
+        printf("  Global time step (dt_global) = %.6e\n", dt_global);
+        printf("  omega_global = %.6f, 1/omega_global = %.6f\n", omega_global, 1.0/omega_global);
     }
 
     // GILBM: 預計算三方向位移 δη (常數), δξ (常數), δζ (RK2 空間變化)
@@ -240,7 +239,7 @@ int main(int argc, char *argv[])
     }
 
     // Phase 1.5 acceptance diagnostic: delta_xi, delta_zeta range, interpolation, C-E BC
-    DiagnoseGILBM_Phase1(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, fh_p, NYD6, NZ6, myid);
+    DiagnoseGILBM_Phase1(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, fh_p, NYD6, NZ6, myid, dt_global);
 
     SendDataToGPU();
 
