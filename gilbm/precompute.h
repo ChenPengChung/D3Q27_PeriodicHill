@@ -1,5 +1,8 @@
 #ifndef GILBM_PRECOMPUTE_H
 #define GILBM_PRECOMPUTE_H
+
+#include <iostream>
+#include <iomanip>
 //phase 1.5：此章節為預計算各個物理空間計算點的非物理空間計算點的空間位置：
 //對於同一個物理空間計算點，一共有3*18個量需要計算
 //配置三種偏移量二維陣列
@@ -116,7 +119,8 @@ void PrecomputeGILBM_DeltaZeta(
     const double *dk_dz_h,   // 輸入: 度量項 dk/dz [NYD6*NZ6]
     const double *dk_dy_h,   // 輸入: 度量項 dk/dy [NYD6*NZ6]
     int NYD6_local,
-    int NZ6_local
+    int NZ6_local,
+    double dt_val 
 ) {
     // D3Q19 離散速度集
     double e[19][3] = {
@@ -138,15 +142,15 @@ void PrecomputeGILBM_DeltaZeta(
     for(int alpha = 1 ; alpha <= 18 ; alpha++){
         //若y方向速度分量=0且z方向速度分量=0，則跳過不特別寫入資料；
         if(e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;//就是指alpha = 1,2
-       for (int j = 3; j < NYD6_local - 4; j++) { // 跳過 y 方向 buffer layer
+       for (int j = 3; j < NYD6_local - 3; j++) { // 跳過 y 方向 buffer layer (含 MPI 重疊點)
             for (int k = 2; k < NZ6_local - 2; k++) {
-                int idx_xi = j * NZ6_local + k ; 
+                int idx_xi = j * NZ6_local + k ;
                 //step1:計算該位置點該編號逆變速度zeta分量：
                 //For (j,k) For alpha=
                 double e_alpha_k = e[alpha][1] * dk_dy_h[idx_xi] + e[alpha][2] * dk_dz_h[idx_xi];
                 //但是我們要算的不是當前計算點上的值，而是半步長位置點的值
                 //step2:對於每一個空間點對於每一個編號計算半步長位置點
-                double k_half = (double)k - 0.5 * dt * e_alpha_k;
+                double k_half = (double)k - 0.5 * dt_val * e_alpha_k;
                 //但是半步長位置點作為一個非物理空間計算點，沒有設定值，所以需要做線性插值，插直到該半步長非物理空間計算點
                 //公式e_alpha_k = e[alpha][1] * dk_dy_half + e[alpha][2] * dk_dz_half
                 //根據上述公式，我們插值的對象為dk_dy_half和dk_dz_half
@@ -166,7 +170,7 @@ void PrecomputeGILBM_DeltaZeta(
                 //step4:結合起來計算半步長位置點的逆變速度（對於alpha編號，對於空間點j,k_half)
                 double e_alpha_k_half = e[alpha][1] * dk_dy_half + e[alpha][2] * dk_dz_half;
                 //step5:寫入陣列，對於該空間點(j,k)對於編號alpha，zeta方向的非物理空間計算點的偏移量
-                delta_zeta_h[alpha * NYD6_local * NZ6_local + idx_xi] = dt * e_alpha_k_half;
+                delta_zeta_h[alpha * NYD6_local * NZ6_local + idx_xi] = dt_val * e_alpha_k_half;
             }
         }
     }
@@ -193,7 +197,7 @@ void PrecomputeGILBM_DeltaAll(
 
     PrecomputeGILBM_DeltaEta(delta_eta_h, dx_val, dt_val);
     PrecomputeGILBM_DeltaXi(delta_xi_h, dy_val, dt_val);
-    PrecomputeGILBM_DeltaZeta(delta_zeta_h, dk_dz_h, dk_dy_h, NYD6_local, NZ6_local);
+    PrecomputeGILBM_DeltaZeta(delta_zeta_h, dk_dz_h, dk_dy_h, NYD6_local, NZ6_local, dt_val);
 }
 
 
@@ -356,7 +360,7 @@ void ComputeLocalTimeStep(
     // Compute local dt at all fluid points including wall (k=2, k=NZ6-3)
     // 壁面 dk_dz 最大 → dt_local 最小（CFL 最嚴格），acceleration factor ≈ 1。 //加速因子通常>1
     // D3Q19 對稱性：max|c̃^ζ| 不受 BC/streaming 方向過濾影響（見 ComputeGlobalTimeStep 註解）。
-    for (int j = 3; j < NYD6_local - 4; j++) {
+    for (int j = 3; j < NYD6_local - 3; j++) {  // 含 MPI 重疊點 j=NYD6-4
         for (int k = 2; k < NZ6_local - 2; k++) {
             int idx_jk = j * NZ6_local + k;
             double dk_dy_val = dk_dy_h[idx_jk];

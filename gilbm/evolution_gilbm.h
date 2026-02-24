@@ -1,18 +1,15 @@
 #ifndef GILBM_EVOLUTION_H
 #define GILBM_EVOLUTION_H
 
-// ============================================================================
-// GILBM Two-Pass Evolution Kernel (Imamura 2005)
-//
-// Single kernel, 4 steps per grid point A:
-//   Step 1:   Read f_pc_d (private stencil), interpolate → f_new (post-streaming)
-//   Step 1.5: Compute rho, u, feq from f_new → write feq_d, rho_out, u_out
-//   Step 2:   Read f_new[B], feq_d[B] → Eq.35 re-estimation → f_buf (local)
-//   Step 3:   Collision with omega_A on f_buf → write back to f_pc_d (private)
-//
-// Double-buffer: cudaMemcpy(f_new, f_old) BEFORE kernel launch.
-//   Kernel only touches f_new. f_old not passed to kernel.
-// ============================================================================
+//=============================
+//GILBM核心演算法流程
+//步驟一: Interpolation Lagrange插值 + Streaming 取值的內插點為上衣時間步所更新的碰撞後分佈函數陣列
+//步驟二: 以插值後的分佈函數輸出為當前計算點的f_new，以及 計算物理空間計算點的平衡分佈函數，宏觀參數
+//-------更新專數於當前計算點的陣列
+//步驟三: 更新物理空間計算點的重估一般態分佈函數陣列
+//步驟四: 更新物理空間計算點的 碰撞後一般態分佈函數陣列
+//=============================
+
 
 // __constant__ device memory for D3Q19 velocity set and weights
 __constant__ double GILBM_e[19][3] = {
@@ -165,12 +162,16 @@ __device__ void gilbm_compute_point(
         rho_wall = rhom1;
     }
 
-    // ==================================================================
-    // STEP 1: Interpolation + Streaming (all q)
-    // ==================================================================
+    //stream = 這些值來自「遷移步驟完成後」的分佈函數，是碰撞步驟的輸入。
+    //(ci,cj,ck):物理空間計算點的內插系統空間座標
+    //f_pc:陣列元素物理命名意義:1.pc=post-collision 
+    //2.f_pc[(q * 343 + flat) * GRID_SIZE + index]
+    //        ↑編號(1~18) ↑stencil內位置      ↑物理空間計算點A   ->這就是post-collision 的命名意義
+    //在迴圈之外，對於某一個空間點
     double rho_stream = 0.0, mx_stream = 0.0, my_stream = 0.0, mz_stream = 0.0;
 
     for (int q = 0; q < 19; q++) {
+    //在迴圈內部，對於某一個空間點，對於某一個離散度方向
         double f_streamed;
 
         if (q == 0) {
@@ -220,8 +221,8 @@ __device__ void gilbm_compute_point(
                 double t_k = up_k - (double)bk;
 
                 double Lagrangarray_xi[7], Lagrangarray_eta[7], Lagrangarray_zeta[7];
-                lagrange_7point_coeffs(t_i, Lagrangarray_xi);
-                lagrange_7point_coeffs(t_j, Lagrangarray_eta);
+                lagrange_7point_coeffs(t_i, Lagrangarray_eta);
+                lagrange_7point_coeffs(t_j, Lagrangarray_xi);
                 lagrange_7point_coeffs(t_k, Lagrangarray_zeta);
 
                 // Tensor-product interpolation
@@ -230,25 +231,25 @@ __device__ void gilbm_compute_point(
                 for (int sj = 0; sj < 7; sj++)
                     for (int sk = 0; sk < 7; sk++)
                         interpolation1order[sj][sk] = Intrpl7(
-                            f_stencil[0][sj][sk], Lagrangarray_xi[0],
-                            f_stencil[1][sj][sk], Lagrangarray_xi[1],
-                            f_stencil[2][sj][sk], Lagrangarray_xi[2],
-                            f_stencil[3][sj][sk], Lagrangarray_xi[3],
-                            f_stencil[4][sj][sk], Lagrangarray_xi[4],
-                            f_stencil[5][sj][sk], Lagrangarray_xi[5],
-                            f_stencil[6][sj][sk], Lagrangarray_xi[6]);
+                            f_stencil[0][sj][sk], Lagrangarray_eta[0],
+                            f_stencil[1][sj][sk], Lagrangarray_eta[1],
+                            f_stencil[2][sj][sk], Lagrangarray_eta[2],
+                            f_stencil[3][sj][sk], Lagrangarray_eta[3],
+                            f_stencil[4][sj][sk], Lagrangarray_eta[4],
+                            f_stencil[5][sj][sk], Lagrangarray_eta[5],
+                            f_stencil[6][sj][sk], Lagrangarray_eta[6]);
 
                 // Step B: ξ (j) reduction -> interpolation2order[7]
                 double interpolation2order[7];
                 for (int sk = 0; sk < 7; sk++)
                     interpolation2order[sk] = Intrpl7(
-                        interpolation1order[0][sk], Lagrangarray_eta[0],
-                        interpolation1order[1][sk], Lagrangarray_eta[1],
-                        interpolation1order[2][sk], Lagrangarray_eta[2],
-                        interpolation1order[3][sk], Lagrangarray_eta[3],
-                        interpolation1order[4][sk], Lagrangarray_eta[4],
-                        interpolation1order[5][sk], Lagrangarray_eta[5],
-                        interpolation1order[6][sk], Lagrangarray_eta[6]);
+                        interpolation1order[0][sk], Lagrangarray_xi[0],
+                        interpolation1order[1][sk], Lagrangarray_xi[1],
+                        interpolation1order[2][sk], Lagrangarray_xi[2],
+                        interpolation1order[3][sk], Lagrangarray_xi[3],
+                        interpolation1order[4][sk], Lagrangarray_xi[4],
+                        interpolation1order[5][sk], Lagrangarray_xi[5],
+                        interpolation1order[6][sk], Lagrangarray_xi[6]);
 
                 // Step C: zeta reduction -> scalar
                 f_streamed = Intrpl7(

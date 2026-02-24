@@ -73,6 +73,8 @@ void AllocateMemory() {
         AllocateDeviceArray(nBytes, 1,  &KT);
         AllocateDeviceArray(nBytes, 9,  &DUDX2, &DUDY2, &DUDZ2, &DVDX2, &DVDY2, &DVDZ2, &DWDX2, &DWDY2, &DWDZ2);
     	AllocateDeviceArray(nBytes, 9,  &UUU,   &UUV,   &UUW,   &VVU,   &VVV,   &VVW,   &WWU,   &WWV,   &WWW);
+        for (int i = 0; i < 5; i++)
+            AllocateDeviceArray(nBytes, 1, &ZSlopePara_d[i]);
     }
 
     nBytes = NYD6 * sizeof(double);
@@ -144,7 +146,7 @@ void FreeSource() {
     for( int i = 0; i < 19; i++ )
         CHECK_CUDA( cudaFreeHost( fh_p[i] ) );
         
-    FreeHostArray(  3,  rho_h_p, u_h_p, v_h_p);
+    FreeHostArray(  4,  rho_h_p, u_h_p, v_h_p, w_h_p);
 
     for( int i = 0; i < 19; i++ ) {
         CHECK_CUDA( cudaFree( ft[i] ) );
@@ -160,6 +162,7 @@ void FreeSource() {
         FreeDeviceArray(1,  KT);
         FreeDeviceArray(9,  DUDX2, DUDY2, DUDZ2, DVDX2, DVDY2, DVDZ2, DWDX2, DWDY2, DWDZ2);
         FreeDeviceArray(9,  UUU, UUV, UUW, VVU, VVV, VVW, WWU, WWV, WWW);
+        FreeDeviceArray(5,  ZSlopePara_d[0], ZSlopePara_d[1], ZSlopePara_d[2], ZSlopePara_d[3], ZSlopePara_d[4]);
     }
 
     FreeHostArray(  4,  x_h, y_h, z_h, xi_h);
@@ -185,7 +188,8 @@ void FreeSource() {
 
     CHECK_CUDA( cudaFreeHost( Force_h ) );
     CHECK_CUDA( cudaFree( Force_d ) );
-    
+    CHECK_CUDA( cudaFreeHost( rho_modify_h ) );
+    CHECK_CUDA( cudaFree( rho_modify_d ) );
     CHECK_CUDA( cudaStreamDestroy( stream0 ) );
     CHECK_CUDA( cudaStreamDestroy( stream1 ) );
     CHECK_CUDA( cudaStreamDestroy( stream2 ) );

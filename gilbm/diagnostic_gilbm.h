@@ -272,9 +272,9 @@ void DiagnoseGILBM_Phase1(
         // Host-side replica of ChapmanEnskogBC
         double ex = e[alpha][0], ey = e[alpha][1], ez = e[alpha][2];
         double C_alpha = 0.0;
-        C_alpha += du_x_dk * ((9.0*ex*ey)*bc_dk_dy + (9.0*ex*ez)*bc_dk_dz);
-        C_alpha += du_y_dk * ((9.0*ey*ey - 1.0)*bc_dk_dy + (9.0*ey*ez)*bc_dk_dz);
-        C_alpha += du_z_dk * ((9.0*ez*ey)*bc_dk_dy + (9.0*ez*ez - 1.0)*bc_dk_dz);
+        C_alpha += du_x_dk * ((3.0*ex*ey)*bc_dk_dy + (3.0*ex*ez)*bc_dk_dz);
+        C_alpha += du_y_dk * ((3.0*ey*ey - 1.0)*bc_dk_dy + (3.0*ey*ez)*bc_dk_dz);
+        C_alpha += du_z_dk * ((3.0*ez*ey)*bc_dk_dy + (3.0*ez*ez - 1.0)*bc_dk_dz);
         C_alpha *= -omega * dt;
 
         double f_CE = W[alpha] * rho3 * (1.0 + C_alpha);
@@ -363,7 +363,7 @@ bool ValidateDepartureCFL(
     int bot_eff_j = -1, bot_eff_a = -1;
     int bot_violations = 0;
 
-    for (int j = 3; j < NYD6_local - 4; j++) {
+    for (int j = 3; j < NYD6_local - 3; j++) {
         int idx3 = j * NZ6_local + 3;
         double dk_dy_val = dk_dy_h[idx3];
         double dk_dz_val = dk_dz_h[idx3];
@@ -418,7 +418,7 @@ bool ValidateDepartureCFL(
     int top_eff_j = -1, top_eff_a = -1;
     int top_violations = 0;
 
-    for (int j = 3; j < NYD6_local - 4; j++) {
+    for (int j = 3; j < NYD6_local - 3; j++) {
         int idx_top = j * NZ6_local + k_top;
         double dk_dy_val = dk_dy_h[idx_top];
         double dk_dz_val = dk_dz_h[idx_top];
@@ -461,7 +461,7 @@ bool ValidateDepartureCFL(
     // ====== Per-j profile (condensed) ======
     printf("\n[Per-j CFL Profile] (every 4th j, bottom k=3)\n");
     printf("  %5s  %12s  %12s  %6s\n", "j", "max_raw_CFL", "max_eff_CFL", "status");
-    for (int j = 3; j < NYD6_local - 4; j += 4) {
+    for (int j = 3; j < NYD6_local - 3; j += 4) {
         int idx3 = j * NZ6_local + 3;
         double j_raw_max = 0.0, j_eff_max = 0.0;
         for (int alpha = 1; alpha < 19; alpha++) {

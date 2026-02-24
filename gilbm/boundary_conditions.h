@@ -73,20 +73,20 @@ __device__ double ChapmanEnskogBC(
 
     // α=x: ①② 項
     C_alpha += (
-        (9.0 * ex * ey) * du_dk * dk_dy_val +       // ① 9·c_x·c_y · (du/dk)·(dk/dy)//x->u;y->y
-        (9.0 * ex * ez) * du_dk * dk_dz_val          // ② 9·c_x·c_z · (du/dk)·(dk/dz)//x->u;z->z
+        (3.0 * ex * ey) * du_dk * dk_dy_val +       // ① 3·c_x·c_y · (du/dk)·(dk/dy)//x->u;y->y
+        (3.0 * ex * ez) * du_dk * dk_dz_val          // ② 3·c_x·c_z · (du/dk)·(dk/dz)//x->u;z->z
     );
 
     // α=y: ③④ 項
     C_alpha += (
-        (9.0 * ey * ey - 1.0) * dv_dk * dk_dy_val + // ③ (9·c_y²−1) · (dv/dk)·(dk/dy)//y->v;y->y
-        (9.0 * ey * ez) * dv_dk * dk_dz_val          // ④ 9·c_y·c_z · (dv/dk)·(dk/dz)//y->v;z->z
+        (3.0 * ey * ey - 1.0) * dv_dk * dk_dy_val + // ③ (3·c_y²−1) · (dv/dk)·(dk/dy)//y->v;y->y
+        (3.0 * ey * ez) * dv_dk * dk_dz_val          // ④ 3·c_y·c_z · (dv/dk)·(dk/dz)//y->v;z->z
     );
 
     // α=z: ⑤⑥ 項
     C_alpha += (
-        (9.0 * ez * ey) * dw_dk * dk_dy_val +       // ⑤ 9·c_z·c_y · (dw/dk)·(dk/dy)//z->w;y->y
-        (9.0 * ez * ez - 1.0) * dw_dk * dk_dz_val   // ⑥ (9·c_z²−1) · (dw/dk)·(dk/dz)//z->w;z->z
+        (3.0 * ez * ey) * dw_dk * dk_dy_val +       // ⑤ 3·c_z·c_y · (dw/dk)·(dk/dy)//z->w;y->y
+        (3.0 * ez * ez - 1.0) * dw_dk * dk_dz_val   // ⑥ (3·c_z²−1) · (dw/dk)·(dk/dz)//z->w;z->z
     );
 
     C_alpha *= -omega_val * localtimestep;
