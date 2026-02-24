@@ -336,6 +336,7 @@ __device__ void gilbm_compute_point(
         // Skip BC directions: f_pc not needed, f_new already has BC value
         bool need_bc = false;
         if (is_bottom) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
+        //我要讓他>0為true<0為false
         else if (is_top) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
         if (need_bc) continue;
 
