@@ -52,8 +52,8 @@ __device__ __forceinline__ bool NeedsBoundaryCondition(
 ) {
     double e_tilde_k = GILBM_e[alpha][1] * dk_dy_val + GILBM_e[alpha][2] * dk_dz_val;
     return is_bottom_wall ? (e_tilde_k > 0.0) : (e_tilde_k < 0.0);
-    // if e_tilde_k > 0.0 then 回傳 is_bottom_wall
-    // if e_tilde_k < 0.0 then 回傳 !is_bottom_wall
+    // 底壁 (is_bottom_wall=true):  e_tilde_k > 0 → 出發點在壁外 → 回傳 true (需要 BC)
+    // 頂壁 (is_bottom_wall=false): e_tilde_k < 0 → 出發點在壁外 → 回傳 true (需要 BC)
 }
 
 // Chapman-Enskog BC: compute f_alpha at no-slip wall
@@ -90,9 +90,10 @@ __device__ double ChapmanEnskogBC(
     );
 
     C_alpha *= -omega_val * localtimestep;
-    // equibilirium distribution function = GILBM_W[alpha] * rho_wall 
-    // f_alpha = equibilirium distribution function * (C_alpha)
+    // equilibrium distribution function = GILBM_W[alpha] * rho_wall
+    // f_alpha = f_eq * (1 + C_alpha)   (Imamura Eq. A.9)
     double f_eq_atwall = GILBM_W[alpha] * rho_wall;
     return f_eq_atwall * (1.0 + C_alpha) ;  //計算壁面上的插值後分佈函數
+}
 
 #endif

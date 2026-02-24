@@ -21,7 +21,6 @@
 //coefficient for non-uniform grid
 #define     CFL                 0.6
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
-//#define     minSize             (LZ/(NZ6-6)*CFL)
 //1 : Yes,  0 : No
 #define     Uniform_In_Xdir     1
 #define     Uniform_In_Ydir     1
@@ -52,45 +51,38 @@
 //1 : from backup file
 #define     INIT    (0)
 #define     TBINIT  (0)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /****************** SECDONARY PARAMETER ******************/
-// Phase 3: dt and tau are now runtime variables (Imamura global time step).
-// Host globals defined in main.cu; device uses __constant__ GILBM_dt, GILBM_tau.
-extern double dt; //(global time step)
-
 #define     cs                  (1.0/1.732050807568877)
-
-
-//Parameters of periodic hills (dt, tau set at runtime by Imamura CFL)
-//Original: tau=0.6833, dt=minSize
-//#define     alpha       10.0
-
+#define     dt          minSize //因為直角坐標系中，c=1
 #define     tau         0.6833
 #define     niu         ((tau-0.5)/3.0*dt)
-//#define     Uref        (Re*niu/LZ)
 #define     Uref        (Re*niu)
-
 //block size of each direction
 #define     NT          32     //block size x-dir threadnum
-
-
 #endif
+/*
+直角坐標系：tau1 = 3*niu/dt + 0.5 ; dt = minSize  //tau1在本程式碼沒有使用到因此不需要定義
+曲線座標系：omega_global = 3*niu/dt_global + 0.5 ;
+曲線座標系(local time step) : omega_local(j,k) = 3*niu/dt_local(j,k) + 0.5 ;
+*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -6,9 +6,9 @@
 //分別為： delta_eta_h[alpha]、delta_xi_h[alpha]、delta_zeta_h[alpha][idx_jk <= NYD6*NZ6]
 //先處理後面兩個計算的陣列 ：
 //公式：
-// δη[α]     = dt · e_x[α] / dx             → constant per alpha (19 values, uniform x)
-// δξ[α]     = dt · e_y[α] / dy             → constant per alpha (19 values, uniform y)
-// δζ[α,j,k] = dt · ẽ^ζ_α(k_half)          → RK2 midpoint evaluation [19*NYD6*NZ6]
+// δη[α]     = dt_global · e_x[α] / dx           → constant per alpha (19 values, uniform x)
+// δξ[α]     = dt_global · e_y[α] / dy           → constant per alpha (19 values, uniform y)
+// δζ[α,j,k] = dt_local(j,k) · ẽ^ζ_α(k_half)   → RK2 midpoint evaluation [19*NYD6*NZ6]
 
 
 
@@ -17,7 +17,7 @@
 // ============================================================================
 // For uniform x-grid: dη/dx = 1/dx (constant), dη/dy = dη/dz = 0
 // → ẽ^η_α = e_x[α] · (1/dx) = e_x[α] / dx
-// → δη[α] = dt · e_x[α] / dx
+// → δη[α] = dt_global · e_x[α] / dx
 // No RK2 correction needed (metric is constant → midpoint = endpoint).
 //
 // NOTE: 壁面邊界節點（k=2 底壁, k=NZ6-3 頂壁）上，若某方向 α 的 ζ 方向
@@ -30,7 +30,8 @@
 // and add RK2 midpoint interpolation in i-direction.
 void PrecomputeGILBM_DeltaEta(
     double *delta_eta_h,   // 輸出: [19]，η 方向位移量（常數）
-    double dx_val          // 輸入: uniform grid spacing dx = LX/(NX6-7)
+    double dx_val,         // 輸入: uniform grid spacing dx = LX/(NX6-7)
+    double dt_val          // 輸入: 參考時間步長 (dt_global)
 ) {
     // D3Q19 離散速度集（與 initialization.h 中一致）
     double e_x[19] = {
@@ -42,7 +43,7 @@ void PrecomputeGILBM_DeltaEta(
     };
 
     for (int alpha = 0; alpha < 19; alpha++) {
-        delta_eta_h[alpha] = dt * e_x[alpha] / dx_val;
+        delta_eta_h[alpha] = dt_val * e_x[alpha] / dx_val;
     }
 }
 
@@ -51,7 +52,7 @@ void PrecomputeGILBM_DeltaEta(
 // ============================================================================
 // For uniform y-grid: dξ/dy = 1/dy (constant), dξ/dz = 0
 // → ẽ^ξ_α = e_y[α] · (1/dy) = e_y[α] / dy
-// → δξ[α] = dt · e_y[α] / dy
+// → δξ[α] = dt_global · e_y[α] / dy
 // No RK2 correction needed (metric is constant → midpoint = endpoint).
 //
 // NOTE: 壁面邊界節點上，BC 方向（ẽ^ζ_α > 0 底壁 / < 0 頂壁）的分佈函數
@@ -62,7 +63,8 @@ void PrecomputeGILBM_DeltaEta(
 // and add RK2 midpoint interpolation in j-direction.
 void PrecomputeGILBM_DeltaXi(
     double *delta_xi_h,    // 輸出: [19]，ξ 方向位移量（常數）
-    double dy_val          // 輸入: uniform grid spacing dy = LY/(NY6-7)
+    double dy_val,         // 輸入: uniform grid spacing dy = LY/(NY6-7)
+    double dt_val          // 輸入: 參考時間步長 (dt_global)
 ) {
     // D3Q19 離散速度集（與 initialization.h 中一致）
     double e_y[19] = {
@@ -74,7 +76,7 @@ void PrecomputeGILBM_DeltaXi(
     };
 
     for (int alpha = 0; alpha < 19; alpha++) {
-        delta_xi_h[alpha] = dt * e_y[alpha] / dy_val;
+        delta_xi_h[alpha] = dt_val * e_y[alpha] / dy_val;
     }
 }
 /*void PrecomputeGILBM_DeltaXi 說明：
@@ -84,7 +86,7 @@ void PrecomputeGILBM_DeltaXi(
 - 輸入物理空間的dy : dy_val = LY/(NY6-7)，用於計算偏移距離
 - 公式：
 → ẽ^ξ_α = e_y[α] · (1/dy) = e_y[α] / dy
-→ δξ[α] = dt · e_y[α] / dy
+→ δξ[α] = dt_global · e_y[α] / dy
 */
 
 // ============================================================================
@@ -139,7 +141,7 @@ void PrecomputeGILBM_DeltaZeta(
        for (int j = 3; j < NYD6_local - 4; j++) { // 跳過 y 方向 buffer layer
             for (int k = 2; k < NZ6_local - 2; k++) {
                 int idx_xi = j * NZ6_local + k ; 
-                //step1:計算該位置點該編號尿變速度zeta分量：
+                //step1:計算該位置點該編號逆變速度zeta分量：
                 //For (j,k) For alpha=
                 double e_alpha_k = e[alpha][1] * dk_dy_h[idx_xi] + e[alpha][2] * dk_dz_h[idx_xi];
                 //但是我們要算的不是當前計算點上的值，而是半步長位置點的值
@@ -173,9 +175,9 @@ void PrecomputeGILBM_DeltaZeta(
 // ============================================================================
 // Wrapper: precompute all three direction displacements (η, ξ, ζ)
 // ============================================================================
-// η: δη[α] = dt · e_x[α] / dx   (constant, [19])
-// ξ: δξ[α] = dt · e_y[α] / dy   (constant, [19])
-// ζ: δζ[α,j,k] = dt · ẽ^ζ(k_half)  (RK2, [19*NYD6*NZ6])
+// η: δη[α] = dt_global · e_x[α] / dx   (constant, [19])
+// ξ: δξ[α] = dt_global · e_y[α] / dy   (constant, [19])
+// ζ: δζ[α,j,k] = dt_local(j,k) · ẽ^ζ(k_half)  (RK2, [19*NYD6*NZ6])
 void PrecomputeGILBM_DeltaAll(
     double *delta_xi_h,      // 輸出: [19]，ξ 方向位移量
     double *delta_eta_h,     // 輸出: [19]，η 方向位移量
@@ -183,13 +185,14 @@ void PrecomputeGILBM_DeltaAll(
     const double *dk_dz_h,   // 輸入: 度量項 dk/dz [NYD6*NZ6]
     const double *dk_dy_h,   // 輸入: 度量項 dk/dy [NYD6*NZ6]
     int NYD6_local,
-    int NZ6_local
+    int NZ6_local,
+    double dt_val            // 輸入: 參考時間步長 (dt_global)
 ) {
     double dx_val = LX / (double)(NX6 - 7);
     double dy_val = LY / (double)(NY6 - 7);
 
-    PrecomputeGILBM_DeltaEta(delta_eta_h, dx_val);
-    PrecomputeGILBM_DeltaXi(delta_xi_h, dy_val);
+    PrecomputeGILBM_DeltaEta(delta_eta_h, dx_val, dt_val);
+    PrecomputeGILBM_DeltaXi(delta_xi_h, dy_val, dt_val);
     PrecomputeGILBM_DeltaZeta(delta_zeta_h, dk_dz_h, dk_dy_h, NYD6_local, NZ6_local);
 }
 
@@ -231,7 +234,7 @@ double ComputeGlobalTimeStep(
     //比較順序：分量->編號->空間點
     //step1:初始化：
     double max_c_tilde = 0.0 ; 
-    int max_component = -1 ; //1.0:eta, 1:xi, 2:zeta
+    int max_component = -1 ; //0:eta, 1:xi, 2:zeta
     int max_alpha = -1; //2.
     int max_j = -1, max_k = -1;//3.
     
@@ -283,8 +286,8 @@ double ComputeGlobalTimeStep(
                   << "  CFL lambda = " << std::fixed << std::setprecision(4) << cfl_lambda << "\n"
                   << "=============================================================\n"
                   << "  max|c_tilde| = " << std::setprecision(6) << max_c_tilde
-                  << " in " << dir_name[max_dir] << " direction\n";
-        if (max_dir == 2) {
+                  << " in " << dir_name[max_component] << " direction\n";
+        if (max_component == 2) {
         std::cout << "    at alpha=" << max_alpha
                   << " (e_y=" << std::showpos << std::setprecision(0) << std::fixed << (double)e[max_alpha][1]
                   << ", e_z=" << (double)e[max_alpha][2] << std::noshowpos
@@ -307,7 +310,7 @@ double ComputeGlobalTimeStep(
 // Phase 4: Local Time Step (Imamura 2005 Eq. 28)
 // ============================================================================
 // dt_local(j,k) = λ / max_α |c̃_α(j,k)|
-// tau_local(j,k) = 0.5 + 3·ν / dt_local(j,k)
+// omega_local(j,k) = 0.5 + 3·ν / dt_local(j,k)
 // a(j,k) = dt_local / dt_global  (acceleration factor, ≥ 1)
 //
 // Each (j,k) gets its own CFL-limited time step. Near walls where dk_dz is
@@ -315,8 +318,8 @@ double ComputeGlobalTimeStep(
 // dt_local >> dt_global → faster convergence to steady state.
 void ComputeLocalTimeStep(
     double *dt_local_h,          // 輸出: [NYD6*NZ6]
-    double *tau_local_h,         // 輸出: [NYD6*NZ6]
-    double *tau_dt_product_h,    // 輸出: [NYD6*NZ6] tau*dt for re-estimation
+    double *omega_local_h,         // 輸出: [NYD6*NZ6]
+    double *omegadt_local_h,    // 輸出: [NYD6*NZ6] omega*dt for re-estimation
     const double *dk_dz_h,
     const double *dk_dy_h,
     double dx_val, double dy_val,
@@ -346,8 +349,8 @@ void ComputeLocalTimeStep(
     // Fill all points (including halo) with global dt as default
     for (int idx_xi = 0; idx_xi < sz; idx_xi++) {
         dt_local_h[idx_xi] = dt_global;
-        tau_local_h[idx_xi] = 0.5 + 3.0 * niu_val / dt_global; //鬆弛時間計算公式：3/(Re*dt_local*c^{2})+0.5
-        tau_dt_product_h[idx_xi] = tau_local_h[idx_xi] * dt_global;
+        omega_local_h[idx_xi] = 0.5 + 3.0 * niu_val / dt_global; // ω = 3ν/Δt + 0.5
+        omegadt_local_h[idx_xi] = omega_local_h[idx_xi] * dt_global;
     }
 
     // Compute local dt at all fluid points including wall (k=2, k=NZ6-3)
@@ -368,15 +371,15 @@ void ComputeLocalTimeStep(
                 if (c_zeta > max_c) max_c = c_zeta;
             }
 
-            double dt_l = cfl_lambda / max_c;
-            double tau_l = 0.5 + 3.0 * niu_val / dt_l;
-
-            dt_local_h[idx_jk] = dt_l; //一個點存一個最小值，形成local time step 
-            tau_local_h[idx_jk] = tau_l;
-            tau_dt_product_h[idx_jk] = tau_l * dt_l; //這才是真正的relaxation time，一般定義
+            double dt_local = cfl_lambda / max_c;
+            double omega_local = 0.5 + 3.0 * niu_val / dt_local; // ω_local = 3ν/Δt_local + 0.5
+            
+            dt_local_h[idx_jk] = dt_local; //一個點存一個最小值，形成local time step 
+            omega_local_h[idx_jk] = omega_local;
+            omegadt_local_h[idx_jk] = omega_local * dt_local; //這才是真正的relaxation time，一般定義
 
             // Track acceleration factor statistics
-            double a = dt_l / dt_global;//加速因子計算公式
+            double a = dt_local / dt_global;//加速因子計算公式
             if (a < a_min) a_min = a;
             if (a > a_max) { a_max = a; a_max_j = j; a_max_k = k; }
             a_sum += a;
@@ -393,12 +396,12 @@ void ComputeLocalTimeStep(
                   << std::fixed << std::setprecision(4)
                   << "    min(a)  = " << a_min << "  (near wall, CFL-limited)\n"
                   << "    max(a)  = " << a_max
-                  << "  at j=" << a_max_j << ", k=" << a_max_k << " (channel center)\n"
+                  << "    at j=" << a_max_j << ", k=" << a_max_k << " (channel center)\n"
                   << "    mean(a) = " << a_sum / a_count
                   << "  (" << a_count << " interior points)\n"
-                  << "  tau range: ["
-                  << 0.5 + 3.0 * niu_val / (a_max * dt_global) << ", "
-                  << 0.5 + 3.0 * niu_val / (a_min * dt_global) << "]\n"
+                  << "  omega_local range: ["
+                  << 0.5 + 3.0 *niu/ (a_max * dt_global) << ", "
+                  << 0.5 + 3.0 *niu/ (a_min * dt_global) << "]\n"
                   << "  dt_local range: ["
                   << std::scientific << std::setprecision(6)
                   << a_min * dt_global << ", "
@@ -409,13 +412,13 @@ void ComputeLocalTimeStep(
         std::cout << "\n  k-profile at j=" << j_mid << ":\n"
                   << "  " << std::setw(4) << "k"
                   << "  " << std::setw(12) << "dt_local"
-                  << "  " << std::setw(8) << "tau_loc"
+                  << "  " << std::setw(8) << "omega_local"
                   << "  " << std::setw(8) << "a" << "\n";
         for (int k = 3; k < NZ6_local - 3; k += 3) {
             int idx = j_mid * NZ6_local + k;
             std::cout << "  " << std::setw(4) << k
                       << "  " << std::scientific << std::setprecision(6) << std::setw(12) << dt_local_h[idx]
-                      << "  " << std::fixed << std::setprecision(4) << std::setw(8) << tau_local_h[idx]
+                      << "  " << std::fixed << std::setprecision(4) << std::setw(8) << omega_local_h[idx]
                       << "  " << std::setw(8) << dt_local_h[idx] / dt_global << "\n";
         }
         std::cout << "=============================================================\n\n";
@@ -505,8 +508,9 @@ void PrecomputeGILBM_DeltaZeta_Local( //函數是在main.cu中被呼叫的，目
 #endif
 /*
 在曲線座標下的遷移距離計算分三個方向：
-Delta[alpha][0=η] = dt * e_x[alpha] / dx        (uniform x, __constant__[19])
-Delta[alpha][1=ξ] = dt * e_y[alpha] / dy        (uniform y, __constant__[19])
-Delta[alpha][2=ζ][idx_jk] = dt * ẽ^ζ(k_half)   (RK2, device[19*NYD6*NZ6])
-Note: 不需要額外乘 minSize — dt 本身就是物理位移（c=1 約定，見 Section 22）
+Delta[alpha][0=η] = dt_global * e_x[alpha] / dx           (uniform x, __constant__[19])
+Delta[alpha][1=ξ] = dt_global * e_y[alpha] / dy           (uniform y, __constant__[19])
+Delta[alpha][2=ζ][idx_jk] = dt_local(j,k) * ẽ^ζ(k_half)  (RK2, device[19*NYD6*NZ6])
+Note: η/ξ 用 dt_global 預計算，kernel 中由 a_local = dt_local/dt_global 縮放至 dt_local
+      ζ 直接用 dt_local 預計算，kernel 中不做縮放
 */

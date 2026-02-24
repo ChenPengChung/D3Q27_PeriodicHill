@@ -8,7 +8,7 @@
 //   Step 1:   Read f_pc_d (private stencil), interpolate → f_new (post-streaming)
 //   Step 1.5: Compute rho, u, feq from f_new → write feq_d, rho_out, u_out
 //   Step 2:   Read f_new[B], feq_d[B] → Eq.35 re-estimation → f_buf (local)
-//   Step 3:   Collision with tau_A on f_buf → write back to f_pc_d (private)
+//   Step 3:   Collision with omega_A on f_buf → write back to f_pc_d (private)
 //
 // Double-buffer: cudaMemcpy(f_new, f_old) BEFORE kernel launch.
 //   Kernel only touches f_new. f_old not passed to kernel.
@@ -94,9 +94,9 @@ __device__ void gilbm_compute_point(
     double *f_new_ptrs[19],
     double *f_pc,
     double *feq_d,
-    double *omega_dt_d,
+    double *omegadt_local_d,
     double *dk_dz_d, double *dk_dy_d, double *delta_zeta_d,
-    double *dt_local_d, double *tau_local_d,
+    double *dt_local_d, double *omega_local_d,
     double *u_out, double *v_out, double *w_out, double *rho_out_arr,
     double *Force, double *rho_modify
 ) {
@@ -143,8 +143,8 @@ __device__ void gilbm_compute_point(
     double rho_wall = 0.0, du_dk = 0.0, dv_dk = 0.0, dw_dk = 0.0;
     if (is_bottom) {
         // k=2 為底壁，用 k=3, k=4 兩層做二階外推
-        int idx3 = j * nface + i *NZ6 + 3 ;
-        int idx4 = j * nface + i *NZ6 + 4;
+        int idx3 = j * nface + 3 * NX6 + i;
+        int idx4 = j * nface + 4 * NX6 + i;
         double rho3, u3, v3, w3, rho4, u4, v4, w4;
         compute_macroscopic_at(f_new_ptrs, idx3, rho3, u3, v3, w3);
         compute_macroscopic_at(f_new_ptrs, idx4, rho4, u4, v4, w4);
@@ -154,8 +154,8 @@ __device__ void gilbm_compute_point(
         rho_wall = rho3;  // 零法向壓力梯度近似 (Imamura S3.2)
     } else if (is_top) {
         // k=NZ6-3 為頂壁，用 k=NZ6-4, k=NZ6-5 兩層 (反向差分)
-        int idxm1 = j * nface + i *NZ6 + (NZ6 - 4);
-        int idxm2 = j * nface + i *NZ6 + (NZ6 - 5);
+        int idxm1 = j * nface + (NZ6 - 4) * NX6 + i;
+        int idxm2 = j * nface + (NZ6 - 5) * NX6 + i;
         double rhom1, um1, vm1, wm1, rhom2, um2, vm2, wm2;
         compute_macroscopic_at(f_new_ptrs, idxm1, rhom1, um1, vm1, wm1);
         compute_macroscopic_at(f_new_ptrs, idxm2, rhom2, um2, vm2, wm2);
@@ -184,8 +184,8 @@ __device__ void gilbm_compute_point(
             if (need_bc) {
                 f_streamed = ChapmanEnskogBC(q, rho_wall,
                     du_dk, dv_dk, dw_dk,
-                    dk_dy_val, dk_dz_val, 
-                    tau_A, dt_A //權重係數//localtimestep 
+                    dk_dy_val, dk_dz_val,
+                    omega_A, dt_A //權重係數//localtimestep
                 );
             } else {
                 // Load 343 values from f_pc into local stencil
@@ -225,7 +225,7 @@ __device__ void gilbm_compute_point(
                 lagrange_7point_coeffs(t_k, Lagrangarray_zeta);
 
                 // Tensor-product interpolation
-                // Step A: xi reduction -> interpolation1order[7][7]
+                // Step A: η (i) reduction -> interpolation1order[7][7]
                 double interpolation1order[7][7];
                 for (int sj = 0; sj < 7; sj++)
                     for (int sk = 0; sk < 7; sk++)
@@ -238,7 +238,7 @@ __device__ void gilbm_compute_point(
                             f_stencil[5][sj][sk], Lagrangarray_xi[5],
                             f_stencil[6][sj][sk], Lagrangarray_xi[6]);
 
-                // Step B: eta reduction -> interpolation2order[7]
+                // Step B: ξ (j) reduction -> interpolation2order[7]
                 double interpolation2order[7];
                 for (int sk = 0; sk < 7; sk++)
                     interpolation2order[sk] = Intrpl7(
@@ -295,10 +295,10 @@ __device__ void gilbm_compute_point(
     //   → mx_stream = Σ e_{q,x}·f_q = 物理 x-動量 (非曲線坐標分量)
     //
     // 曲線坐標映射只進入 streaming 位移 (precompute.h):
-    //   δη = dt · e_x / dx           ← 度量項在此
-    //   δξ = dt · e_y / dy           ← 度量項在此
-    //   δζ = dt · (e_y·dk_dy + e_z·dk_dz)  ← 度量項在此
-    //   → 位移量 = dt × 逆變速度 (e_i × ∂ξ/∂x)
+    //   δη = dt_global · e_x / dx           ← 度量項在此 (kernel 中由 a_local 縮放至 dt_local)
+    //   δξ = dt_global · e_y / dy           ← 度量項在此 (kernel 中由 a_local 縮放至 dt_local)
+    //   δζ = dt_local · (e_y·dk_dy + e_z·dk_dz)  ← 度量項在此 (已用 dt_local 預計算)
+    //   → 位移量 = dt_local × 逆變速度 (e_i × ∂ξ/∂x)
     //   → e_i 本身不被座標映射修改
     //
     // 驗證：
@@ -330,7 +330,7 @@ __device__ void gilbm_compute_point(
     //   Eq.35: f̃_B = feq_B + (f_B - feq_B) × R_AB
     //          R_AB = (ω_A·Δt_A)/(ω_B·Δt_B) = omegadt_A / omegadt_B
     //   Eq.3:  f*_B = f̃_B - (1/ω_A)(f̃_B - feq_B)
-    //   ω_A = tau_A (code variable), feq_B is per-stencil-node B.
+    //   ω_A = omega_A (code variable), feq_B is per-stencil-node B.
     // ==================================================================
     for (int q = 0; q < 19; q++) {
         // Skip BC directions: f_pc not needed, f_new already has BC value
@@ -391,9 +391,9 @@ __global__ void GILBM_StreamCollide_Kernel(
     double *f5_new, double *f6_new, double *f7_new, double *f8_new, double *f9_new,
     double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
     double *f15_new, double *f16_new, double *f17_new, double *f18_new,
-    double *f_pc, double *feq_d, double *omega_dt_d,
+    double *f_pc, double *feq_d, double *omegadt_local_d,
     double *dk_dz_d, double *dk_dy_d, double *delta_zeta_d,
-    double *dt_local_d, double *tau_local_d,
+    double *dt_local_d, double *omega_local_d,
     double *u_out, double *v_out, double *w_out, double *rho_out,
     double *Force, double *rho_modify
 ) {
@@ -410,9 +410,9 @@ __global__ void GILBM_StreamCollide_Kernel(
     };
 
     gilbm_compute_point(i, j, k, f_new_ptrs,
-        f_pc, feq_d, omega_dt_d,
+        f_pc, feq_d, omegadt_local_d,
         dk_dz_d, dk_dy_d, delta_zeta_d,
-        dt_local_d, tau_local_d,
+        dt_local_d, omega_local_d,
         u_out, v_out, w_out, rho_out,
         Force, rho_modify);
 }
@@ -425,9 +425,9 @@ __global__ void GILBM_StreamCollide_Buffer_Kernel(
     double *f5_new, double *f6_new, double *f7_new, double *f8_new, double *f9_new,
     double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
     double *f15_new, double *f16_new, double *f17_new, double *f18_new,
-    double *f_pc, double *feq_d, double *omega_dt_d,
+    double *f_pc, double *feq_d, double *omegadt_local_d,
     double *dk_dz_d, double *dk_dy_d, double *delta_zeta_d,
-    double *dt_local_d, double *tau_local_d,
+    double *dt_local_d, double *omega_local_d,
     double *u_out, double *v_out, double *w_out, double *rho_out,
     double *Force, double *rho_modify, int start
 ) {
@@ -444,9 +444,9 @@ __global__ void GILBM_StreamCollide_Buffer_Kernel(
     };
 
     gilbm_compute_point(i, j, k, f_new_ptrs,
-        f_pc, feq_d, omega_dt_d,
+        f_pc, feq_d, omegadt_local_d,
         dk_dz_d, dk_dy_d, delta_zeta_d,
-        dt_local_d, tau_local_d,
+        dt_local_d, omega_local_d,
         u_out, v_out, w_out, rho_out,
         Force, rho_modify);
 }
@@ -532,7 +532,7 @@ __global__ void Init_Feq_Kernel(
 }
 
 // ============================================================================
-// Initialization kernel: compute omega_dt_d from dt_local_d and omega_local_d
+// Initialization kernel: compute omegadt_local_d from dt_local_d and omega_local_d
 // ============================================================================
 __global__ void Init_OmegaDt_Kernel(
     double *dt_local_d, double *omega_local_d, double *omegadt_local_d

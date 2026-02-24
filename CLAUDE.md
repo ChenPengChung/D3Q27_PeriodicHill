@@ -426,3 +426,34 @@ nvcc -O2 -arch=sm_80 main.cu -lmpi -o main.exe
 - Imamura 2005, J. Comput. Phys. 202, 645-663
 - `Claude_GILBM.md` — 完整理論推導 (399 行)
 - `~/.claude/plans/bright-wandering-starfish.md` — 詳細 Plan
+
+### 時間步長與碰撞算子的層級關係
+
+#### 1. 直角坐標系：全域時間步長
+- `dt = minSize`（由 CFL 條件決定）
+- 全域鬆弛時間 `tau = 0.6833`
+- 全域黏度：`ν = (tau - 0.5)/3 × dt`
+
+#### 2. 曲線坐標系：全域碰撞算子
+- Lattice Boltzmann Equation 在曲線座標 (η, ξ, ζ) 中操作
+- 碰撞前綴為 `1/tau`，其中 `tau` 由全域定義（= 0.6833）
+- 此時 `dt_global / tau` 控制碰撞步的物理時間推進
+
+#### 3. 曲線坐標系 + Local Time Stepping (LTS)：局部碰撞算子
+- 每個格點的 `dt_local` 不同（由局部 CFL 決定）
+- 碰撞前綴改用 **局部鬆弛頻率** `ω_local`：
+```
+ω_local = 1 / tau_local
+tau_local = 0.5 + 1/(3 × Re × dt_local)
+```
+- 等價形式：
+```
+ω_local = (3 × Re × dt_local) / (1 + 1.5 × Re × dt_local)
+```
+- **物理意義**：`dt_local` 越小（壁面附近），`tau_local` 越大，碰撞越弱；
+    `dt_local` 越大（遠離壁面），`tau_local → 0.5 + ε`，趨近穩定性極限
+- LTS 重估比值：`R_AB = (ω_A·Δt_A) / (ω_B·Δt_B) = omegadt_A / omegadt_B`
+
+> **一致性檢查**：當 `dt_local = dt_global = minSize` 時，
+> `tau_local = 0.5 + 1/(3·Re·minSize) = tau`，退化為全域碰撞算子
+

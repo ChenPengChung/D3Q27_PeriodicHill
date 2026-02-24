@@ -92,12 +92,12 @@ void AllocateMemory() {
     nBytes = 19 * NYD6 * NZ6 * sizeof(double);
     AllocateHostArray(  nBytes, 1, &delta_zeta_h);
     AllocateDeviceArray(nBytes, 1, &delta_zeta_d);
-    // Phase 4 LTS: local dt, tau, tau*dt fields [NYD6 * NZ6]
+    // Phase 4 LTS: local dt, omega fields [NYD6 * NZ6]
     nBytes = NYD6 * NZ6 * sizeof(double);
-    AllocateHostArray(  nBytes, 3, &dt_local_h, &tau_local_h, &tau_dt_product_h);
-    AllocateDeviceArray(nBytes, 3, &dt_local_d, &tau_local_d, &tau_dt_product_d);
+    AllocateHostArray(  nBytes, 3, &dt_local_h, &omega_local_h, &omegadt_local_h);
+    AllocateDeviceArray(nBytes, 2, &dt_local_d, &omega_local_d);
 
-    // GILBM two-pass: f_pc_d [19 * 343 * grid_size], feq_d [19 * grid_size], omega_dt_d [NYD6*NZ6]
+    // GILBM two-pass: f_pc_d [19*343*grid], feq_d [19*grid], omegadt_local_d [grid]
     {
         size_t grid_size = (size_t)NX6 * NYD6 * NZ6;
         size_t f_pc_bytes = 19ULL * 343ULL * grid_size * sizeof(double);
@@ -109,8 +109,8 @@ void AllocateMemory() {
         CHECK_CUDA( cudaMemset(feq_d, 0, feq_bytes) );
 
         size_t omega_bytes = grid_size * sizeof(double);
-        CHECK_CUDA( cudaMalloc(&omega_dt_d, omega_bytes) );
-        CHECK_CUDA( cudaMemset(omega_dt_d, 0, omega_bytes) );
+        CHECK_CUDA( cudaMalloc(&omegadt_local_d, omega_bytes) );
+        CHECK_CUDA( cudaMemset(omegadt_local_d, 0, omega_bytes) );
     }
 
     nBytes = NZ6 * sizeof(double);
@@ -170,10 +170,10 @@ void FreeSource() {
     FreeHostArray(  1,  delta_zeta_h);
     FreeDeviceArray(1,  delta_zeta_d);
     // Phase 4 LTS
-    FreeHostArray(  3,  dt_local_h, tau_local_h, tau_dt_product_h);
-    FreeDeviceArray(3,  dt_local_d, tau_local_d, tau_dt_product_d);
+    FreeHostArray(  3,  dt_local_h, omega_local_h, omegadt_local_h);
+    FreeDeviceArray(2,  dt_local_d, omega_local_d);
     // GILBM two-pass arrays
-    FreeDeviceArray(3,  f_pc_d, feq_d, omega_dt_d);
+    FreeDeviceArray(3,  f_pc_d, feq_d, omegadt_local_d);
 
     for( int i = 0; i < 3; i++ ){
         FreeHostArray(  3,  Xdep_h[i], Ydep_h[i], Zdep_h[i]);

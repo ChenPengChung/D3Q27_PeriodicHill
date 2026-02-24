@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <mpi.h>
 #include <stdarg.h>
-
 #include "variables.h"
 using namespace std;
 /************************** Host Variables **************************/
@@ -56,19 +55,22 @@ double *delta_zeta_h, *delta_zeta_d;  // GILBM RK2 ζ-direction displacement [19
 double delta_xi_h[19];               // GILBM ξ-direction displacement (constant for uniform y)
 double delta_eta_h[19];              // GILBM η-direction displacement (constant for uniform x)
 
-// Phase 3: Imamura global time step — runtime parameters (extern'd in variables.h)
-double dt;
-double tau;
+// Phase 3: Curvilinear global time step (runtime, from CFL on contravariant velocities)
+// NOTE: dt (= minSize) is a compile-time macro in variables.h for defining ν.
+//       dt_global is the actual curvilinear time step, computed at runtime.
+double dt_global;
+double omega_global;     // = 3·niu/dt_global + 0.5 (dimensionless relaxation time)
+double omegadt_global;   // = omega_global · dt_global (dimensional relaxation time τ)
 
 // Phase 4: Local Time Step fields [NYD6*NZ6]
 double *dt_local_h, *dt_local_d;
-double *tau_local_h, *tau_local_d;
-double *tau_dt_product_h, *tau_dt_product_d;
+double *omega_local_h, *omega_local_d;       // ω_local = 3·niu/dt_local + 0.5
+double *omegadt_local_h;                      // ω·Δt (host only, diagnostic)
 
 // GILBM two-pass architecture: persistent global arrays
-double *f_pc_d;       // Per-point post-collision stencil data [19 * 343 * NX6*NYD6*NZ6]
-double *feq_d;        // Equilibrium distribution [19 * NX6*NYD6*NZ6]
-double *omega_dt_d;   // Precomputed ω·Δt = τ·Δt at each grid point [NX6*NYD6*NZ6]
+double *f_pc_d;           // Per-point post-collision stencil data [19 * 343 * NX6*NYD6*NZ6]
+double *feq_d;            // Equilibrium distribution [19 * NX6*NYD6*NZ6]
+double *omegadt_local_d;  // Precomputed ω·Δt at each grid point [NX6*NYD6*NZ6] (3D broadcast)
 //
 // 逆變速度在 GPU kernel 中即時計算（不需全場存儲）：
 //   ẽ_α_η = e[α][0] / dx           (常數)
@@ -172,31 +174,31 @@ int main(int argc, char *argv[])
     // Phase 3: Imamura's global time step (Eq. 22)
     double dx_val = LX / (double)(NX6 - 7);
     double dy_val = LY / (double)(NY6 - 7);
-    //dt 取為遍歷每一格空間計算點，每一個分量，每一個編號下的速度分量最大值，定義而成
-    //dt指的就是global tiem step 
-    dt = ComputeGlobalTimeStep(dk_dz_h, dk_dy_h, dx_val, dy_val, NYD6, NZ6, CFL, myid);
-    //整體區分為tau , delta_t_global , delta_t_local 
-    //tau只用於計算宏觀參數，例如運動黏滯係數
-    //在曲線座標做對戲改為omega , 正確一點應該是無因次化鬆弛時間 
-    //在還未使用local time steo之前，我是使用 delta_t_global/tau作為碰撞算子
-    //在使用local time step之後，我使用 1/w_local作為碰撞算子, 其中，w_local = 0.5+3/(9*dt_local*Re) 其意義為無因次化鬆弛時間 
+    //dt_global 取為遍歷每一格空間計算點，每一個分量，每一個編號下的速度分量最大值，定義而成
+    //dt_global 指的就是global time step
+    dt_global = ComputeGlobalTimeStep(dk_dz_h, dk_dy_h, dx_val, dy_val, NYD6, NZ6, CFL, myid);
+    //可以計算omega_global. ;
+    omega_global = (3*niu/dt_global) + 0.5 ; 
+    omegadt_global = omega_global*dt_global;
+   
     if (myid == 0) {
         printf("Phase 3: Imamura CFL time step\n");
-        cout << "  Global time step (dt) = " << dt << endl;
-        cout << "  The real relaxation time(unuse the local times step)" << " tau = " << tau << endl;
+        cout << "  Global time step (dt_global) = " << dt_global << endl;
         cout << "In Curvilinear coordinates , the real collision operator" << endl ;
-        cout << "dt_g/tau_real = " << dt/tau << endl;
+        cout << "1/omega_global = " << 1.0/omega_global << endl;//因為timestep跟relaxation time 是兩個自由度 透過omega合併為一個自由度且有計算公式 
     }
 
     // GILBM: 預計算三方向位移 δη (常數), δξ (常數), δζ (RK2 空間變化)
     PrecomputeGILBM_DeltaAll(delta_xi_h, delta_eta_h, delta_zeta_h,
-                              dk_dz_h, dk_dy_h, NYD6, NZ6);
+                              dk_dz_h, dk_dy_h, NYD6, NZ6, dt_global );
 
-    // Phase 4: Local Time Step — per-point dt, tau, tau*dt
-    ComputeLocalTimeStep(dt_local_h, tau_local_h, tau_dt_product_h,
+                              
+    // Phase 4: Local Time Step — per-point dt, omega, omega*dt
+    ComputeLocalTimeStep(dt_local_h, omega_local_h, omegadt_local_h,
                          dk_dz_h, dk_dy_h, dx_val, dy_val,
-                         niu_target, dt, NYD6, NZ6, CFL, myid);
+                         niu, dt_global, NYD6, NZ6, CFL, myid);
 
+    
     // Phase 4: Recompute delta_zeta with local dt (overwrites global-dt values)
     PrecomputeGILBM_DeltaZeta_Local(delta_zeta_h, dk_dz_h, dk_dy_h,
                                      dt_local_h, NYD6, NZ6);
@@ -218,14 +220,15 @@ int main(int argc, char *argv[])
     CHECK_CUDA( cudaMemcpy(delta_zeta_d, delta_zeta_h, 19*NYD6*NZ6*sizeof(double),   cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_xi,  delta_xi_h,  19*sizeof(double)) );
     CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_eta, delta_eta_h, 19*sizeof(double)) );
-    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_dt,  &dt,  sizeof(double)) );
-    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_tau, &tau, sizeof(double)) );
-    // Phase 4: LTS fields to GPU
-    CHECK_CUDA( cudaMemcpy(dt_local_d,        dt_local_h,        NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
-    CHECK_CUDA( cudaMemcpy(tau_local_d,       tau_local_h,       NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
-    CHECK_CUDA( cudaMemcpy(tau_dt_product_d,  tau_dt_product_h,  NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
+    // GILBM_dt = dt_global, matching delta_eta/xi precomputation.
+    // Kernel's a_local = dt_A / GILBM_dt scales delta_eta/xi to local dt.
+    { double gilbm_dt_val = dt_global;
+      CHECK_CUDA( cudaMemcpyToSymbol(GILBM_dt, &gilbm_dt_val, sizeof(double)) ); }
+    // Phase 4: LTS fields to GPU (omega_local is 2D; omegadt_local_d is 3D, filled by Init_OmegaDt_Kernel)
+    CHECK_CUDA( cudaMemcpy(dt_local_d,      dt_local_h,      NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
+    CHECK_CUDA( cudaMemcpy(omega_local_d,   omega_local_h,   NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
 
-    if (myid == 0) printf("GILBM: dt/tau/delta_eta/delta_xi (__constant__) + delta_zeta/LTS (field) copied to GPU.\n");
+    if (myid == 0) printf("GILBM: GILBM_dt/delta_eta/delta_xi (__constant__) + delta_zeta/dk/LTS (field) copied to GPU.\n");
 
     if ( INIT == 0 ) {
         printf("Initializing by default function...\n");
@@ -249,7 +252,7 @@ int main(int argc, char *argv[])
                        (NZ6 + init_block.z - 1) / init_block.z);
 
         Init_OmegaDt_Kernel<<<init_grid, init_block>>>(
-            dt_local_d, tau_local_d, omega_dt_d
+            dt_local_d, omega_local_d, omegadt_local_d
         );
 
         Init_Feq_Kernel<<<init_grid, init_block>>>(
