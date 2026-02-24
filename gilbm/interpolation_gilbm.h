@@ -13,7 +13,8 @@ __device__ __forceinline__ void lagrange_7point_coeffs(double t, double a[7]) {
         for (int j = 0; j < 7; j++) {
             if (j != k) L *= (t - (double)j) / (double)(k - j);
         }
-        a[k] = L;
+        //t為非物理空間計算點的座標
+        a[k] = L;//逐點輸出插值權重
     }
 }
 

@@ -211,12 +211,74 @@ __device__ void gilbm_compute_point(
                 //上面這段if語句的作用是確保up_i, up_j, up_k的值在物理空間計算區域內，避免越界訪問f_pc陣列
                 // Lagrange weights relative to stencil base
                 //(t_i,t_j,t_k)為 非物理空間計算點在內插成員系統中的座標位置
+                //先轉換標為當前非物理空間計算點的座標為內插成員系統座標
                 double t_i = up_i - (double)bi;
                 double t_j = up_j - (double)bj;
                 double t_k = up_k - (double)bk;
-            
+                //一維插值權重陣列
+                double Lagrangarray_xi[7], Lagrangarray_eta[7], Lagrangarray_zeta[7];
+                lagrange_7point_coeffs(t_i, Lagrangarray_xi);
+                lagrange_7point_coeffs(t_j, Lagrangarray_eta);
+                lagrange_7point_coeffs(t_k, Lagrangarray_zeta);
+                //(si,sj,sk)為內插成員座標系統編號
+                //Tensor-product interpolation
+                //StepA: 一維eta方向Lagrange內插結果，配合一維內插權重陣列
+                double interpolation1order[7][7];
+                //StepB: 一維xi方向Lagrange內插結果，配合一維內插權重陣列
+                double interpolation2order[7];
+                for (int sj = 0; sj < 7; sj++)
+                    for (int sk = 0; sk < 7; sk++)
+                        interpolation1order[sj][sk] = Intrpl7(
+                            f_stencil[0][sj][sk], Lagrangarray_xi[0],
+                            f_stencil[1][sj][sk], Lagrangarray_xi[1],
+                            f_stencil[2][sj][sk], Lagrangarray_xi[2],
+                            f_stencil[3][sj][sk], Lagrangarray_xi[3],
+                            f_stencil[4][sj][sk], Lagrangarray_xi[4],
+                            f_stencil[5][sj][sk], Lagrangarray_xi[5],
+                            f_stencil[6][sj][sk], Lagrangarray_xi[6]);
+                double interpolation2order[7];
+                for (int sk = 0; sk < 7; sk++)
+                    interpolation2order[sk] = Intrpl7(
+                        interpolation1order[0][sk], Lagrangarray_eta[0],
+                        interpolation1order[1][sk], Lagrangarray_eta[1],
+                        interpolation1order[2][sk], Lagrangarray_eta[2],
+                        interpolation1order[3][sk], Lagrangarray_eta[3],
+                        interpolation1order[4][sk], Lagrangarray_eta[4],
+                        interpolation1order[5][sk], Lagrangarray_eta[5],
+                        interpolation1order[6][sk], Lagrangarray_eta[6]);
+                // Step C: zeta reduction -> scalar
+                f_streamed = Intrpl7(
+                    interpolation2order[0], Lagrangarray_zeta[0],
+                    interpolation2order[1], Lagrangarray_zeta[1],
+                    interpolation2order[2], Lagrangarray_zeta[2],
+                    interpolation2order[3], Lagrangarray_zeta[3],
+                    interpolation2order[4], Lagrangarray_zeta[4],
+                    interpolation2order[5], Lagrangarray_zeta[5],
+                    interpolation2order[6], Lagrangarray_zeta[6]);        
         }
     }
+    // Write post-streaming to f_new (this IS streaming)
+        f_new_ptrs[q][index] = f_streamed;
+
+        // ── 宏觀量累加 (物理直角坐標) ────────────────────────────
+        // ρ  = Σ_q f_q             (密度)
+        // ρu = Σ_q e_{q,x} · f_q  (x-動量)
+        // ρv = Σ_q e_{q,y} · f_q  (y-動量)
+        // ρw = Σ_q e_{q,z} · f_q  (z-動量)
+        //
+        // GILBM_e[q] = 物理直角坐標系的離散速度 (e_x, e_y, e_z)，
+        // 不是曲線坐標系的逆變速度分量。f_i 的速度空間定義不受座標映射影響。
+        // 曲線坐標映射只影響 streaming 步驟 (位移 δη, δξ, δζ 含度量項)。
+        // → Σ f_i·e_i 直接得到物理直角坐標的動量，不需要 Jacobian 映射。
+        rho_stream += f_streamed; //累加不同編號計算宏觀參數
+        mx_stream  += GILBM_e[q][0] * f_streamed;
+        my_stream  += GILBM_e[q][1] * f_streamed;
+        mz_stream  += GILBM_e[q][2] * f_streamed;
+    }
+    
+
+     
+
 
 
 

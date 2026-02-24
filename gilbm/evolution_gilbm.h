@@ -225,11 +225,11 @@ __device__ void gilbm_compute_point(
                 lagrange_7point_coeffs(t_k, Lagrangarray_zeta);
 
                 // Tensor-product interpolation
-                // Step A: xi reduction -> val_ez[7][7]
-                double val_ez[7][7];
+                // Step A: xi reduction -> interpolation1order[7][7]
+                double interpolation1order[7][7];
                 for (int sj = 0; sj < 7; sj++)
                     for (int sk = 0; sk < 7; sk++)
-                        val_ez[sj][sk] = Intrpl7(
+                        interpolation1order[sj][sk] = Intrpl7(
                             f_stencil[0][sj][sk], Lagrangarray_xi[0],
                             f_stencil[1][sj][sk], Lagrangarray_xi[1],
                             f_stencil[2][sj][sk], Lagrangarray_xi[2],
@@ -238,27 +238,27 @@ __device__ void gilbm_compute_point(
                             f_stencil[5][sj][sk], Lagrangarray_xi[5],
                             f_stencil[6][sj][sk], Lagrangarray_xi[6]);
 
-                // Step B: eta reduction -> val_z[7]
-                double val_z[7];
+                // Step B: eta reduction -> interpolation2order[7]
+                double interpolation2order[7];
                 for (int sk = 0; sk < 7; sk++)
-                    val_z[sk] = Intrpl7(
-                        val_ez[0][sk], Lagrangarray_eta[0],
-                        val_ez[1][sk], Lagrangarray_eta[1],
-                        val_ez[2][sk], Lagrangarray_eta[2],
-                        val_ez[3][sk], Lagrangarray_eta[3],
-                        val_ez[4][sk], Lagrangarray_eta[4],
-                        val_ez[5][sk], Lagrangarray_eta[5],
-                        val_ez[6][sk], Lagrangarray_eta[6]);
+                    interpolation2order[sk] = Intrpl7(
+                        interpolation1order[0][sk], Lagrangarray_eta[0],
+                        interpolation1order[1][sk], Lagrangarray_eta[1],
+                        interpolation1order[2][sk], Lagrangarray_eta[2],
+                        interpolation1order[3][sk], Lagrangarray_eta[3],
+                        interpolation1order[4][sk], Lagrangarray_eta[4],
+                        interpolation1order[5][sk], Lagrangarray_eta[5],
+                        interpolation1order[6][sk], Lagrangarray_eta[6]);
 
                 // Step C: zeta reduction -> scalar
                 f_streamed = Intrpl7(
-                    val_z[0], Lagrangarray_zeta[0],
-                    val_z[1], Lagrangarray_zeta[1],
-                    val_z[2], Lagrangarray_zeta[2],
-                    val_z[3], Lagrangarray_zeta[3],
-                    val_z[4], Lagrangarray_zeta[4],
-                    val_z[5], Lagrangarray_zeta[5],
-                    val_z[6], Lagrangarray_zeta[6]);
+                    interpolation2order[0], Lagrangarray_zeta[0],
+                    interpolation2order[1], Lagrangarray_zeta[1],
+                    interpolation2order[2], Lagrangarray_zeta[2],
+                    interpolation2order[3], Lagrangarray_zeta[3],
+                    interpolation2order[4], Lagrangarray_zeta[4],
+                    interpolation2order[5], Lagrangarray_zeta[5],
+                    interpolation2order[6], Lagrangarray_zeta[6]);
             }
         }
 
@@ -284,7 +284,7 @@ __device__ void gilbm_compute_point(
     // ==================================================================
     // STEP 1.5: Macroscopic + feq -> persistent arrays
     // ==================================================================
-    // Mass correctiondj3g4
+    // Mass correction
     rho_stream += rho_modify[0];
     f_new_ptrs[0][index] += rho_modify[0];
     // ── Audit 結論：此處不需要映射回直角坐標系 ─────────────────

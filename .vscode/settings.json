@@ -118,5 +118,6 @@
       "icon": "vm-running",
       "color": "terminal.ansiYellow"
     }
-  }
+  },
+  "claudeCodeChat.permissions.yoloMode": true
 }
