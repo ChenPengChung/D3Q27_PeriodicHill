@@ -54,7 +54,7 @@
 /****************** SECDONARY PARAMETER ******************/
 #define     cs          (1.0/1.732050807568877)
 #define     dt          minSize //因為直角坐標系中，c=1
-#define     tau         0.512
+#define     tau         0.8833
 #define     niu         ((tau-0.5)/3.0*dt)
 #define     Uref        (Re*niu)
 //block size of each direction

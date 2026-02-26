@@ -10,21 +10,21 @@
 // C-E BC formula at no-slip wall (u=v=w=0), Imamura Eq.(A.9):
 //   f_i|wall = w_i * rho_wall * (1 + C_i)
 //
-//   Eq.(A.9) 張量: (c_{iα} - u_α)(c_{iβ} - u_β) / c_s^4 - δ_{αβ}/c_s^2
-//   壁面 u=0 → 退化為: 9·c_{iα}·c_{iβ} - δ_{αβ}  (1/c_s^4 = 9)
+//   CE non-equilibrium (NS level): f^neq = -ρ w_i (τ-0.5)Δt / c_s² × Σ(e·e - c_s² δ) × S
+//   c=1, c_s²=1/3 → 1/c_s² = 3 → tensor coeff: 3·c_{iα}·c_{iβ} - δ_{αβ}
 //   α = 1~3 (x,y,z 速度分量),  β = 2~3 (ξ,ζ 方向; β=1(η) 因 dk/dx=0 消去)
 //
-//   C_i = -ω·Δt · Σ_α Σ_{β=y,z} [9·c_{iα}·c_{iβ} - δ_{αβ}] · (∂u_α/∂x_β)
+//   C_i = -(omega_local)·Δt · Σ_α Σ_{β=y,z} [3·c_{iα}·c_{iβ} - δ_{αβ}] · (∂u_α/∂x_β)
 //
 //   壁面 chain rule: ∂u_α/∂x_β = (du_α/dk)·(dk/dx_β)，展開 3α × 2β = 6 項：
 //
-//   C_i = -ω·Δt × {
-//     ① 9·c_{ix}·c_{iy} · (du/dk)·(dk/dy)        α=x, β=y  (δ_{xy}=0)
-//   + ② 9·c_{ix}·c_{iz} · (du/dk)·(dk/dz)        α=x, β=z  (δ_{xz}=0)
-//   + ③ (9·c_{iy}²−1)   · (dv/dk)·(dk/dy)        α=y, β=y  (δ_{yy}=1)
-//   + ④ 9·c_{iy}·c_{iz} · (dv/dk)·(dk/dz)        α=y, β=z  (δ_{yz}=0)
-//   + ⑤ 9·c_{iz}·c_{iy} · (dw/dk)·(dk/dy)        α=z, β=y  (δ_{zy}=0)
-//   + ⑥ (9·c_{iz}²−1)   · (dw/dk)·(dk/dz)        α=z, β=z  (δ_{zz}=1)
+//   C_i = -(omega_local)·Δt × {                     [= -3ν, 常數]
+//     ① 3·c_{ix}·c_{iy} · (du/dk)·(dk/dy)        α=x, β=y  (δ_{xy}=0)
+//   + ② 3·c_{ix}·c_{iz} · (du/dk)·(dk/dz)        α=x, β=z  (δ_{xz}=0)
+//   + ③ (3·c_{iy}²−1)   · (dv/dk)·(dk/dy)        α=y, β=y  (δ_{yy}=1)
+//   + ④ 3·c_{iy}·c_{iz} · (dv/dk)·(dk/dz)        α=y, β=z  (δ_{yz}=0)
+//   + ⑤ 3·c_{iz}·c_{iy} · (dw/dk)·(dk/dy)        α=z, β=y  (δ_{zy}=0)
+//   + ⑥ (3·c_{iz}²−1)   · (dw/dk)·(dk/dz)        α=z, β=z  (δ_{zz}=1)
 //   }
 //
 // Wall velocity gradient: 2nd-order one-sided finite difference (u[wall]=0):
@@ -62,7 +62,7 @@ __device__ double ChapmanEnskogBC(
     double rho_wall,
     double du_dk, double dv_dk, double dw_dk,  // velocity gradients at wall
     double dk_dy_val, double dk_dz_val,
-    double omega_val, double localtimestep
+    double omega_local, double localtimestep
 ) {
     double ex = GILBM_e[alpha][0];
     double ey = GILBM_e[alpha][1];
@@ -89,7 +89,7 @@ __device__ double ChapmanEnskogBC(
         (3.0 * ez * ez - 1.0) * dw_dk * dk_dz_val   // ⑥ (3·c_z²−1) · (dw/dk)·(dk/dz)//z->w;z->z
     );
 
-    C_alpha *= -omega_val * localtimestep;
+    C_alpha *= -(omega_local) * localtimestep; //Imamura Eq.26 才是正確的 
     // equilibrium distribution function = GILBM_W[alpha] * rho_wall
     // f_alpha = f_eq * (1 + C_alpha)   (Imamura Eq. A.9)
     double f_eq_atwall = GILBM_W[alpha] * rho_wall;

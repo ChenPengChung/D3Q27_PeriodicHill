@@ -240,7 +240,7 @@ int main(int argc, char *argv[])
 
         if (myid == 0) printf("GILBM: dt_local/omega_local ghost zones exchanged between MPI ranks.\n");
     }
-
+    
     // Phase 4: Recompute delta_zeta with local dt (overwrites global-dt values)
     PrecomputeGILBM_DeltaZeta_Local(delta_zeta_h, dk_dz_h, dk_dy_h,
                                      dt_local_h, NYD6, NZ6);
@@ -280,7 +280,7 @@ int main(int argc, char *argv[])
         result_readbin_velocityandf();
         if( TBINIT && TBSWITCH ) statistics_readbin_stress();
     }
-
+     
     // Phase 1.5 acceptance diagnostic: delta_xi, delta_zeta range, interpolation, C-E BC
     DiagnoseGILBM_Phase1(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, fh_p, NYD6, NZ6, myid, dt_global);
 
@@ -312,7 +312,50 @@ int main(int argc, char *argv[])
         CHECK_CUDA( cudaDeviceSynchronize() );
         if (myid == 0) printf("GILBM two-pass: omega_dt, feq, f_pc initialized.\n");
     }
+    
+    // ---- GILBM Initialization Parameter Summary ----
+    {
+        // Find dt_local max/min over interior computational points
+        double dt_local_max_loc = 0.0;
+        double dt_local_min_loc = 1e30;
+        for (int j = 3; j < NYD6 - 3; j++) {
+            for (int k = 3; k < NZ6 - 3; k++) {
+                int idx = j * NZ6 + k;
+                if (dt_local_h[idx] > dt_local_max_loc) dt_local_max_loc = dt_local_h[idx];
+                if (dt_local_h[idx] < dt_local_min_loc) dt_local_min_loc = dt_local_h[idx];
+            }
+        }
+        double dt_local_max_g, dt_local_min_g;
+        MPI_Allreduce(&dt_local_max_loc, &dt_local_max_g, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(&dt_local_min_loc, &dt_local_min_g, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
 
+        if (myid == 0) {
+            double omega_dtmax = 3.0 * niu / dt_local_max_g + 0.5;
+            double tau_dtmax   = 3.0 * niu + 0.5 * dt_local_max_g;
+            double omega_dtmin = 3.0 * niu / dt_local_min_g + 0.5;
+            double tau_dtmin   = 3.0 * niu + 0.5 * dt_local_min_g;
+
+            printf("\n+================================================================+\n");
+            printf("| GILBM Initialization Parameter Summary                         |\n");
+            printf("+================================================================+\n");
+            printf("| [Input]  Re               = %d\n", (int)Re);
+            printf("| [Input]  Uref             = %.6f\n", (double)Uref);
+            printf("| [Output] niu              = %.6e\n", (double)niu);
+            printf("+----------------------------------------------------------------+\n");
+            printf("| [Output] dt_global        = %.6e\n", dt_global);
+            printf("|   -> Omega(dt_global)     = 3*niu/dt_global + 0.5     = %.6f\n", omega_global);
+            printf("|   -> tau(dt_global)       = 3*niu + 0.5*dt_global     = %.6e  (\"omegadt_global\")\n", omegadt_global);
+            printf("+----------------------------------------------------------------+\n");
+            printf("| [Output] dt_local_max     = %.6e  (channel center)\n", dt_local_max_g);
+            printf("|   -> Omega(dt_local_max)  = 3*niu/dt_local_max + 0.5  = %.6f\n", omega_dtmax);
+            printf("|   -> tau(dt_local_max)    = 3*niu + 0.5*dt_local_max  = %.6e\n", tau_dtmax);
+            printf("+----------------------------------------------------------------+\n");
+            printf("| [Output] dt_local_min     = %.6e  (wall)\n", dt_local_min_g);
+            printf("|   -> Omega(dt_local_min)  = 3*niu/dt_local_min + 0.5  = %.6f\n", omega_dtmin);
+            printf("|   -> tau(dt_local_min)    = 3*niu + 0.5*dt_local_min  = %.6e\n", tau_dtmin);
+            printf("+================================================================+\n\n");
+        }
+    } 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
     CHECK_CUDA( cudaEventRecord(start,0) );
 	CHECK_CUDA( cudaEventRecord(start1,0) );

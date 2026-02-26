@@ -42,8 +42,8 @@ void DiagnoseGILBM_Phase1(
     printf("\n");
     printf("=============================================================\n");
     printf("  GILBM Phase 1.5 Acceptance Diagnostic (Rank 0, t=0)\n");
-    printf("  NYD6=%d, NZ6=%d, NX6=%d, dt_global=%.6e, tau=%.4f\n",
-           NYD6_local, NZ6_local, (int)NX6, dt_global_val, tau);
+    printf("  NYD6=%d, NZ6=%d, NX6=%d, dt_global=%.6e, tau for Cartesian=%.4f\n",
+           NYD6_local, NZ6_local, (int)NX6, dt_global_val, 3*niu + 0.5*minSize);
     printf("=============================================================\n");
 
     // ==================================================================
@@ -257,7 +257,7 @@ void DiagnoseGILBM_Phase1(
     printf("  du/dk at wall: (%.6e, %.6e, %.6e)\n", du_x_dk, du_y_dk, du_z_dk);
     printf("  [At t=0 with u=0 init, du/dk should be ~0]\n");
 
-    double omega = 1.0 / tau;
+    
 
     printf("\n  C-E BC per direction needing BC at bottom wall:\n");
     printf("  %5s  %6s  %6s  %12s  %12s  %12s  %12s\n",
@@ -267,7 +267,7 @@ void DiagnoseGILBM_Phase1(
     double sum_f_CE = 0.0;
     for (int alpha = 1; alpha < 19; alpha++) {
         double e_tilde_zeta = e[alpha][1] * bc_dk_dy + e[alpha][2] * bc_dk_dz;
-        if (e_tilde_zeta <= 0.0) continue;  // doesn't need BC at bottom wall
+        if (e_tilde_zeta <= 0.0) continue;  // doesn't ne ed BC at bottom wall
         bc_count++;
 
         // Host-side replica of ChapmanEnskogBC
@@ -276,7 +276,9 @@ void DiagnoseGILBM_Phase1(
         C_alpha += du_x_dk * ((3.0*ex*ey)*bc_dk_dy + (3.0*ex*ez)*bc_dk_dz);
         C_alpha += du_y_dk * ((3.0*ey*ey - 1.0)*bc_dk_dy + (3.0*ey*ez)*bc_dk_dz);
         C_alpha += du_z_dk * ((3.0*ez*ey)*bc_dk_dy + (3.0*ez*ez - 1.0)*bc_dk_dz);
-        C_alpha *= -omega * dt;
+        // omegadt_local_h[j*NZ6+k] = omega_local * dt_local (per grid point, not per direction)
+        // 負號與 kernel boundary_conditions.h:92 一致
+        C_alpha *= -omegadt_local_h[bc_idx_jk];
 
         double f_CE = W[alpha] * rho3 * (1.0 + C_alpha);
         sum_f_CE += f_CE;
