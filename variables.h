@@ -9,7 +9,7 @@
 //global grid numbers of each direction
 #define     NX      32
 #define     NY      128
-#define     NZ      64
+#define     NZ      128
 
 #define     jp      4
 
@@ -19,7 +19,7 @@
 #define     NZ6    (NZ+6)
 
 //coefficient for non-uniform grid
-#define     CFL                 0.5
+#define     CFL                 0.3
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
 //1 : Yes,  0 : No
 #define     Uniform_In_Xdir     1
@@ -54,7 +54,7 @@
 /****************** SECDONARY PARAMETER ******************/
 #define     cs          (1.0/1.732050807568877)
 #define     dt          minSize //因為直角坐標系中，c=1
-#define     tau         0.8833
+#define     tau         0.6833
 #define     niu         ((tau-0.5)/3.0*dt)
 #define     Uref        (Re*niu)
 //block size of each direction
