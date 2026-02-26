@@ -279,6 +279,9 @@ int main(int argc, char *argv[])
         printf("Initializing by backup data...\n");
         result_readbin_velocityandf();
         if( TBINIT && TBSWITCH ) statistics_readbin_stress();
+    } else if ( INIT == 2 ) {
+        printf("Initializing from merged VTK: %s\n", RESTART_VTK_FILE);
+        InitFromMergedVTK(RESTART_VTK_FILE);
     }
      
     // Phase 1.5 acceptance diagnostic: delta_xi, delta_zeta range, interpolation, C-E BC

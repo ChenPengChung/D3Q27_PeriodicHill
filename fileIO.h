@@ -315,6 +315,113 @@ void statistics_readbin_stress() {
 	//statistics_readbin(OMEGA_Z, "OMEGA_Z", myid);
 	CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }
+/*第三.5段:從合併VTK檔案讀取初始場 (INIT=2 restart)*/
+// 從 merged VTK 讀取速度場，設 rho=1，f=feq，用於續跑
+void InitFromMergedVTK(const char* vtk_path) {
+    const int nyLocal  = NYD6 - 6;
+    const int nxLocal  = NX6  - 6;
+    const int nzLocal  = NZ6  - 6;
+    const int nyGlobal = NY6  - 6;
+
+    double e_loc[19][3] = {
+        {0,0,0},{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
+        {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
+        {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
+        {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
+    };
+    double W_loc[19] = {
+        1.0/3.0,
+        1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0,
+        1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0,
+        1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0,
+        1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0
+    };
+
+    // 初始化全場為 rho=1, u=v=w=0
+    for (int idx = 0; idx < NX6 * NYD6 * NZ6; idx++) {
+        rho_h_p[idx] = 1.0;
+        u_h_p[idx]   = 0.0;
+        v_h_p[idx]   = 0.0;
+        w_h_p[idx]   = 0.0;
+    }
+
+    // 開啟 VTK 檔案
+    ifstream vtk_in(vtk_path);
+    if (!vtk_in.is_open()) {
+        cout << "ERROR: Cannot open VTK file: " << vtk_path << endl;
+        CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
+    }
+
+    // 解析 header，嘗試讀取 Force 值
+    double force_from_vtk = -1.0;
+    string vtk_line;
+    while (getline(vtk_in, vtk_line)) {
+        // 嘗試從 header 讀取 Force (格式: "... Force=1.23456E-04")
+        size_t fpos = vtk_line.find("Force=");
+        if (fpos != string::npos) {
+            sscanf(vtk_line.c_str() + fpos + 6, "%lf", &force_from_vtk);
+        }
+        if (vtk_line.find("VECTORS") != string::npos) break;
+    }
+
+    // 計算本 rank 的 jg 範圍
+    int jg_start = myid * nyLocal;
+    int jg_end   = jg_start + nyLocal - 1;
+    if (jg_end > nyGlobal - 1) jg_end = nyGlobal - 1;
+
+    // 按 VTK 寫入順序讀取: k(outer) → jg(middle) → i(inner)
+    double u_val, v_val, w_val;
+    for (int k = 0; k < nzLocal; k++) {
+    for (int jg = 0; jg < nyGlobal; jg++) {
+    for (int i = 0; i < nxLocal; i++) {
+        vtk_in >> u_val >> v_val >> w_val;
+        if (jg >= jg_start && jg <= jg_end) {
+            int j_local = jg - jg_start;
+            int j  = j_local + 3;   // buffer offset
+            int kk = k + 3;
+            int ii = i + 3;
+            int index = j * NX6 * NZ6 + kk * NX6 + ii;
+            u_h_p[index]   = u_val;
+            v_h_p[index]   = v_val;
+            w_h_p[index]   = w_val;
+            rho_h_p[index] = 1.0;
+        }
+    }}}
+    vtk_in.close();
+
+    // 從 (rho, u, v, w) 計算 f = feq
+    for (int k = 0; k < NZ6; k++) {
+    for (int j = 0; j < NYD6; j++) {
+    for (int i = 0; i < NX6; i++) {
+        int index = j * NX6 * NZ6 + k * NX6 + i;
+        double rho = rho_h_p[index];
+        double uu = u_h_p[index], vv = v_h_p[index], ww = w_h_p[index];
+        double udot = uu * uu + vv * vv + ww * ww;
+
+        fh_p[0][index] = W_loc[0] * rho * (1.0 - 1.5 * udot);
+        for (int dir = 1; dir <= 18; dir++) {
+            double eu = e_loc[dir][0] * uu + e_loc[dir][1] * vv + e_loc[dir][2] * ww;
+            fh_p[dir][index] = W_loc[dir] * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * udot);
+        }
+    }}}
+
+    // 設定 Force: 必須從 VTK header 讀取 (續跑不能重新初始化外力)
+    if (force_from_vtk > 0.0) {
+        Force_h[0] = force_from_vtk;
+        if (myid == 0) printf("  Force restored from VTK header: %.5E\n", force_from_vtk);
+    } else {
+        if (myid == 0) {
+            fprintf(stderr, "ERROR: Force= not found in VTK header [%s].\n", vtk_path);
+            fprintf(stderr, "  Restart VTK must contain Force value. Re-run the simulation to generate a new VTK with Force.\n");
+        }
+        CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
+    }
+    CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+
+    printf("Rank %d: Initialized from VTK [%s], jg=%d..%d -> local j=%d..%d\n",
+           myid, vtk_path, jg_start, jg_end, 3, 3 + (jg_end - jg_start));
+}
+
 /*第四段:每1000步輸出可視化VTK檔案*/
 // 合併所有 GPU 結果，輸出單一 VTK 檔案 (Paraview)
 void fileIO_velocity_vtk_merged(int step) {
@@ -397,7 +504,7 @@ void fileIO_velocity_vtk_merged(int step) {
         }
         
         out << "# vtk DataFile Version 3.0\n";
-        out << "LBM Velocity Field (merged) step=" << step << "\n";
+        out << "LBM Velocity Field (merged) step=" << step << " Force=" << scientific << setprecision(8) << Force_h[0] << "\n";
         out << "ASCII\n";
         out << "DATASET STRUCTURED_GRID\n";
         out << "DIMENSIONS " << nxLocal << " " << nyGlobal << " " << nzLocal << "\n";

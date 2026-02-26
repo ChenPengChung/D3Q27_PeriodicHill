@@ -49,8 +49,10 @@
 //whether to initial from the backup file
 //0 : from initialization
 //1 : from backup file
+//2 : from merged VTK file (specify RESTART_VTK_FILE below)
 #define     INIT    (0)
 #define     TBINIT  (0)
+#define     RESTART_VTK_FILE  "result/velocity_merged_004001.vtk"
 /****************** SECDONARY PARAMETER ******************/
 #define     cs          (1.0/1.732050807568877)
 #define     dt          minSize //因為直角坐標系中，c=1
