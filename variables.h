@@ -19,7 +19,7 @@
 #define     NZ6    (NZ+6)
 
 //coefficient for non-uniform grid
-#define     CFL                 0.6
+#define     CFL                 0.5
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
 //1 : Yes,  0 : No
 #define     Uniform_In_Xdir     1
@@ -37,7 +37,7 @@
 //#define     Ma          0.1
 //#define     Umax        18.4824
 
-#define     Re          200
+#define     Re          700
 
 //steps to end simulation
 #define     loop      500000
@@ -52,9 +52,9 @@
 #define     INIT    (0)
 #define     TBINIT  (0)
 /****************** SECDONARY PARAMETER ******************/
-#define     cs                  (1.0/1.732050807568877)
+#define     cs          (1.0/1.732050807568877)
 #define     dt          minSize //因為直角坐標系中，c=1
-#define     tau         0.6833
+#define     tau         0.512
 #define     niu         ((tau-0.5)/3.0*dt)
 #define     Uref        (Re*niu)
 //block size of each direction
