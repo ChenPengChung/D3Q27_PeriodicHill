@@ -67,10 +67,10 @@ __global__ void AccumulateUbulk(
     const int j = blockIdx.y*blockDim.y + threadIdx.y + 3;
     const int k = blockIdx.z*blockDim.z + threadIdx.z;
 
-    if( i <= 2 || i >= NX6-3 || k <= 1 || k >= NZ6-2 ) return;  // 包含壁面 k=2,NZ6-3
+    if( i <= 2 || i >= NX6-3 || k <= 2 || k >= NZ6-3 ) return;  // 包含壁面 k=3,NZ6-4
 
     double dx = ( x[i+1] - x[i-1] ) / 2.0;
-    double dz = ( z[j*NZ6+k+1] - z[j*NZ6+k-1] ) / 2.0;  // k=2 時讀 z[k=1](ghost) 和 z[k=3]
+    double dz = ( z[j*NZ6+k+1] - z[j*NZ6+k-1] ) / 2.0;  // k=3 時讀 z[k=2](extrap) 和 z[k=4]
 
     Ub_avg[k*NX6+i] += v[j*NZ6*NX6+k*NX6+i] * dx * dz;
 }
@@ -154,7 +154,7 @@ void Launch_ModifyForcingTerm()
     CHECK_CUDA( cudaMemcpy(Ub_avg_h, Ub_avg_d, nBytes, cudaMemcpyDeviceToHost) );
     
     double Ub_avg = 0.0;
-    for( int k = 2; k < NZ6-2; k++ ){    // 包含壁面計算點
+    for( int k = 3; k < NZ6-3; k++ ){    // 包含壁面計算點
     for( int i = 3; i < NX6-4; i++ ){
         Ub_avg = Ub_avg + Ub_avg_h[k*NX6+i];
         Ub_avg_h[k*NX6+i] = 0.0;

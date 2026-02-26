@@ -372,15 +372,15 @@ int main(int argc, char *argv[])
             double rho_GlobalSum = 0.0;
             double rho_global;
             for( int j = 3 ; j < NYD6-4; j++){
-            for( int k = 2 ; k < NZ6-2; k++){     // 包含壁面 k=2 和 k=NZ6-3
+            for( int k = 3 ; k < NZ6-3; k++){     // 包含壁面 k=3 和 k=NZ6-4
             for( int i = 3 ; i < NX6-4; i++){
                 int index = j*NX6*NZ6 + k*NX6 + i;
                 rho_LocalSum =  rho_LocalSum + rho_h_p[index];
             }}}
             MPI_Reduce((void *)&rho_LocalSum, (void *)&rho_GlobalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
             if ( myid == 0){
-                rho_global = 1.0*(NX6-7)*(NY6-7)*(NZ6-4);   // 66 個 k 計算點 (k=2..NZ6-3)
-                rho_modify_h[0] =( rho_global - rho_GlobalSum ) / ((NX6-7)*(NY6-7)*(NZ6-4));
+                rho_global = 1.0*(NX6-7)*(NY6-7)*(NZ6-6);   // 64 個 k 計算點 (k=3..NZ6-4)
+                rho_modify_h[0] =( rho_global - rho_GlobalSum ) / ((NX6-7)*(NY6-7)*(NZ6-6));
                 cudaMemcpy(rho_modify_d, rho_modify_h, sizeof(double), cudaMemcpyHostToDevice);
             }
         
@@ -392,13 +392,13 @@ int main(int argc, char *argv[])
             double rho_GlobalSum = 0;
             double rho_initial = 1.0 ;
             for( int j = 3 ; j < NYD6-4; j++){
-            for( int k = 2 ; k < NZ6-2; k++){     // 包含壁面 k=2 和 k=NZ6-3
+            for( int k = 3 ; k < NZ6-3; k++){     // 包含壁面 k=3 和 k=NZ6-4
             for( int i = 3 ; i < NX6-4; i++){
                 int index = j*NX6*NZ6 + k*NX6 + i;
                 rho_LocalSum =  rho_LocalSum + rho_h_p[index] ;
             }}}
             double rho_LocalAvg;
-            rho_LocalAvg = rho_LocalSum / ((NX6-7)*(NYD6-7)*(NZ6-4));  // 66 個 k 計算點
+            rho_LocalAvg = rho_LocalSum / ((NX6-7)*(NYD6-7)*(NZ6-6));  // 64 個 k 計算點
             MPI_Reduce((void *)&rho_LocalAvg, (void *)&rho_GlobalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
             if( myid ==0 ){
                 FILE *checkrho;

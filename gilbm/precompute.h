@@ -101,7 +101,7 @@ void PrecomputeGILBM_DeltaXi(
 //   Step 3: Interpolate dk/dy, dk/dz at k_half
 //   Step 4: δζ[α] = dt · ẽ^ζ_α(k_half)              full RK2 displacement
 //
-// 注意：壁面邊界節點（k=2 底壁, k=NZ6-3 頂壁）的 BC/streaming 分類：
+// 注意：壁面邊界節點（k=3 底壁, k=NZ6-4 頂壁）的 BC/streaming 分類：
 //   ẽ^ζ_α = e_y[α]·dk_dy + e_z[α]·dk_dz
 //   底壁：ẽ^ζ_α > 0 → 出發點在壁面以下 → BC 方向（Chapman-Enskog 處理）
 //   底壁：ẽ^ζ_α ≤ 0 → 出發點在流體內部 → streaming 方向（使用 δζ 插值）
@@ -143,23 +143,14 @@ void PrecomputeGILBM_DeltaZeta(
         //若y方向速度分量=0且z方向速度分量=0，則跳過不特別寫入資料；
         if(e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;//就是指alpha = 1,2
        for (int j = 3; j < NYD6_local - 3; j++) { // 跳過 y 方向 buffer layer (含 MPI 重疊點)
-            for (int k = 2; k < NZ6_local - 2; k++) {
+            for (int k = 3; k < NZ6_local - 3; k++) {  // Buffer=3: k=3(壁面)..NZ6-4(頂壁)
                 int idx_xi = j * NZ6_local + k ;
-                //step1:計算該位置點該編號逆變速度zeta分量：
-                //For (j,k) For alpha=
                 double e_alpha_k = e[alpha][1] * dk_dy_h[idx_xi] + e[alpha][2] * dk_dz_h[idx_xi];
-                //但是我們要算的不是當前計算點上的值，而是半步長位置點的值
-                //step2:對於每一個空間點對於每一個編號計算半步長位置點
                 double k_half = (double)k - 0.5 * dt_val * e_alpha_k;
-                //但是半步長位置點作為一個非物理空間計算點，沒有設定值，所以需要做線性插值，插直到該半步長非物理空間計算點
-                //公式e_alpha_k = e[alpha][1] * dk_dy_half + e[alpha][2] * dk_dz_half
-                //根據上述公式，我們插值的對象為dk_dy_half和dk_dz_half
-                //當前座標為(j,k) , alpha編號下，半步長位置點為(j,k_half), 
-                //step3:尋找要內插的物理空間計算點位置
-                int k_low = (int)floor(k_half); //k_low為半步長位置點所在的物理空間計算點的下界位置
-                //給k_low設定最小為2，最大為NZ6_local-4，確保內插的兩個物理空間計算點都在有效範圍內
-                if(k_low < 2) k_low = 2;
-                if(k_low > NZ6_local - 4) k_low = NZ6_local - 3 -1 ; 
+                int k_low = (int)floor(k_half);
+                // Buffer=3: clamp 到有效度量項範圍 [3, NZ6-5]
+                if(k_low < 3) k_low = 3;
+                if(k_low > NZ6_local - 5) k_low = NZ6_local - 4 - 1;
                 double frac = k_half - (double)k_low;
                 if (frac < 0.0) frac = 0.0;
                 if (frac > 1.0) frac = 1.0;
@@ -258,13 +249,10 @@ double ComputeGlobalTimeStep(
         max_alpha = 3; //2.
         max_j = -1; max_k = -1; //3.個點相同
     }
-    // ζ-direction (non-uniform z): scan all fluid points including wall (k=2, k=NZ6-3)
-    // 壁面 dk_dz 最大（tanh 拉伸最密處），是全場 CFL 最嚴格的約束點。
-    // 雖然壁面有部分方向由 BC 處理（不做 streaming），但 D3Q19 的
-    // (e_y,e_z)↔(-e_y,-e_z) 對稱性保證 max|c̃^ζ| 在 streaming 方向與
-    // BC 方向完全相同，因此掃描所有方向不會高估 CFL 約束。
+    // ζ-direction (non-uniform z): scan all fluid points including wall (k=3, k=NZ6-4)
+    // Buffer=3: 壁面在 k=3 和 k=NZ6-4
     for (int j = 3 ; j < NYD6_local-3 ; j++){
-        for(int k = 2 ; k <= NZ6_local-3 ; k++){
+        for(int k = 3 ; k <= NZ6_local-4 ; k++){
             int idx_jk = j * NZ6_local + k;
             double dk_dy_val = dk_dy_h[idx_jk];
             double dk_dz_val = dk_dz_h[idx_jk];
@@ -357,11 +345,10 @@ void ComputeLocalTimeStep(
         omegadt_local_h[idx_xi] = omega_local_h[idx_xi] * dt_global;
     }
 
-    // Compute local dt at all fluid points including wall (k=2, k=NZ6-3)
-    // 壁面 dk_dz 最大 → dt_local 最小（CFL 最嚴格），acceleration factor ≈ 1。 //加速因子通常>1
-    // D3Q19 對稱性：max|c̃^ζ| 不受 BC/streaming 方向過濾影響（見 ComputeGlobalTimeStep 註解）。
+    // Compute local dt at all fluid points including wall (k=3, k=NZ6-4)
+    // Buffer=3: 壁面在 k=3 和 k=NZ6-4
     for (int j = 3; j < NYD6_local - 3; j++) {  // 含 MPI 重疊點 j=NYD6-4
-        for (int k = 2; k < NZ6_local - 2; k++) {
+        for (int k = 3; k < NZ6_local - 3; k++) {
             int idx_jk = j * NZ6_local + k;
             double dk_dy_val = dk_dy_h[idx_jk];
             double dk_dz_val = dk_dz_h[idx_jk];
@@ -418,7 +405,7 @@ void ComputeLocalTimeStep(
                   << "  " << std::setw(12) << "dt_local"
                   << "  " << std::setw(8) << "omega_local"
                   << "  " << std::setw(8) << "a" << "\n";
-        for (int k = 3; k < NZ6_local - 3; k += 3) {
+        for (int k = 4; k < NZ6_local - 4; k += 3) {  // Buffer=3: 從第一內點 k=4 開始
             int idx = j_mid * NZ6_local + k;
             std::cout << "  " << std::setw(4) << k
                       << "  " << std::scientific << std::setprecision(6) << std::setw(12) << dt_local_h[idx]
@@ -467,7 +454,8 @@ void PrecomputeGILBM_DeltaZeta_Local( //函數是在main.cu中被呼叫的，目
                 int idx_jk = j * NZ6_local + k;
 
                 // Skip non-interior points (keep zero default)
-                if (k < 2 || k >= NZ6_local - 2) {
+                // Buffer=3: 計算範圍 k=3..NZ6-4
+                if (k < 3 || k >= NZ6_local - 3) {
                     delta_zeta_h[alpha * sz + idx_jk] = 0.0;
                     continue;
                 }
@@ -484,13 +472,14 @@ void PrecomputeGILBM_DeltaZeta_Local( //函數是在main.cu中被呼叫的，目
                 double k_half = (double)k - 0.5 * dt_l * e_tilde_zeta0;
 
                 // Clamp midpoint to valid interpolation range
-                if (k_half < 2.0) k_half = 2.0;
-                if (k_half > (double)(NZ6_local - 3)) k_half = (double)(NZ6_local - 3);
+                // Buffer=3: 有效範圍 [3, NZ6-4]
+                if (k_half < 3.0) k_half = 3.0;
+                if (k_half > (double)(NZ6_local - 4)) k_half = (double)(NZ6_local - 4);
 
                 // Step 3: interpolate dk_dy, dk_dz at midpoint
                 int k_base = (int)k_half;
-                if (k_base < 2) k_base = 2;
-                if (k_base >= NZ6_local - 3) k_base = NZ6_local - 4;
+                if (k_base < 3) k_base = 3;
+                if (k_base >= NZ6_local - 4) k_base = NZ6_local - 5;
                 double frac = k_half - (double)k_base;
 
                 int idx0 = j * NZ6_local + k_base;

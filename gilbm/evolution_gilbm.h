@@ -62,8 +62,8 @@ __device__ __forceinline__ void compute_stencil_base(
     if (bi + 6 >= NX6)    bi = NX6 - STENCIL_SIZE;
     if (bj < 0)           bj = 0;
     if (bj + 6 >= NYD6)   bj = NYD6 - STENCIL_SIZE;
-    if (bk < 2)           bk = 2;
-    if (bk + 6 > NZ6 - 3) bk = NZ6 - 9;
+    if (bk < 3)           bk = 3;                    // Buffer=3: 壁面在 k=3
+    if (bk + 6 > NZ6 - 4) bk = NZ6 - 10;             // 確保 bk+6 ≤ NZ6-4 (頂壁)
 }
 
 // ============================================================================
@@ -132,16 +132,16 @@ __device__ void gilbm_compute_point(
     // Chain rule 簡化為：∂u_α/∂x_β = (∂u_α/∂k) · (∂k/∂x_β)
     // 度量係數 ∂k/∂x_β 由 dk_dy, dk_dz 提供 (dk_dx 目前假設為 0)。
     // 二階單邊差分 (壁面 u=0): du/dk|_wall = (4·u_{k±1} - u_{k±2}) / 2
-    bool is_bottom = (k == 2);
-    bool is_top    = (k == NZ6 - 3);
+    bool is_bottom = (k == 3);       // Buffer=3: 底壁在 k=3
+    bool is_top    = (k == NZ6 - 4); // Buffer=3: 頂壁在 k=NZ6-4
     double dk_dy_val = dk_dy_d[idx_jk];
     double dk_dz_val = dk_dz_d[idx_jk];
 
     double rho_wall = 0.0, du_dk = 0.0, dv_dk = 0.0, dw_dk = 0.0;
     if (is_bottom) {
-        // k=2 為底壁，用 k=3, k=4 兩層做二階外推
-        int idx3 = j * nface + 3 * NX6 + i;
-        int idx4 = j * nface + 4 * NX6 + i;
+        // k=3 為底壁，用 k=4, k=5 兩層做二階外推
+        int idx3 = j * nface + 4 * NX6 + i;
+        int idx4 = j * nface + 5 * NX6 + i;
         double rho3, u3, v3, w3, rho4, u4, v4, w4;
         compute_macroscopic_at(f_new_ptrs, idx3, rho3, u3, v3, w3);
         compute_macroscopic_at(f_new_ptrs, idx4, rho4, u4, v4, w4);
@@ -150,9 +150,9 @@ __device__ void gilbm_compute_point(
         dw_dk = (4.0 * w3 - w4) / 2.0;  // ∂w/∂k|_wall //採用二階精度單邊差分計算法向速度梯度
         rho_wall = rho3;  // 零法向壓力梯度近似 (Imamura S3.2)
     } else if (is_top) {
-        // k=NZ6-3 為頂壁，用 k=NZ6-4, k=NZ6-5 兩層 (反向差分)
-        int idxm1 = j * nface + (NZ6 - 4) * NX6 + i;
-        int idxm2 = j * nface + (NZ6 - 5) * NX6 + i;
+        // k=NZ6-4 為頂壁，用 k=NZ6-5, k=NZ6-6 兩層 (反向差分)
+        int idxm1 = j * nface + (NZ6 - 5) * NX6 + i;
+        int idxm2 = j * nface + (NZ6 - 6) * NX6 + i;
         double rhom1, um1, vm1, wm1, rhom2, um2, vm2, wm2;
         compute_macroscopic_at(f_new_ptrs, idxm1, rhom1, um1, vm1, wm1);
         compute_macroscopic_at(f_new_ptrs, idxm2, rhom2, um2, vm2, wm2);
@@ -212,8 +212,8 @@ __device__ void gilbm_compute_point(
                 if (up_i > (double)(NX6 - 3)) up_i = (double)(NX6 - 3);
                 if (up_j < 1.0)               up_j = 1.0;
                 if (up_j > (double)(NYD6 - 3))up_j = (double)(NYD6 - 3);
-                if (up_k < 2.0)               up_k = 2.0;
-                if (up_k > (double)(NZ6 - 3)) up_k = (double)(NZ6 - 3);
+                if (up_k < 3.0)               up_k = 3.0;               // Buffer=3: 壁面 k=3
+                if (up_k > (double)(NZ6 - 4)) up_k = (double)(NZ6 - 4); // Buffer=3: 頂壁 k=NZ6-4
 
                 // Lagrange weights relative to stencil base
                 double t_i = up_i - (double)bi;
@@ -412,7 +412,8 @@ __global__ void GILBM_StreamCollide_Kernel(
     const int k = blockIdx.z * blockDim.z + threadIdx.z;
 
     // j-guard: 跳過 ghost zone (j<3, j>=NYD6-3)，避免與 MPI 交換競爭寫入
-    if (i <= 2 || i >= NX6 - 3 || j < 3 || j >= NYD6 - 3 || k <= 1 || k >= NZ6 - 2) return;
+    // Buffer=3: 計算範圍 k=3..NZ6-4
+    if (i <= 2 || i >= NX6 - 3 || j < 3 || j >= NYD6 - 3 || k <= 2 || k >= NZ6 - 3) return;
 
     double *f_new_ptrs[19] = {
         f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
@@ -446,7 +447,8 @@ __global__ void GILBM_StreamCollide_Buffer_Kernel(
     const int j = blockIdx.y * blockDim.y + threadIdx.y + start;
     const int k = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (i <= 2 || i >= NX6 - 3 || k <= 1 || k >= NZ6 - 2) return;
+    // Buffer=3: 計算範圍 k=3..NZ6-4
+    if (i <= 2 || i >= NX6 - 3 || k <= 2 || k >= NZ6 - 3) return;
 
     double *f_new_ptrs[19] = {
         f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,

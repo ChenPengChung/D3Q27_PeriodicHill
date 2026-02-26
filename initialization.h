@@ -117,24 +117,31 @@ void GenerateMesh_Z() {
 
     double a = GetNonuniParameter();
 
+    // Buffer=3: tanh 起點=壁面(k=3)=Hill(y), 終點=(k=NZ6-4)=LZ
     for( int j = 0; j < NYD6; j++ ){
-        double total = LZ - HillFunction( y_h[j] ) - minSize;
-        for( int k = bfr; k < NZ6-bfr; k++ ){
-            z_h[j*NZ6+k] = tanhFunction( total, minSize, a, (k-3), (NZ6-7) ) + 
+        double total = LZ - HillFunction( y_h[j] );
+        for( int k = bfr; k < NZ6-bfr; k++ ){  // k=3..NZ6-4
+            z_h[j*NZ6+k] = tanhFunction_wall( total, a, (k-3), (NZ6-7) ) +
                            HillFunction( y_h[j] );
         }
-        z_h[j*NZ6+2] = HillFunction( y_h[j] );
-        z_h[j*NZ6+(NZ6-3)] = (double)LZ;
+        // k=3 = Hill(y) (tanh_wall at j=0 = 0),  k=NZ6-4 = LZ (tanh_wall at j=N = total)
 
-        // Ghost z values (linear extrapolation, for difference stencils at k=2 and k=NZ6-3)
-        z_h[j*NZ6+1]       = 2.0 * z_h[j*NZ6+2] - z_h[j*NZ6+3]; //透過線性外插取得bufferlayer 層的位置
+        // 外插 buffer 層 (k=2 和 k=NZ6-3)
+        z_h[j*NZ6+2]       = 2.0 * z_h[j*NZ6+3] - z_h[j*NZ6+4];
+        z_h[j*NZ6+(NZ6-3)] = 2.0 * z_h[j*NZ6+(NZ6-4)] - z_h[j*NZ6+(NZ6-5)];
+
+        // Ghost z values (linear extrapolation)
+        z_h[j*NZ6+1]       = 2.0 * z_h[j*NZ6+2] - z_h[j*NZ6+3];
+        z_h[j*NZ6+0]       = 2.0 * z_h[j*NZ6+1] - z_h[j*NZ6+2];
         z_h[j*NZ6+(NZ6-2)] = 2.0 * z_h[j*NZ6+(NZ6-3)] - z_h[j*NZ6+(NZ6-4)];
+        z_h[j*NZ6+(NZ6-1)] = 2.0 * z_h[j*NZ6+(NZ6-2)] - z_h[j*NZ6+(NZ6-3)];
     }
 
+    // 計算座標 xi_h: tanh_wall 映射 k=3→0, k=NZ6-4→LXi
     for( int k = bfr; k < NZ6-bfr; k++ ){
-        xi_h[k] = tanhFunction( LXi, minSize, a, (k-3), (NZ6-7) ) - minSize/2.0;
+        xi_h[k] = tanhFunction_wall( LXi, a, (k-3), (NZ6-7) );
     }
-    // Wall xi values (linear extrapolation for k=2 and k=NZ6-3 computation points)
+    // Buffer xi values (linear extrapolation)
     xi_h[2]     = 2.0 * xi_h[3] - xi_h[4];
     xi_h[NZ6-3] = 2.0 * xi_h[NZ6-4] - xi_h[NZ6-5];
 
@@ -144,17 +151,21 @@ void GenerateMesh_Z() {
     for( int j = 0; j < NY6; j++ ){
         double dy = LY / (double)(NY6-2*bfr-1);
         y_global[j] = dy * ((double)(j-bfr));
-        double total = LZ - HillFunction( y_global[j] ) - minSize;
+        double total = LZ - HillFunction( y_global[j] );
         for( int k = bfr; k < NZ6-bfr; k++ ){
-            z_global[j*NZ6+k] = tanhFunction( total, minSize, a, (k-3), (NZ6-7) ) + 
+            z_global[j*NZ6+k] = tanhFunction_wall( total, a, (k-3), (NZ6-7) ) +
                                 HillFunction( y_global[j] );
         }
-        z_global[j*NZ6+2] = HillFunction( y_global[j] );
-        z_global[j*NZ6+(NZ6-3)] = (double)LZ;
+
+        // 外插 buffer 層
+        z_global[j*NZ6+2]       = 2.0 * z_global[j*NZ6+3] - z_global[j*NZ6+4];
+        z_global[j*NZ6+(NZ6-3)] = 2.0 * z_global[j*NZ6+(NZ6-4)] - z_global[j*NZ6+(NZ6-5)];
 
         // Ghost z values (linear extrapolation)
         z_global[j*NZ6+1]       = 2.0 * z_global[j*NZ6+2] - z_global[j*NZ6+3];
+        z_global[j*NZ6+0]       = 2.0 * z_global[j*NZ6+1] - z_global[j*NZ6+2];
         z_global[j*NZ6+(NZ6-2)] = 2.0 * z_global[j*NZ6+(NZ6-3)] - z_global[j*NZ6+(NZ6-4)];
+        z_global[j*NZ6+(NZ6-1)] = 2.0 * z_global[j*NZ6+(NZ6-2)] - z_global[j*NZ6+(NZ6-3)];
     }
 
     FILE *meshZ;

@@ -6,16 +6,24 @@
     L/2.0 + LatticeSize/2.0 + ((L/2.0)/a)*tanh((-1.0+2.0*(double)(j)/(double)(N))/2.0*log((1.0+a)/(1.0-a)))     \
 )
 
+// Buffer=3 版本：壁面對齊 tanh 起/終點 (LS=0)
+// j=0 → 0,  j=N → L
+#define tanhFunction_wall( L, a, j, N )     \
+(           \
+    (L)/2.0 + (((L)/2.0)/(a))*tanh((-1.0+2.0*(double)(j)/(double)(N))/2.0*log((1.0+(a))/(1.0-(a))))     \
+)
+
 double GetNonuniParameter() {
-    double total = LZ - HillFunction( 0.0 ) - minSize;
+    // Buffer=3: tanh 起點=壁面(Hill), 終點=LZ, total = 全域高度(不減 minSize)
+    double total = LZ - HillFunction( 0.0 );
     double a_temp[2] = {0.1, 1.0};
     double a_mid;
 
     double x_temp[2], dx;
     do{
         a_mid = (a_temp[0]+a_temp[1]) / 2.0;
-        x_temp[0] = tanhFunction(total, minSize, a_mid, 0, (NZ6-7));
-        x_temp[1] = tanhFunction(total, minSize, a_mid, 1, (NZ6-7));
+        x_temp[0] = tanhFunction_wall(total, a_mid, 0, (NZ6-7));
+        x_temp[1] = tanhFunction_wall(total, a_mid, 1, (NZ6-7));
         dx = x_temp[1] - x_temp[0];
         if( dx - minSize >= 0.0 ){
             a_temp[0] = a_mid;
@@ -23,11 +31,6 @@ double GetNonuniParameter() {
             a_temp[1] = a_mid;
         }
     } while ( fabs( dx - minSize ) > 1e-14 );
-    
-
-    /*if( myid == 0 ){
-        printf("a = %lf\n", a_mid);
-    }*/
 
     return a_mid;
 }
@@ -124,8 +127,9 @@ void GetBFLXiParameter(
     double *XiPara_h[7],    double pos_z,       double pos_y,
     double *Pos_xi,         int IdxToStore,     int k  )
 {
-    double L = LZ - HillFunction(pos_y) - minSize;
-    double pos_xi = LXi * (pos_z - (HillFunction(pos_y)+minSize/2.0)) / L;
+    // Buffer=3: tanh 起點=壁面(Hill), 終點=LZ
+    double L = LZ - HillFunction(pos_y);
+    double pos_xi = LXi * (pos_z - HillFunction(pos_y)) / L;
     double a = GetNonuniParameter();
     //double pos_xi = atanh((pos_z-HillFunction(pos_y)-minSize/2.0-L/2.0)/((L/2.0)/a))/log((1.0+a)/(1.0-a))*2.0;
 

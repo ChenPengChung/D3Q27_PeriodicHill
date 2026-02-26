@@ -82,16 +82,22 @@ void DiagnoseMetricTerms(int myid) {
         y_g[j] = dy * ((double)(j - bfr));
     }
 
-    // Z 座標（非均勻 tanh 拉伸 + 山丘地形）
+    // Z 座標（Buffer=3: tanh 起點=壁面 k=3, 終點=LZ k=NZ6-4）
     double a = GetNonuniParameter();
     for (int j = 0; j < NY6; j++) {
-        double total = LZ - HillFunction(y_g[j]) - minSize;
+        double total = LZ - HillFunction(y_g[j]);
         for (int k = bfr; k < NZ6 - bfr; k++) {
-            z_g[j*NZ6+k] = tanhFunction(total, minSize, a, (k-3), (NZ6-7))
+            z_g[j*NZ6+k] = tanhFunction_wall(total, a, (k-3), (NZ6-7))
                          + HillFunction(y_g[j]);
         }
-        z_g[j*NZ6+2] = HillFunction(y_g[j]);
-        z_g[j*NZ6+(NZ6-3)] = (double)LZ;
+        // 外插 buffer 層
+        z_g[j*NZ6+2]       = 2.0 * z_g[j*NZ6+3] - z_g[j*NZ6+4];
+        z_g[j*NZ6+(NZ6-3)] = 2.0 * z_g[j*NZ6+(NZ6-4)] - z_g[j*NZ6+(NZ6-5)];
+        // Ghost
+        z_g[j*NZ6+1]       = 2.0 * z_g[j*NZ6+2] - z_g[j*NZ6+3];
+        z_g[j*NZ6+0]       = 2.0 * z_g[j*NZ6+1] - z_g[j*NZ6+2];
+        z_g[j*NZ6+(NZ6-2)] = 2.0 * z_g[j*NZ6+(NZ6-3)] - z_g[j*NZ6+(NZ6-4)];
+        z_g[j*NZ6+(NZ6-1)] = 2.0 * z_g[j*NZ6+(NZ6-2)] - z_g[j*NZ6+(NZ6-3)];
     }
 
     // ====== 計算全域度量項 ======
@@ -102,7 +108,7 @@ void DiagnoseMetricTerms(int myid) {
     fout << "# j  k  y  z  H(y)  dz_dk  dk_dz  dz_dj  dk_dy  J\n";
     for (int j = bfr; j < NY6 - bfr; j++) {
         double Hy = HillFunction(y_g[j]);
-        for (int k = 2; k < NZ6 - 2; k++) {           // 擴展至壁面 k=2 和 k=NZ6-3
+        for (int k = 3; k < NZ6 - 3; k++) {           // 壁面 k=3 至 k=NZ6-4
             int idx = j * NZ6 + k;
             double dz_dk = 1.0 / dk_dz_g[idx];
             double dz_dj = -dk_dy_g[idx] * dy * dz_dk;
@@ -189,7 +195,7 @@ void DiagnoseMetricTerms(int myid) {
     int fail_count_slope = 0; // 統計判據 6 失敗點數
 
     for (int j = bfr ; j < NY6 - bfr - 1; j++) { //由左到右掃描
-        int k_wall = 2 ;  //壁面位置（k=2，對應 z=H(y)，wet-node on wall）
+        int k_wall = 3 ;  //壁面位置（k=3，對應 z=H(y)，wet-node on wall）
         int idx = j * NZ6 + k_wall;//計算空間最下面一排的計算點
         double Hy = HillFunction(y_g[j]);
         double dHdy = (HillFunction(y_g[j + 1]) - HillFunction(y_g[j - 1])) / (2.0 * dy);
@@ -293,7 +299,7 @@ void DiagnoseMetricTerms(int myid) {
     // 判據 1: dk_dz > 0 全場 //因為每一個點都應該存在hyperbolic tangent 伸縮程度
     int pass1 = 1;
     for (int j = bfr; j < NY6 - bfr; j++) {
-        for (int k = 2; k < NZ6 - 2; k++) {             // 擴展至壁面
+        for (int k = 3; k < NZ6 - 3; k++) {             // 壁面 k=3 至 k=NZ6-4
             if (dk_dz_g[j * NZ6 + k] <= 0.0) {
                 pass1 = 0;
                 cout << "  FAIL: dk_dz <= 0 at j=" << j << ", k=" << k << "\n";
@@ -303,14 +309,16 @@ void DiagnoseMetricTerms(int myid) {
     cout << "[" << (pass1 ? "PASS" : "FAIL") << "] Criteria 1: dk_dz > 0 everywhere\n";
 
     // 判據 2: 下壁面 dz_dk 與解析值一致（10% 容差）
-    // k=2 為壁面（forward difference）: dz_dk = z[3] - z[2]
-    // z[3] = tanhFunction(total, minSize, a, 0, NZ6-7) + H(y) = minSize/2 + H(y)
-    // z[2] = H(y)
-    // 因此 dz_dk(wall) = minSize/2（常數，不隨 j 變化）
+    // Buffer=3: k=3 為壁面, 中心差分 dz_dk = (z[4]-z[2])/2
+    // z[2] 為外插: 2*z[3]-z[4], 故 dz_dk = z[4]-z[3] = first tanh spacing
+    // 注意: tanhFunction_wall 使用單一 a 參數，first spacing 隨 total 線性縮放
+    //   expected(j) = minSize * (LZ - Hill(y_j)) / (LZ - Hill(0))
     int pass2 = 1;
-    double expected_dz_dk = minSize / 2.0;  // forward difference at k=2
+    double total_peak = LZ - HillFunction(0.0);  // = LZ - 1.0 (hill peak at y=0)
     for (int j = bfr; j < NY6 - bfr; j++) {
-        double dz_dk_wall = 1.0 / dk_dz_g[j * NZ6 + 2];
+        double total_j = LZ - HillFunction(y_g[j]);
+        double expected_dz_dk = minSize * total_j / total_peak;
+        double dz_dk_wall = 1.0 / dk_dz_g[j * NZ6 + 3];
         double rel_err = fabs(dz_dk_wall - expected_dz_dk) / expected_dz_dk;
         if (rel_err > 0.1) {
             pass2 = 0;
@@ -320,7 +328,7 @@ void DiagnoseMetricTerms(int myid) {
                  << ", rel_err=" << fixed << setprecision(2) << rel_err * 100 << "%\n";
         }
     }
-    cout << "[" << (pass2 ? "PASS" : "FAIL") << "] Criteria 2: dz_dk(wall) = minSize/2 (within 10%)\n";
+    cout << "[" << (pass2 ? "PASS" : "FAIL") << "] Criteria 2: dz_dk(wall) ~ minSize*total(j)/total_peak (within 10%)\n";
 
     // 判據 3: 平坦段 dk_dy ≈ 0（掃描所有平坦 j，與判據 5 同條件）
     //  由於山坡曲率存在所引起的度量係數，在平坦區域應趨近於零
@@ -333,7 +341,7 @@ void DiagnoseMetricTerms(int myid) {
             && fabs(HillFunction(y_g[j - 1])) < 0.01
             && fabs(HillFunction(y_g[j + 1])) < 0.01
             && H_stencil_diff_c3 < 1e-6) {//排除山丘-平坦過渡帶（鄰居 H 差值必須接近零）
-            for (int k = 2; k < NZ6 - 2; k++) {            // 擴展至壁面
+            for (int k = 3; k < NZ6 - 3; k++) {            // 壁面 k=3 至 k=NZ6-4
                 if (fabs(dk_dy_g[j * NZ6 + k]) > 0.1) {
                     pass3 = 0;
                     cout << "  FAIL: flat region j=" << j << " k=" << k
@@ -401,11 +409,11 @@ void DiagnoseMetricTerms(int myid) {
 
 #endif
 
-//Pass1: 驗證dk_dz計算正確 ： 全場dk_dz >0（含壁面 k=2 和 k=NZ6-3）
-//Pass2: 驗證dk_dz計算正確 ： k=2壁面 dz_dk = minSize/2（forward difference 解析值）
-//Pass3: 驗證dk_dy計算正確 ： 利用雙重for迴圈計算平坦區段的j值的dk_dy都等於0 
+//Pass1: 驗證dk_dz計算正確 ： 全場dk_dz >0（含壁面 k=3 和 k=NZ6-4）
+//Pass2: 驗證dk_dz計算正確 ： k=3壁面 dz_dk = minSize（central diff with extrapolated k=2）
+//Pass3: 驗證dk_dy計算正確 ： 利用雙重for迴圈計算平坦區段的j值的dk_dy都等於0
 //Pass4: 驗證dk_dy計算正確 ： 取最陡峭的j列的垂直中點 ，檢查該點的dk_dy是否與山坡斜率反號
-//取k=2計算空間下邊界壁面計算點做判斷
+//取k=3計算空間下邊界壁面計算點做判斷
 //Pass5: 驗證e_alpha_k的計算正確性：下邊界&&平坦區段：需要做邊界處理的編號個數 = 5
 //Pass6: 驗證e_alpha_k計算正確 ： 所有的斜面計算點都應該要有6個以上的編號需要邊界處理
 

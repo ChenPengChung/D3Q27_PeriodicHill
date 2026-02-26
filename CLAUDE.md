@@ -242,7 +242,7 @@ __device__ double ChapmanEnskogBC(int alpha, double rho_wall,
 ### evolution_gilbm.h 核心函數
 ```cpp
 // 計算 stencil 起始點，含邊界 clamping
-// k 方向: bk ∈ [2, NZ6-9] (確保 bk+6 = NZ6-3，stencil 不超出壁面)
+// k 方向: bk ∈ [3, NZ6-10] (確保 bk+6 = NZ6-4，stencil 不超出壁面)
 __device__ void compute_stencil_base(int i, int j, int k, int &bi, int &bj, int &bk);
 
 // 讀取 19 個 f_new 計算宏觀量
@@ -262,7 +262,7 @@ __device__ void gilbm_compute_point(int i, int j, int k,
 ```cpp
 // 內部區域 kernel (全 j 範圍)
 __global__ void GILBM_StreamCollide_Kernel(...);
-// guard: if (i<=2 || i>=NX6-3 || k<=1 || k>=NZ6-2) return;
+// guard: if (i<=2 || i>=NX6-3 || k<=2 || k>=NZ6-3) return;
 
 // 緩衝區 kernel (指定 start j 偏移)
 __global__ void GILBM_StreamCollide_Buffer_Kernel(..., int start);
@@ -346,7 +346,7 @@ C_α = -ω·Δt × { 6 項 tensor 展開 }
 ```
 - 係數 3 = 1/c_s^2 (c=1 時 c_s²=1/3 → 1/c_s^2=3)；c≠1 時為 9·c_iα·c_iβ - 3·δ_αβ
 - `du/dk|wall = (4·u[k±1] - u[k±2]) / 2` (二階單邊差分, u[wall]=0)
-- `rho_wall = rho[k=3]` (零法向壓力梯度近似)
+- `rho_wall = rho[k=4]` (零法向壓力梯度近似, 壁面 k=3)
 - dk/dx = 0 → 只有 β=y,z 存活 → 3α × 2β = 6 項
 
 ### 位移公式
@@ -364,13 +364,15 @@ C_α = -ω·Δt × { 6 項 tensor 展開 }
 
 ## 九、網格結構
 
-### z (k) 方向 — 非均勻 + 壁面
+### z (k) 方向 — 非均勻 + 壁面 (buffer=3)
 ```
-k=0,1        ghost layer (邊界外)
-k=2          底壁計算點 (C-E BC)
-k=3..NZ6-4   內部計算點
-k=NZ6-3      頂壁計算點 (C-E BC)
-k=NZ6-2,NZ6-1  ghost layer
+k=0,1        ghost layer (線性外插)
+k=2          buffer layer (外插: 2*z[3]-z[4])
+k=3          底壁計算點 (C-E BC, z=Hill(y))
+k=4..NZ6-5   內部計算點
+k=NZ6-4      頂壁計算點 (C-E BC, z=LZ)
+k=NZ6-3      buffer layer (外插: 2*z[NZ6-4]-z[NZ6-5])
+k=NZ6-2,NZ6-1  ghost layer (線性外插)
 ```
 
 ### x (i) 方向 — 均勻 + 週期
@@ -388,7 +390,7 @@ j=NYD6-3,NYD6-2,NYD6-1  ghost/buffer
 ```
 
 ### Kernel Guards
-- Full kernel: `if (i<=2 || i>=NX6-3 || k<=1 || k>=NZ6-2) return;`
+- Full kernel: `if (i<=2 || i>=NX6-3 || k<=2 || k>=NZ6-3) return;`
 - Init kernel: `if (i>=NX6 || j>=NYD6 || k>=NZ6) return;`
 
 ---

@@ -77,7 +77,7 @@ void DiagnoseGILBM_Phase1(
 
     for (int alpha = 0; alpha < 19; alpha++) {
         for (int j = 0; j < NYD6_local; j++) {
-            for (int k = 2; k < NZ6_local - 2; k++) {
+            for (int k = 3; k < NZ6_local - 3; k++) {  // Buffer=3: k=3..NZ6-4
                 double val = delta_zeta_h[alpha * sz + j * NZ6_local + k];
                 if (val < dk_gmin) { dk_gmin = val; gmin_a = alpha; gmin_j = j; gmin_k = k; }
                 if (val > dk_gmax) { dk_gmax = val; gmax_a = alpha; gmax_j = j; gmax_k = k; }
@@ -218,13 +218,13 @@ void DiagnoseGILBM_Phase1(
     // ==================================================================
     // TEST 3: Chapman-Enskog BC spot-check (bottom wall k=2)
     // ==================================================================
-    printf("\n[Test 3] Chapman-Enskog BC spot-check (bottom wall, k=2)\n");
+    printf("\n[Test 3] Chapman-Enskog BC spot-check (bottom wall, k=3)\n");
     printf("  At t=0: u=0 everywhere -> du/dk=0 -> C_alpha=0\n");
     printf("  Expected: f_CE = w_alpha * rho_wall\n\n");
 
     int bc_i = (int)NX6 / 2;
     int bc_j = NYD6_local / 2;
-    int bc_k = 2;  // bottom wall
+    int bc_k = 3;  // bottom wall
     int bc_idx_jk = bc_j * NZ6_local + bc_k;
     double bc_dk_dy = dk_dy_h[bc_idx_jk];
     double bc_dk_dz = dk_dz_h[bc_idx_jk];
@@ -232,9 +232,9 @@ void DiagnoseGILBM_Phase1(
     printf("  Wall point: i=%d, j=%d, k=%d\n", bc_i, bc_j, bc_k);
     printf("  Metric: dk/dy = %+.6e, dk/dz = %+.6e\n", bc_dk_dy, bc_dk_dz);
 
-    // Compute macroscopic at k=3 and k=4
-    int idx3 = bc_j * NX6 * NZ6_local + 3 * NX6 + bc_i;
-    int idx4 = bc_j * NX6 * NZ6_local + 4 * NX6 + bc_i;
+    // Compute macroscopic at k=4 and k=5 (first two interior points above wall k=3)
+    int idx3 = bc_j * NX6 * NZ6_local + 4 * NX6 + bc_i;
+    int idx4 = bc_j * NX6 * NZ6_local + 5 * NX6 + bc_i;
 
     double rho3 = 0.0, rho4 = 0.0;
     double f3[19], f4[19];
@@ -253,7 +253,7 @@ void DiagnoseGILBM_Phase1(
     double du_y_dk = (4.0*uy3 - uy4) / 2.0;
     double du_z_dk = (4.0*uz3 - uz4) / 2.0;
 
-    printf("  rho_wall (from k=3) = %.10f\n", rho3);
+    printf("  rho_wall (from k=4) = %.10f\n", rho3);
     printf("  du/dk at wall: (%.6e, %.6e, %.6e)\n", du_x_dk, du_y_dk, du_z_dk);
     printf("  [At t=0 with u=0 init, du/dk should be ~0]\n");
 
@@ -314,18 +314,18 @@ void DiagnoseGILBM_Phase1(
 // ==============================================================================
 // Phase 2: Departure Point CFL Validation
 // ==============================================================================
-// Checks whether |δζ| < 1 at first interior nodes k=3 (bottom) and k=NZ6-4 (top).
+// Checks whether |δζ| < 1 at first interior nodes k=4 (bottom) and k=NZ6-5 (top).
 // In our GILBM framework ζ = k (integer index), so Δζ = 1 between adjacent points.
 // CFL_ζ = |δζ| / 1 = |δζ|.
 // If CFL_ζ ≥ 1.0, the departure point crosses into the solid/ghost region.
 //
-// Mathematical background:
-//   tanhFunction(L, minSize, a, j=0, N) = minSize/2  (structural identity)
-//   → z[k=3] - z[k=2] = minSize/2
-//   → dz_dk(k=3) = (z[k=4]-z[k=2])/2 = 3·minSize/4  (central difference)
-//   → dk_dz(k=3) = 4/(3·minSize)
-//   → CFL_ζ = dt · dk_dz = minSize · 4/(3·minSize) = 4/3 ≈ 1.333
-//   This is INDEPENDENT of CFL parameter or NZ — it's structural.
+// Mathematical background (buffer=3 layout):
+//   tanhFunction_wall(L, a, j=0, N) = 0  (wall-aligned)
+//   → z[k=3] = Hill(y) (wall), z[k=4]-z[k=3] = minSize (first spacing)
+//   → z[k=2] = 2*z[3]-z[4] (extrapolated)
+//   → dz_dk(k=3) = (z[4]-z[2])/2 = minSize (central diff with extrap.)
+//   → dk_dz(k=3) = 1/minSize
+//   → With LTS: dt_local < minSize at wall → CFL < 1.0
 
 bool ValidateDepartureCFL(
     const double *delta_zeta_h,  // [19*NYD6*NZ6] precomputed RK2 displacement
@@ -353,11 +353,11 @@ bool ValidateDepartureCFL(
     printf("  Phase 2: Departure Point CFL Validation (Rank 0)\n");
     printf("  dt=%.6e, minSize=%.6e, NZ6=%d, NYD6=%d\n",
            dt, (double)minSize, NZ6_local, NYD6_local);
-    printf("  Theoretical CFL at flat floor: dt·dk_dz(k=3) = 4/3 ≈ 1.333\n");
+    printf("  Wall at k=3: dk_dz = 1/minSize, CFL controlled by LTS dt_local\n");
     printf("=============================================================\n");
 
-    // ====== Bottom wall: first interior k=3 ======
-    printf("\n[Bottom Wall] CFL check at k=3 (first interior, k=2 is wall)\n");
+    // ====== Bottom wall: first interior k=4 ======
+    printf("\n[Bottom Wall] CFL check at k=4 (first interior, k=3 is wall)\n");
 
     double bot_raw_max = 0.0, bot_eff_max = 0.0;
     int bot_raw_j = -1, bot_raw_a = -1;
@@ -365,7 +365,7 @@ bool ValidateDepartureCFL(
     int bot_violations = 0;
 
     for (int j = 3; j < NYD6_local - 3; j++) {
-        int idx3 = j * NZ6_local + 3;
+        int idx3 = j * NZ6_local + 4;
         double dk_dy_val = dk_dy_h[idx3];
         double dk_dz_val = dk_dz_h[idx3];
 
@@ -409,10 +409,10 @@ bool ValidateDepartureCFL(
     printf("  RK2 correction: %.2e (raw - eff at worst)\n",
            bot_raw_max - bot_eff_max);
 
-    // ====== Top wall: first interior k=NZ6-4 ======
-    int k_top = NZ6_local - 4;
+    // ====== Top wall: first interior k=NZ6-5 ======
+    int k_top = NZ6_local - 5;
     printf("\n[Top Wall] CFL check at k=%d (first interior, k=%d is wall)\n",
-           k_top, NZ6_local - 3);
+           k_top, NZ6_local - 4);
 
     double top_raw_max = 0.0, top_eff_max = 0.0;
     int top_raw_j = -1, top_raw_a = -1;
@@ -460,10 +460,10 @@ bool ValidateDepartureCFL(
            top_eff_max, top_eff_j, top_eff_a);
 
     // ====== Per-j profile (condensed) ======
-    printf("\n[Per-j CFL Profile] (every 4th j, bottom k=3)\n");
+    printf("\n[Per-j CFL Profile] (every 4th j, bottom k=4)\n");
     printf("  %5s  %12s  %12s  %6s\n", "j", "max_raw_CFL", "max_eff_CFL", "status");
     for (int j = 3; j < NYD6_local - 3; j += 4) {
-        int idx3 = j * NZ6_local + 3;
+        int idx3 = j * NZ6_local + 4;
         double j_raw_max = 0.0, j_eff_max = 0.0;
         for (int alpha = 1; alpha < 19; alpha++) {
             if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
@@ -496,13 +496,9 @@ bool ValidateDepartureCFL(
 
     if (!valid) {
         printf("\n  *** CFL VIOLATION DETECTED ***\n");
-        printf("  Root cause: tanhFunction(j=0) = minSize/2 → z[3]-z[2] = minSize/2\n");
-        printf("  With dt = minSize: CFL = dt · 4/(3·minSize) = 4/3 ≈ 1.333\n");
-        printf("  This is STRUCTURAL — independent of CFL parameter or NZ.\n");
-        printf("  Remedies:\n");
-        printf("    A. Decouple dt: dt = timeCFL * minSize (timeCFL < 3/4)\n");
-        printf("    B. Extend C-E BC to k=3 for violating directions\n");
-        printf("    C. Modify tanh stretching so z[3]-z[2] = minSize\n");
+        printf("  With buffer=3 layout: dk_dz(wall k=3) = 1/minSize\n");
+        printf("  LTS should ensure dt_local * dk_dz < 1.0 everywhere.\n");
+        printf("  Check ComputeLocalTimeStep() for issues.\n");
     }
     printf("=============================================================\n\n");
 

@@ -135,7 +135,7 @@ __global__ void MeanVars(
 
     const int index  = j*NX6*NZ6 + k*NX6 + i;
 
-    if( i <= 2 || i >= NX6-3 || j <= 2 || j >= NYD6-3 || k <= 2 || k >= NZ6-3 ) return;
+    if( i <= 2 || i >= NX6-3 || j <= 2 || j >= NYD6-3 || k <= 3 || k >= NZ6-4 ) return;
 
     const double u1 = u[index];
     const double v1 = v[index];
@@ -189,7 +189,7 @@ __global__ void MeanDerivatives(
 
     double dudx = 0.0, dudy = 0.0, dudz = 0.0, dvdx = 0.0, dvdy = 0.0, dvdz = 0.0, dwdx = 0.0, dwdy = 0.0, dwdz = 0.0;
 
-    if( i <= 2 || i >= NX6-3 || j <= 2 || j >= NYD6-3 || k <= 2 || k >= NZ6-3 ) return;
+    if( i <= 2 || i >= NX6-3 || j <= 2 || j >= NYD6-3 || k <= 3 || k >= NZ6-4 ) return;
 
     dudx = (8.0*( u[index+1] - u[index-1] ) - ( u[index+2] - u[index-2] )) / 12.0 / ( x[i+1] - x[i] );
 	dvdx = (8.0*( v[index+1] - v[index-1] ) - ( v[index+2] - v[index-2] )) / 12.0 / ( x[i+1] - x[i] );
@@ -200,8 +200,8 @@ __global__ void MeanDerivatives(
 	dwdy = (8.0*( w[index+NX6*NZ6] - w[index-NX6*NZ6] ) - ( w[index+2*NX6*NZ6] - w[index-2*NX6*NZ6] )) / 12.0 / ( y[j+1] - y[j] );
 
     int n = k-2;
-    if( k <= 4 ) n = 3;
-    if( k >= NZ6-5 ) n = NZ6-8;
+    if( k <= 5 ) n = 4;
+    if( k >= NZ6-6 ) n = NZ6-9;
     int idx = j*NX6*NZ6 + n*NX6 + i;
     dudz = u[idx]*SlpPara_0[k] + u[idx+NX6]*SlpPara_1[k] + u[idx+2*NX6]*SlpPara_2[k] + u[idx+3*NX6]*SlpPara_3[k] + u[idx+4*NX6]*SlpPara_4[k];
     dvdz = v[idx]*SlpPara_0[k] + v[idx+NX6]*SlpPara_1[k] + v[idx+2*NX6]*SlpPara_2[k] + v[idx+3*NX6]*SlpPara_3[k] + v[idx+4*NX6]*SlpPara_4[k];
