@@ -19,7 +19,7 @@
 #define     NZ6    (NZ+6)
 
 //coefficient for non-uniform grid
-#define     CFL                 0.3
+#define     CFL                 0.6
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
 //1 : Yes,  0 : No
 #define     Uniform_In_Xdir     1
@@ -51,9 +51,9 @@
 //1 : from backup file
 //2 : from merged VTK file (specify RESTART_VTK_FILE below)
 #define     INIT    (0)
-#define     TBINIT  (0)
-#define     RESTART_VTK_FILE  "result/velocity_merged_004001.vtk"
-/****************** SECDONARY PARAMETER ******************/
+#define     TBINIT  (1)
+#define     RESTART_VTK_FILE  "result/velocity_merged_007001.vtk"
+/****************** SECONDARY PARAMETER ******************/
 #define     cs          (1.0/1.732050807568877)
 #define     dt          minSize //因為直角坐標系中，c=1
 #define     tau         0.6833

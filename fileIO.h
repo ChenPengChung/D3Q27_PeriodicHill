@@ -389,7 +389,103 @@ void InitFromMergedVTK(const char* vtk_path) {
     }}}
     vtk_in.close();
 
-    // 從 (rho, u, v, w) 計算 f = feq
+    // ========== x-direction 週期性邊界填充 buffer layer ==========
+    // periodicSW 邏輯: left i=0,1,2 ← i=32,33,34; right i=36,37,38 ← i=4,5,6
+    {
+        const int buffer = 3;
+        const int shift = NX6 - 2*buffer - 1;  // = 32
+        for (int j = 3; j < NYD6-3; j++) {
+        for (int k = 3; k < NZ6-3; k++) {
+            for (int ib = 0; ib < buffer; ib++) {
+                // Left buffer: i=ib ← i=ib+shift
+                int idx_buf = j * NX6 * NZ6 + k * NX6 + ib;
+                int idx_src = idx_buf + shift;
+                u_h_p[idx_buf]   = u_h_p[idx_src];
+                v_h_p[idx_buf]   = v_h_p[idx_src];
+                w_h_p[idx_buf]   = w_h_p[idx_src];
+                rho_h_p[idx_buf] = rho_h_p[idx_src];
+
+                // Right buffer: i=(NX6-1-ib) ← i=(NX6-1-ib)-shift
+                idx_buf = j * NX6 * NZ6 + k * NX6 + (NX6 - 1 - ib);
+                idx_src = idx_buf - shift;
+                u_h_p[idx_buf]   = u_h_p[idx_src];
+                v_h_p[idx_buf]   = v_h_p[idx_src];
+                w_h_p[idx_buf]   = w_h_p[idx_src];
+                rho_h_p[idx_buf] = rho_h_p[idx_src];
+            }
+        }}
+        if (myid == 0) printf("  VTK restart: x-periodic buffer layers filled.\n");
+    }
+
+    // ========== MPI 交換 ghost zone (u, v, w, rho) ==========
+    // VTK 只包含計算區域 j=3..NYD6-4，ghost zone j=0..2 和 j=NYD6-3..NYD6-1 需要 MPI 填充
+    // 否則 Init_FPC_Kernel 會讀到錯誤的 stencil 值導致發散
+    {
+        const int slice_size = NX6 * NZ6;
+        const int ghost_count = 3 * slice_size;  // 3 個 j-slices
+        
+        // 交換 u_h_p
+        // 發送 j=3..5 到左鄰居，接收從右鄰居到 j=NYD6-3..NYD6-1
+        MPI_Sendrecv(&u_h_p[3 * slice_size],       ghost_count, MPI_DOUBLE, l_nbr, 600,
+                     &u_h_p[(NYD6-3) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 600,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        // 發送 j=NYD6-6..NYD6-4 到右鄰居，接收從左鄰居到 j=0..2
+        MPI_Sendrecv(&u_h_p[(NYD6-6) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 601,
+                     &u_h_p[0],                      ghost_count, MPI_DOUBLE, l_nbr, 601,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        
+        // 交換 v_h_p
+        MPI_Sendrecv(&v_h_p[3 * slice_size],       ghost_count, MPI_DOUBLE, l_nbr, 602,
+                     &v_h_p[(NYD6-3) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 602,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Sendrecv(&v_h_p[(NYD6-6) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 603,
+                     &v_h_p[0],                      ghost_count, MPI_DOUBLE, l_nbr, 603,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        
+        // 交換 w_h_p
+        MPI_Sendrecv(&w_h_p[3 * slice_size],       ghost_count, MPI_DOUBLE, l_nbr, 604,
+                     &w_h_p[(NYD6-3) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 604,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Sendrecv(&w_h_p[(NYD6-6) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 605,
+                     &w_h_p[0],                      ghost_count, MPI_DOUBLE, l_nbr, 605,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        
+        // 交換 rho_h_p
+        MPI_Sendrecv(&rho_h_p[3 * slice_size],       ghost_count, MPI_DOUBLE, l_nbr, 606,
+                     &rho_h_p[(NYD6-3) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 606,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Sendrecv(&rho_h_p[(NYD6-6) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 607,
+                     &rho_h_p[0],                      ghost_count, MPI_DOUBLE, l_nbr, 607,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        
+        if (myid == 0) printf("  VTK restart: ghost zone (u,v,w,rho) exchanged between MPI ranks.\n");
+    }
+
+    // ========== z-direction 壁面外插 buffer/ghost layer ==========
+    // 與 GenerateMesh_Z 相同邏輯: linear extrapolation
+    // Bottom wall k=3, Top wall k=NZ6-4; buffer k=2,NZ6-3; ghost k=0,1,NZ6-2,NZ6-1
+    {
+        #define BUF_IDX(jj,kk,ii) ((jj)*NX6*NZ6 + (kk)*NX6 + (ii))
+        for (int j = 0; j < NYD6; j++) {
+        for (int i = 0; i < NX6; i++) {
+            double *fields[] = {u_h_p, v_h_p, w_h_p, rho_h_p};
+            for (int f = 0; f < 4; f++) {
+                double *F = fields[f];
+                // Bottom: k=2 (buffer), k=1, k=0 (ghost)
+                F[BUF_IDX(j,2,i)]     = 2.0 * F[BUF_IDX(j,3,i)]     - F[BUF_IDX(j,4,i)];
+                F[BUF_IDX(j,1,i)]     = 2.0 * F[BUF_IDX(j,2,i)]     - F[BUF_IDX(j,3,i)];
+                F[BUF_IDX(j,0,i)]     = 2.0 * F[BUF_IDX(j,1,i)]     - F[BUF_IDX(j,2,i)];
+                // Top: k=NZ6-3 (buffer), k=NZ6-2, k=NZ6-1 (ghost)
+                F[BUF_IDX(j,NZ6-3,i)] = 2.0 * F[BUF_IDX(j,NZ6-4,i)] - F[BUF_IDX(j,NZ6-5,i)];
+                F[BUF_IDX(j,NZ6-2,i)] = 2.0 * F[BUF_IDX(j,NZ6-3,i)] - F[BUF_IDX(j,NZ6-4,i)];
+                F[BUF_IDX(j,NZ6-1,i)] = 2.0 * F[BUF_IDX(j,NZ6-2,i)] - F[BUF_IDX(j,NZ6-3,i)];
+            }
+        }}
+        #undef BUF_IDX
+        if (myid == 0) printf("  VTK restart: z-direction buffer/ghost layers extrapolated.\n");
+    }
+
+    // 從 (rho, u, v, w) 計算 f = feq (現在包含正確的 ghost zone 值)
     for (int k = 0; k < NZ6; k++) {
     for (int j = 0; j < NYD6; j++) {
     for (int i = 0; i < NX6; i++) {
