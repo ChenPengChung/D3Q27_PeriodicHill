@@ -180,10 +180,10 @@ void Launch_ModifyForcingTerm()
     CHECK_MPI( MPI_Bcast( (void*)Force_h, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD ) );
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
-    double Re_now = Ub_avg / (double)niu;
+    double Re_now = Ub_avg / (double)niu ;
     double Ma_now  = Ub_avg / (double)cs;
-    printf("Ub_avg = %lf\t Uref = %lf\t Force = %.5lE\t Re(now) = %.1f\t Ma = %.4f\n",
-           Ub_avg, (double)Uref, Force_h[0], Re_now, Ma_now);
+    printf("Ub_avg = %lf\t Uref = %lf\t Force = %.5lE\t Re(now) = %.5f\t Ma = %.4f\n",
+           Ub_avg, (double)Uref, Force_h[0], Ub_avg / ((double) Uref/(double)Re), Ma_now);
 
     CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
     
