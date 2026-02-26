@@ -417,9 +417,10 @@ __global__ void GILBM_StreamCollide_Kernel(
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
     const int k = blockIdx.z * blockDim.z + threadIdx.z;
 
-    // j-guard: 跳過 ghost zone (j<3, j>=NYD6-3)，避免與 MPI 交換競爭寫入
+    // j-guard: Full kernel 只計算 j∈[7, NYD6-8]，邊界行由 Buffer kernel 負責
+    // Buffer kernel 計算 j∈{3..6, 32..35}，避免兩個 stream 寫入重疊導致 race condition
     // Buffer=3: 計算範圍 k=3..NZ6-4
-    if (i <= 2 || i >= NX6 - 3 || j < 3 || j >= NYD6 - 3 || k <= 2 || k >= NZ6 - 3) return;
+    if (i <= 2 || i >= NX6 - 3 || j <= 6 || j >= NYD6 - 7 || k <= 2 || k >= NZ6 - 3) return;
 
     double *f_new_ptrs[19] = {
         f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
