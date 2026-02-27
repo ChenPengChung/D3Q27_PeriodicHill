@@ -215,7 +215,8 @@ double ComputeGlobalTimeStep(
     int NYD6_local,
     int NZ6_local,
     double cfl_lambda,
-    int myid_local
+    int myid_local,
+    int nprocs_local
 ) {
     double e[19][3] = {
         {0,0,0},
@@ -271,29 +272,32 @@ double ComputeGlobalTimeStep(
 
     double dt_g = cfl_lambda / max_c_tilde;
 
+    // --- Per-rank sequential output (MPI_Barrier 確保輸出順序) ---
+    const char *dir_name[] = {"eta (x)", "xi (y)", "zeta (z)"};
     if (myid_local == 0) {
-        const char *dir_name[] = {"eta (x)", "xi (y)", "zeta (z)"};
         std::cout << "\n=============================================================\n"
                   << "  Phase 3: Imamura Global Time Step (Eq. 25)\n"
                   << "  CFL lambda = " << std::fixed << std::setprecision(4) << cfl_lambda << "\n"
-                  << "=============================================================\n"
-                  << "  max|c_tilde| = " << std::setprecision(6) << max_c_tilde
-                  << " in " << dir_name[max_component] << " direction\n";
-        if (max_component == 2) {
-        std::cout << "    at alpha=" << max_alpha
-                  << " (e_y=" << std::showpos << std::setprecision(0) << std::fixed << (double)e[max_alpha][1]
-                  << ", e_z=" << (double)e[max_alpha][2] << std::noshowpos
-                  << "), j=" << max_j << ", k=" << max_k << "\n";
-        }
-        std::cout << std::noshowpos
-                  << "  dt_g = lambda / max|c_tilde| = " << std::scientific << std::setprecision(6) << dt_g << "\n"
-                  << "  dt_old = minSize = " << (double)minSize << "\n"
-                  << std::fixed << std::setprecision(4)
-                  << "  ratio dt_g / minSize = " << dt_g / (double)minSize << "\n"
-                  << std::setprecision(1)
-                  << "  Speedup cost: " << (double)minSize / dt_g << "x more timesteps per physical time\n"
-                  << "=============================================================\n\n";
+                  << "=============================================================\n";
     }
+    for (int r = 0; r < nprocs_local; r++) {
+        CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
+        if (myid_local == r) {
+            std::cout << "  Rank " << r << ": max|c_tilde| = "
+                      << std::fixed << std::setprecision(6) << max_c_tilde
+                      << " in " << dir_name[max_component] << " direction";
+            if (max_component == 2) {
+                std::cout << " at alpha=" << max_alpha
+                          << " (e_y=" << std::showpos << std::setprecision(0) << std::fixed
+                          << (double)e[max_alpha][1]
+                          << ", e_z=" << (double)e[max_alpha][2] << std::noshowpos
+                          << "), j=" << max_j << ", k=" << max_k;
+            }
+            std::cout << ", dt_rank = " << std::scientific << std::setprecision(6) << dt_g
+                      << std::endl;
+        }
+    }
+    CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
     return dt_g;
 }

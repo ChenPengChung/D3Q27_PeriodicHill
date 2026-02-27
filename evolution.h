@@ -163,6 +163,11 @@ void Launch_ModifyForcingTerm()
 
     CHECK_CUDA( cudaMemcpy(Ub_avg_d, Ub_avg_h, nBytes, cudaMemcpyHostToDevice) );
 
+    // ★ 只有 rank 0 的 j=3 = 山丘頂入口截面，具有物理意義
+    //   Bcast rank 0 的 Ub_avg → 所有 rank 使用相同的入口 u_bulk
+    CHECK_MPI( MPI_Bcast(&Ub_avg, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD) );
+    Ub_avg_global = Ub_avg;  // 存入全域變數，供 Launch_Monitor 等使用
+
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
     
     double beta = max(0.001, force_alpha/(double)Re);
@@ -191,16 +196,9 @@ void Launch_ModifyForcingTerm()
             printf("[WARNING] Ma=%.4f > 0.3, Force halved to %.5E for stability!\n", Ma_now, Force_h[0]);
     }
 
-    double force_avg = 0.0;
-    CHECK_MPI( MPI_Reduce( (void*)Force_h, (void*)&force_avg, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD ) );
-    CHECK_MPI( MPI_Barrier( MPI_COMM_WORLD ) );
+    // ★ 所有 rank 使用相同 Ub_avg → 計算出相同 Force_h[0]
+    //   不再需要 MPI_Reduce + Bcast Force (已天然同步)
 
-    if( myid == 0 ){
-        force_avg = force_avg / (double)jp;
-        Force_h[0] = force_avg;
-    }
-
-    CHECK_MPI( MPI_Bcast( (void*)Force_h, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD ) );
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
     // 無因次化量 (論文 Fig.5)
@@ -213,8 +211,10 @@ void Launch_ModifyForcingTerm()
     if (U_star > 1.2)       status_tag = " [OVERSHOOT!]";
     else if (U_star > 1.05) status_tag = " [OVERSHOOT]";
 
-    printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f%s\n",
-           step, FTT, Ub_avg, U_star, Force_h[0], F_star, Ub_avg / ((double)Uref/(double)Re), Ma_now, status_tag);
+    if (myid == 0) {
+        printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f%s\n",
+               step, FTT, Ub_avg, U_star, Force_h[0], F_star, Ub_avg / ((double)Uref/(double)Re), Ma_now, status_tag);
+    }
 
     CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
     

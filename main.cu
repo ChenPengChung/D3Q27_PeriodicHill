@@ -82,6 +82,7 @@ double *omegadt_local_d;  // Precomputed ω·Δt at each grid point [NX6*NYD6*NZ
 
 //Variables for forcing term modification.
 double  *Ub_avg_h,  *Ub_avg_d;
+double  Ub_avg_global = 0.0;   // Bcast 後的全場代表 u_bulk (rank 0 入口截面)
 
 double  *Force_h,   *Force_d;
 
@@ -176,15 +177,22 @@ int main(int argc, char *argv[])
     double dy_val = LY / (double)(NY6 - 7);
     //dt_global 取為遍歷每一格空間計算點，每一個分量，每一個編號下的速度分量最大值，定義而成
     //dt_global 指的就是global time step
-    dt_global = ComputeGlobalTimeStep(dk_dz_h, dk_dy_h, dx_val, dy_val, NYD6, NZ6, CFL, myid);
+    // 每個 rank 先計算自己的 dt_rank，再取全域 MIN
+    double dt_rank = ComputeGlobalTimeStep(dk_dz_h, dk_dy_h, dx_val, dy_val, NYD6, NZ6, CFL, myid, nProcs);
+    CHECK_MPI( MPI_Allreduce(&dt_rank, &dt_global, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD) );
+
     //可以計算omega_global. ;
     omega_global = (3*niu/dt_global) + 0.5 ; 
     omegadt_global = omega_global*dt_global;
    
     if (myid == 0) {
-        printf("  Phase 3: Imamura CFL time step\n");
-        printf("  Global time step (dt_global) = %.6e\n", dt_global);
+        printf("  ─────────────────────────────────────────────────────────\n");
+        printf("  dt_global = MIN(all ranks) = %.6e\n", dt_global);
+        printf("  dt_old = minSize = %.6e\n", (double)minSize);
+        printf("  ratio dt_global / minSize = %.4f\n", dt_global / (double)minSize);
+        printf("  Speedup cost: %.1fx more timesteps per physical time\n", (double)minSize / dt_global);
         printf("  omega_global = %.6f, 1/omega_global = %.6f\n", omega_global, 1.0/omega_global);
+        printf("  =============================================================\n\n");
     }
 
     // GILBM: 預計算三方向位移 δη (常數), δξ (常數), δζ (RK2 空間變化)
