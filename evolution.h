@@ -166,7 +166,30 @@ void Launch_ModifyForcingTerm()
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
     
     double beta = max(0.001, force_alpha/(double)Re);
-    Force_h[0] = Force_h[0] + beta*(Uref - Ub_avg)*Uref/(double)LY; 
+    double Ma_now = Ub_avg / (double)cs;
+
+    // --- Overshoot protection ---
+    // 1. 超速時使用更強的修正增益 (asymmetric gain)
+    double error = (double)Uref - Ub_avg;
+    double gain = beta;
+    if (error < 0.0) {
+        // Ub > Uref: 加倍增益以快速壓制
+        gain = beta * 3.0;
+    }
+    Force_h[0] = Force_h[0] + gain * error * (double)Uref / (double)LY;
+
+    // 2. Force 非負 clamp: 壓力梯度不能反向驅動流體 (否則造成反向流 → 發散)
+    if (Force_h[0] < 0.0) {
+        Force_h[0] = 0.0;
+    }
+
+    // 3. Ma 安全檢查: LBM 穩定性要求 Ma < 0.3
+    if (Ma_now > 0.3) {
+        // 緊急剎車: 大幅削減外力
+        Force_h[0] *= 0.5;
+        if (myid == 0)
+            printf("[WARNING] Ma=%.4f > 0.3, Force halved to %.5E for stability!\n", Ma_now, Force_h[0]);
+    }
 
     double force_avg = 0.0;
     CHECK_MPI( MPI_Reduce( (void*)Force_h, (void*)&force_avg, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD ) );
@@ -185,17 +208,13 @@ void Launch_ModifyForcingTerm()
     double U_star = Ub_avg / (double)Uref;                          // U* = Ub/Uref
     double F_star = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);  // F* = F*L/(rho*Uref^2), rho=1
     double Re_now = Ub_avg / (double)niu;
-    double Ma_now = Ub_avg / (double)cs;
 
-    printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f\n",
-           step, FTT, Ub_avg, U_star, Force_h[0], F_star, Ub_avg / ((double)Uref/(double)Re), Ma_now);
+    const char *status_tag = "";
+    if (U_star > 1.2)       status_tag = " [OVERSHOOT!]";
+    else if (U_star > 1.05) status_tag = " [OVERSHOOT]";
 
-    // 寫入 ForcingHistory.dat (Rank 0 only, 對應論文 Fig.5 的兩條曲線)
-    if (myid == 0) {
-        FILE *fhist = fopen("ForcingHistory.dat", "a");
-        fprintf(fhist, "%.6f\t %.10f\t %.10f\n", FTT, U_star, F_star);
-        fclose(fhist);
-    }
+    printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f%s\n",
+           step, FTT, Ub_avg, U_star, Force_h[0], F_star, Ub_avg / ((double)Uref/(double)Re), Ma_now, status_tag);
 
     CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
     

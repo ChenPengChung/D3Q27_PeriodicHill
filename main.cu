@@ -385,8 +385,9 @@ int main(int argc, char *argv[])
 			float cudatime1;
 			CHECK_CUDA( cudaEventElapsedTime( &cudatime1,start1,stop1 ) );
 
+            double FTT_now = step * dt_global / (double)flow_through_time;
             printf("+----------------------------------------------------------------+\n");
-			printf("| Step = %d \n",step);
+			printf("| Step = %d    FTT = %.2f \n", step, FTT_now);
             printf("|%s running with %4dx%4dx%4d grids            \n", argv[0], (int)NX6, (int)NY6, (int)NZ6 );
             printf("| Running %6f mins                                           \n", (cudatime1/60/1000) ),
             printf("+----------------------------------------------------------------+\n");

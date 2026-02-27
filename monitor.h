@@ -23,6 +23,11 @@ void Launch_Monitor( const int step ){
         fprintf( Monitor, "%d\t %.6f\t %.15lf\t %.15lf\t %.15lf\t %.15lf\t %.6f\n",
                  step, FTT_mon, v_monitor, u_monitor, w_monitor, Force_h[0], F_star_mon);
         fclose( Monitor );
+
+        // ForcingHistory.dat: 每 NDTMIT 步輸出，與 Monitor.dat 同頻率
+        FILE *fhist = fopen("ForcingHistory.dat", "a");
+        fprintf(fhist, "%d\t %.6f\t %.10E\t %.6f\n", step, FTT_mon, Force_h[0], F_star_mon);
+        fclose(fhist);
     }
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
