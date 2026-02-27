@@ -44,8 +44,12 @@
 //how many time steps to output val of monitor point(NX/2, NY/2, NZ/2)
 #define		NDTMIT	   50
 //how many time steps to modify the forcing term
-#define     NDTFRC     1000 //更新外力
-
+#define     NDTFRC     10000 //每一萬步驟-更新外力
+#define     force_alpha 11 //瑋傑學長的論文:alpha = 3~14 
+//Re=100  , alpha = 10 
+//Re=2800 , alpha = 3 or 14 
+//After a few transients (∼ 200 ﬂow-throughtime), the velocity is time-averaged. As show
+//無因次化時間步 0.67L/U_reference 
 //whether to initial from the backup file
 //0 : from initialization
 //1 : from backup file

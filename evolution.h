@@ -165,7 +165,7 @@ void Launch_ModifyForcingTerm()
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
     
-    double beta = max(0.001, 3.0/(double)Re);
+    double beta = max(0.001, force_alpha/(double)Re);
     Force_h[0] = Force_h[0] + beta*(Uref - Ub_avg)*Uref/3.036;
 
     double force_avg = 0.0;

@@ -182,7 +182,7 @@ int main(int argc, char *argv[])
     omegadt_global = omega_global*dt_global;
    
     if (myid == 0) {
-        printf("Phase 3: Imamura CFL time step\n");
+        printf("  Phase 3: Imamura CFL time step\n");
         printf("  Global time step (dt_global) = %.6e\n", dt_global);
         printf("  omega_global = %.6f, 1/omega_global = %.6f\n", omega_global, 1.0/omega_global);
     }
