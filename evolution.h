@@ -166,7 +166,7 @@ void Launch_ModifyForcingTerm()
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
     
     double beta = max(0.001, force_alpha/(double)Re);
-    Force_h[0] = Force_h[0] + beta*(Uref - Ub_avg)*Uref/3.036;
+    Force_h[0] = Force_h[0] + beta*(Uref - Ub_avg)*Uref/(double)LY; 
 
     double force_avg = 0.0;
     CHECK_MPI( MPI_Reduce( (void*)Force_h, (void*)&force_avg, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD ) );
@@ -180,10 +180,22 @@ void Launch_ModifyForcingTerm()
     CHECK_MPI( MPI_Bcast( (void*)Force_h, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD ) );
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
-    double Re_now = Ub_avg / (double)niu ;
-    double Ma_now  = Ub_avg / (double)cs;
-    printf("Ub_avg = %lf\t Uref = %lf\t Force = %.5lE\t Re(now) = %.5f\t Ma = %.4f\n",
-           Ub_avg, (double)Uref, Force_h[0], Ub_avg / ((double) Uref/(double)Re), Ma_now);
+    // 無因次化量 (論文 Fig.5)
+    double FTT    = step * dt_global / (double)flow_through_time;  // T*Uref/L (用 dt_global, 非 minSize)
+    double U_star = Ub_avg / (double)Uref;                          // U* = Ub/Uref
+    double F_star = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);  // F* = F*L/(rho*Uref^2), rho=1
+    double Re_now = Ub_avg / (double)niu;
+    double Ma_now = Ub_avg / (double)cs;
+
+    printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f\n",
+           step, FTT, Ub_avg, U_star, Force_h[0], F_star, Ub_avg / ((double)Uref/(double)Re), Ma_now);
+
+    // 寫入 ForcingHistory.dat (Rank 0 only, 對應論文 Fig.5 的兩條曲線)
+    if (myid == 0) {
+        FILE *fhist = fopen("ForcingHistory.dat", "a");
+        fprintf(fhist, "%.6f\t %.10f\t %.10f\n", FTT, U_star, F_star);
+        fclose(fhist);
+    }
 
     CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
     

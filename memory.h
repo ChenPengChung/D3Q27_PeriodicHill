@@ -121,7 +121,9 @@ void AllocateMemory() {
 
     nBytes = NZ6 * NX6 * sizeof(double);
     CHECK_CUDA( cudaMallocHost( (void**)&Ub_avg_h, nBytes ) );
+    memset(Ub_avg_h, 0, nBytes);                          // Bug2 fix: zero-init
     CHECK_CUDA( cudaMalloc( &Ub_avg_d, nBytes ) );
+    CHECK_CUDA( cudaMemset(Ub_avg_d, 0, nBytes) );        // Bug2 fix: zero-init
 
     nBytes = sizeof(double);
     CHECK_CUDA( cudaMallocHost( (void**)&Force_h, nBytes ) );

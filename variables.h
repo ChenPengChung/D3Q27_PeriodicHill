@@ -6,6 +6,8 @@
 #define     LX     (4.5)
 #define     LY     (9.0)
 #define     LZ     (3.036)
+#define     H_HILL (1.0)        // hill height (Re_h reference length)
+
 //global grid numbers of each direction
 #define     NX      32
 #define     NY      128
@@ -60,8 +62,14 @@
 /****************** SECONDARY PARAMETER ******************/
 #define     cs          (1.0/1.732050807568877)
 #define     dt          minSize //因為直角坐標系中，c=1
-#define     Uref        0.17320508075 //<= 0.17320508075
+#define     Uref        0.0583 //Re700:0.0583 , Re14002800:0.0776 , Re5600:0.0464 , Re10595:0.0878 <=0.17320508075 //<= 0.17320508075
 #define     niu         Uref/Re
+// Flow-through time: T_FT = L / Uref (lattice time units)
+// 論文 Fig.5 x軸: T*Uref/L, 其中 L = LY = 9h (hill-to-hill streamwise periodic length)
+// 一個 FTT = LY/Uref 個 lattice time steps
+// 第 n 步的 FTT 數 = n * dt_global / (LY / Uref) = n * dt_global * Uref / LY
+// 注意: 曲線坐標系用 dt_global (runtime), 非 dt=minSize (直角坐標 compile-time)
+#define     flow_through_time  (LY / Uref)
 //block size of each direction
 #define     NT          32     //block size x-dir threadnum
 #endif

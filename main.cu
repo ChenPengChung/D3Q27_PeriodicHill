@@ -394,7 +394,7 @@ int main(int argc, char *argv[])
             cudaEventRecord(start1,0);
         }
 
-        if (  (step%(int)NDTFRC == 1) ) {
+        if ( step >= (int)NDTFRC && (step%(int)NDTFRC == 1) ) {
             Launch_ModifyForcingTerm();
         }
 
@@ -447,9 +447,10 @@ int main(int argc, char *argv[])
             rho_LocalAvg = rho_LocalSum / ((NX6-7)*(NYD6-7)*(NZ6-6));  // 64 個 k 計算點
             MPI_Reduce((void *)&rho_LocalAvg, (void *)&rho_GlobalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
             if( myid ==0 ){
+                double FTT_rho = step * dt_global / (double)flow_through_time;
                 FILE *checkrho;
                 checkrho = fopen("checkrho.dat","a");
-                fprintf(checkrho,"%d\t %lf\t %lf\n",step, rho_initial, rho_GlobalSum/(double)jp );
+                fprintf(checkrho,"%d\t %.4f\t %lf\t %lf\n",step, FTT_rho, rho_initial, rho_GlobalSum/(double)jp );
                 fclose (checkrho);
             }
         }

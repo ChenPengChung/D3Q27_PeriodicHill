@@ -43,8 +43,7 @@ void InitialUsingDftFunc() {
     
     }}}
 
-    Force_h[0] =  (8.0*niu*Uref)/(LZ*LZ)*5.0; //0.0001;
-    CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+Force_h[0] = (8.0*niu*Uref)/((LZ-H_HILL)*(LZ-H_HILL))*2.0;    CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
 
 }
 
