@@ -395,7 +395,7 @@ int main(int argc, char *argv[])
             cudaEventRecord(start1,0);
         }
 
-        if ( step >= (int)NDTFRC && (step%(int)NDTFRC == 1) ) {
+        if ( (step%(int)NDTFRC == 1) ) {
             Launch_ModifyForcingTerm();
         }
 

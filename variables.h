@@ -46,8 +46,8 @@
 //how many time steps to output val of monitor point(NX/2, NY/2, NZ/2)
 #define		NDTMIT	   50
 //how many time steps to modify the forcing term
-#define     NDTFRC     10000 //每一萬步驟-更新外力
-#define     force_alpha 11 //瑋傑學長的論文:alpha = 3~14 
+#define     NDTFRC     1000 //每一萬步驟-更新外力
+#define     force_alpha 3 //瑋傑學長的論文:alpha = 3~14 
 //Re=100  , alpha = 10 
 //Re=2800 , alpha = 3 or 14 
 //After a few transients (∼ 200 ﬂow-throughtime), the velocity is time-averaged. As show
@@ -62,7 +62,7 @@
 /****************** SECONDARY PARAMETER ******************/
 #define     cs          (1.0/1.732050807568877)
 #define     dt          minSize //因為直角坐標系中，c=1
-#define     Uref        0.0583 //Re700:0.0583 , Re14002800:0.0776 , Re5600:0.0464 , Re10595:0.0878 <=0.17320508075 //<= 0.17320508075
+#define     Uref        0.17320508075 //Re700:0.0583 , Re14002800:0.0776 , Re5600:0.0464 , Re10595:0.0878 <=0.17320508075 //<= 0.17320508075
 #define     niu         Uref/Re
 // Flow-through time: T_FT = L / Uref (lattice time units)
 // 論文 Fig.5 x軸: T*Uref/L, 其中 L = LY = 9h (hill-to-hill streamwise periodic length)
