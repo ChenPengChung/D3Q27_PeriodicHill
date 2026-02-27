@@ -371,6 +371,8 @@ for step = 0..loop:
 ### 已完成的驗證 (Audit)
 - **feq 審計**: 確認 `compute_feq_alpha` 在曲線坐標 GILBM 中不需 Jacobian 修正
 - **CE BC 張量**: c=1 約定下係數為 `3.0` (非 `9.0`)
+- **CE BC 前置因子修正**: 原版 `-omega_local*dt` 等同 `-τ*Δt`，偏大 35%；
+  已修正為 `-3*(omega_local-0.5)*dt = -3*(τ-0.5)*Δt = -9ν`（與網格無關的物理常數）
 - **位移公式**: δη/δξ 以 dt_global 預計算，kernel 中乘 a_local 縮放至 dt_local
 - **Departure point clamp**: CFL < 1 保證 |位移| < 1 格，clamp 為安全網不會觸發
 
@@ -387,9 +389,13 @@ uniform grid 時 R_AB = 1 → f̃ = f（退化為標準 LBM）
 ### 壁面 BC (Chapman-Enskog, Eq. A.9, c=1)
 ```
 f_α = w_α · ρ_wall · (1 + C_α)
-C_α = -ω·Δt × { 6 項 tensor 展開 }
-    = -omega*dt × Σ_α,β [3·c_iα·c_iβ - δ_αβ] · (du_α/dk)·(dk/dx_β)
+C_α = -3·(τ - 0.5)·Δt × { 6 項 tensor 展開 }
+    = -3*(omega_local - 0.5)*dt × Σ_α,β [3·c_iα·c_iβ - δ_αβ] · (du_α/dk)·(dk/dx_β)
 ```
+- **前置因子已修正**: 原版誤用 `-τ·Δt`，正確應為 `-3(τ-0.5)·Δt = -9ν`（物理常數）
+  - omega_local 在代碼中 = τ（0.5 + 3ν/dt），不是 1/τ
+  - 舊版比正確值偏大 τ/[3(τ-0.5)] = 1.35 倍（壁面 τ=0.664 時）
+  - τ=0.5 時正確公式給 C=0（無黏極限），舊版錯誤給出 C≠0
 - 係數 3 = 1/c_s^2 (c=1 時 c_s²=1/3 → 1/c_s^2=3)；c≠1 時為 9·c_iα·c_iβ - 3·δ_αβ
 - `du/dk|wall = u[k±1]` (一階差分, u[wall]=0; 二階版本 `(4·u[k±1] - u[k±2])/2` 已註解保留)
 - `rho_wall = rho[k=4]` (零法向壓力梯度近似, 壁面 k=3)

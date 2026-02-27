@@ -145,12 +145,12 @@ __device__ void gilbm_compute_point(
         double rho3, u3, v3, w3, rho4, u4, v4, w4;
         compute_macroscopic_at(f_new_ptrs, idx3, rho3, u3, v3, w3);
         compute_macroscopic_at(f_new_ptrs, idx4, rho4, u4, v4, w4);
+        du_dk = (u3) ;  // ∂u/∂k|_wall // 先用一階，待 CE BC 修正驗證後再升階
+        dv_dk = (v3) ;  // ∂v/∂k|_wall //
+        dw_dk = (w3) ;  // ∂w/∂k|_wall //
         /*du_dk = (4.0 * u3 - u4) / 2.0;  // ∂u/∂k|_wall //採用二階精度單邊差分計算法向速度梯度
         dv_dk = (4.0 * v3 - v4) / 2.0;  // ∂v/∂k|_wall //採用二階精度單邊差分計算法向速度梯度
         dw_dk = (4.0 * w3 - w4) / 2.0;  // ∂w/∂k|_wall //採用二階精度單邊差分計算法向速度梯度*/
-        du_dk = (u3) ;  // ∂u/∂k|_wall //
-        dv_dk = (v3) ;  // ∂v/∂k|_wall //
-        dw_dk = (w3) ;  // ∂w/∂k|_wall //
         rho_wall = rho3;  // 零法向壓力梯度近似 (Imamura S3.2)
     } else if (is_top) {
         // k=NZ6-4 為頂壁，用 k=NZ6-5, k=NZ6-6 兩層 (反向差分)
@@ -159,12 +159,12 @@ __device__ void gilbm_compute_point(
         double rhom1, um1, vm1, wm1, rhom2, um2, vm2, wm2;
         compute_macroscopic_at(f_new_ptrs, idxm1, rhom1, um1, vm1, wm1);
         compute_macroscopic_at(f_new_ptrs, idxm2, rhom2, um2, vm2, wm2);
+        du_dk = -(um1) ;  // ∂u/∂k|_wall // 先用一階
+        dv_dk = -(vm1) ;  // ∂v/∂k|_wall //
+        dw_dk = -(wm1) ;  // ∂w/∂k|_wall //
         /*du_dk = -(4.0 * um1 - um2) / 2.0;  // ∂u/∂k|_wall (頂壁法向反向)
         dv_dk = -(4.0 * vm1 - vm2) / 2.0;  // ∂v/∂k|_wall (頂壁法向反向)
         dw_dk = -(4.0 * wm1 - wm2) / 2.0;  // ∂w/∂k|_wall (頂壁法向反向)*/
-        du_dk = -(um1) ;  // ∂u/∂k|_wall //
-        dv_dk = -(vm1) ;  // ∂v/∂k|_wall //
-        dw_dk = -(wm1) ;  // ∂w/∂k|_wall //
         rho_wall = rhom1;
     }
 
