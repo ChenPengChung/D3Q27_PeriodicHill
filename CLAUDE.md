@@ -17,11 +17,19 @@
 
 ### dt 與 tau 關係
 ```c
-// variables.h: dt, tau 是 runtime 變數 (Phase 3 Imamura CFL time step)
-extern double dt;   // 全域時間步長
-extern double tau;  // 鬆弛時間
-#define niu ((tau-0.5)/3.0*dt)
-#define Uref (Re*niu)
+// variables.h: dt 是 compile-time #define, dt_global 是 runtime 全域時間步長
+#define dt minSize               // 直角坐標系相容 (compile-time)
+double dt_global;                 // 曲線坐標系 CFL 全域時間步 (runtime, MPI_Allreduce MIN)
+double omega_global;              // 全域鬆弛頻率 = 3*niu/dt_global + 0.5
+double omegadt_global;            // = omega_global * dt_global
+#define niu (Uref/Re)             // 運動黏度
+#define Uref 0.17320508075       // 參考速度 (固定值)
+```
+
+### 全域變數 (main.cu)
+```c
+double Ub_avg_global = 0.0;       // Bcast 後的 u_bulk (rank 0 j=3 截面), 供 monitor.h 使用
+double *Force_h, *Force_d;        // 驅動外力
 ```
 
 ### 網格參數 (variables.h)
@@ -31,11 +39,11 @@ extern double tau;  // 鬆弛時間
 #define LZ 3.036    // 法向長度
 #define NX 32       // 流向格數
 #define NY 128      // 展向格數 (4 GPU 分割: jp=4)
-#define NZ 64       // 法向格數
+#define NZ 128      // 法向格數
 #define jp 4        // MPI rank 數 = GPU 數
 #define NX6 (NX+7)  // 含 ghost = 39
 #define NYD6 (NY/jp+7) // 每 rank 含 ghost = 39
-#define NZ6 (NZ+6)  // 含 ghost = 70
+#define NZ6 (NZ+6)  // 含 ghost = 134
 #define CFL 0.6
 #define minSize ((LZ-1.0)/(NZ6-6)*CFL)
 #define NT 32       // CUDA block size x
@@ -52,17 +60,23 @@ extern double tau;  // 鬆弛時間
 
 | 檔案 | 行數 | 說明 |
 |------|------|------|
-| `main.cu` | 399 | 主程式：初始化→預計算→時間迴圈→輸出 |
-| `variables.h` | 109 | 所有 #define 常數、extern dt/tau |
-| `common.h` | 95 | CHECK_CUDA/CHECK_MPI 巨集 |
-| `memory.h` | 202 | GPU 記憶體配置/釋放 |
-| `evolution.h` | 191 | kernel 調度 + Launch_CollisionStreaming() |
-| `gilbm/evolution_gilbm.h` | 553 | **完整 4-step kernel** (已完成) |
-| `gilbm/interpolation_gilbm.h` | 55 | Intrpl7, lagrange_7point_coeffs, compute_feq_alpha |
-| `gilbm/boundary_conditions.h` | 100 | NeedsBoundaryCondition, ChapmanEnskogBC |
-| `gilbm/precompute.h` | 513 | δη/δξ/δζ 預計算 |
-| `gilbm/metric_terms.h` | 412 | dk_dz, dk_dy 度量項計算 |
-| `gilbm/diagnostic_gilbm.h` | 512 | Phase 1.5 診斷測試 |
+| `main.cu` | 498 | 主程式：初始化→預計算→時間迴圈→輸出 |
+| `variables.h` | 102 | 所有 #define 常數 (dt, Uref, Re, CFL...) |
+| `common.h` | 90 | CHECK_CUDA/CHECK_MPI 巨集 |
+| `memory.h` | 207 | GPU 記憶體配置/釋放 |
+| `evolution.h` | 227 | kernel 調度 + Launch_CollisionStreaming() + Launch_ModifyForcingTerm() |
+| `monitor.h` | 30 | 監測點輸出 + Ustar_Force_record.dat |
+| `communication.h` | 275 | MPI ISend/IRecv 邊界交換 |
+| `initialization.h` | 195 | 網格生成 + 流場初始化 |
+| `fileIO.h` | 663 | VTK 輸出 + restart 讀寫 |
+| `statistics.h` | 251 | 時間平均統計 |
+| `model.h` | 75 | D3Q19 速度模型定義 |
+| `gilbm/evolution_gilbm.h` | 572 | **完整 4-step kernel** (已完成) |
+| `gilbm/interpolation_gilbm.h` | 48 | Intrpl7, lagrange_7point_coeffs, compute_feq_alpha |
+| `gilbm/boundary_conditions.h` | 99 | NeedsBoundaryCondition, ChapmanEnskogBC |
+| `gilbm/precompute.h` | 513 | δη/δξ/δζ 預計算 + ComputeGlobalTimeStep |
+| `gilbm/metric_terms.h` | 419 | dk_dz, dk_dy 度量項計算 |
+| `gilbm/diagnostic_gilbm.h` | 510 | Phase 1.5 診斷測試 |
 | `Claude_GILBM.md` | 399 | 完整理論推導文件 |
 
 ### Include 順序 (main.cu)
@@ -241,8 +255,9 @@ __device__ double ChapmanEnskogBC(int alpha, double rho_wall,
 
 ### evolution_gilbm.h 核心函數
 ```cpp
-// 計算 stencil 起始點，含邊界 clamping
-// k 方向: bk ∈ [3, NZ6-10] (確保 bk+6 = NZ6-4，stencil 不超出壁面)
+// 計算 stencil 起始點，含邊界 clamping (Buffer=3)
+// bk ∈ [3, NZ6-10] (確保 bk+6 ≤ NZ6-4，stencil 不超出壁面)
+// bi ∈ [0, NX6-7], bj ∈ [0, NYD6-7]
 __device__ void compute_stencil_base(int i, int j, int k, int &bi, int &bj, int &bk);
 
 // 讀取 19 個 f_new 計算宏觀量
@@ -284,9 +299,20 @@ Launch_CollisionStreaming(f_old[19], f_new[19]):
   3. Buffer kernel (j=NYD6-7, stream1)
   4. AccumulateUbulk (stream1)
   5. Full kernel (全 j, stream0)
-  6. MPI ISend/IRecv y 方向邊界交換
+  6. MPI ISend/IRecv y 方向邊界交換 (全 19 方向)
   7. MPI_Waitall
-  8. periodicSW (x 方向週期邊界)
+  8. periodicSW (x 方向週期邊界, 含 feq_d 19 planes)
+```
+
+### Launch_ModifyForcingTerm() (每 NDTFRC=1000 步)
+```
+1. cudaMemcpy(Ub_avg_d → Ub_avg_h)
+2. Host 端累加 Ub_avg (j=3 截面, k=3..NZ6-4, i=3..NX6-5)
+3. MPI_Bcast(&Ub_avg, root=0)  // ★ 只用 rank 0 的值 (山丘頂截面)
+4. Ub_avg_global = Ub_avg       // 存入全域變數 (供 monitor.h 使用)
+5. PI-like Force controller (asymmetric gain, Force≥0 clamp, Ma brake)
+6. ★ 所有 rank 使用相同 Ub_avg → 計算出相同 Force (天然同步)
+7. cudaMemcpy(Force_h → Force_d)
 ```
 
 ### 時間迴圈 (main.cu)
@@ -295,7 +321,7 @@ for step = 0..loop:
     Launch_CollisionStreaming(ft, fd)  // 偶數步
     Launch_CollisionStreaming(fd, ft)  // 奇數步 (step += 1)
     每 NDTFRC 步: Launch_ModifyForcingTerm()
-    每 NDTMIT 步: Launch_Monitor()
+    每 NDTMIT 步: Launch_Monitor()  // 輸出 Ustar_Force_record.dat
     每 1000 步: VTK 輸出
     每步: 全域質量守恆修正
 ```
@@ -309,7 +335,7 @@ for step = 0..loop:
 | 部分 | 狀態 | 備註 |
 |------|------|------|
 | `__constant__` 宣告 | ✅ | GILBM_e, GILBM_W, GILBM_dt, delta_eta/xi |
-| `compute_stencil_base()` | ✅ | 含邊界 clamping (k: [2, NZ6-9]) |
+| `compute_stencil_base()` | ✅ | 含邊界 clamping (bk: [3, NZ6-10]) |
 | `compute_macroscopic_at()` | ✅ | D3Q19 宏觀量計算 |
 | **Step 1: 插值 + Streaming** | ✅ | 7pt Lagrange 三步張量積, wall BC |
 | **Step 1.5: 宏觀量 + feq** | ✅ | 質量修正 + feq_d + rho/u/v/w_out |
@@ -321,6 +347,26 @@ for step = 0..loop:
 - 所有診斷測試通過 (Phase 0, 1.5, 2, 3, 4)
 - 已可完整運行，VTK 輸出正常
 - Force driving 已啟用，Ub_avg 從 0 開始增長
+
+### MPI 同步修正（已完成）
+
+#### 問題 1: dt_global 各 rank 不一致
+- **發現**: 每個 rank 只掃描自己的 j 範圍計算 `ComputeGlobalTimeStep()` → 壁面 rank (0,3) 得小 dt (~3.45e-3)，中間 rank (1,2) 得大 dt (~8.53e-3)
+- **影響**: FTT 計算不一致 (3.99 vs 9.86)，位移量不同，LTS 加速因子錯誤
+- **修正 (main.cu L179-196)**: `double dt_rank = ComputeGlobalTimeStep(...)` → `MPI_Allreduce(&dt_rank, &dt_global, ..., MPI_MIN, ...)`, rank 0 輸出最終值
+- **驗證**: `GILBM_dt` (__constant__) 在 `MPI_Allreduce` 之後設定，所有 GPU 使用正確的全域 MIN
+
+#### 問題 2: Ub_avg 各 rank 數值不同
+- **發現**: `AccumulateUbulk` kernel 只在 j=3 截面累加 (gridDim.y=1, blockDim.y=1 → j = startj + 0 + 3 = 3)。每個 rank 的 j=3 對應不同物理 y 位置，只有 rank 0 的 j=3 = 山丘頂入口截面具有物理意義
+- **修正 (evolution.h L168-172)**: `MPI_Bcast(&Ub_avg, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD)` → 所有 rank 使用 rank 0 的 Ub_avg
+- **附帶**: 存入 `Ub_avg_global` 全域變數，供 `Launch_Monitor()` (monitor.h) 使用
+
+#### 問題 3: Force 同步
+- **舊做法**: `MPI_Reduce(Force_h, SUM, root=0) / jp + MPI_Bcast` → 平均各 rank 的不同 Force 值
+- **新做法**: 移除 Reduce+Bcast。所有 rank 使用相同 Ub_avg (Fix 2) → 計算出相同 Force_h[0] → 天然同步
+
+#### 問題 4: printf 多行輸出
+- **修正**: `Launch_ModifyForcingTerm()` 中 printf 加 `if (myid == 0)` guard，從每步 4 行輸出變為 1 行
 
 ### 已完成的驗證 (Audit)
 - **feq 審計**: 確認 `compute_feq_alpha` 在曲線坐標 GILBM 中不需 Jacobian 修正
@@ -345,7 +391,7 @@ C_α = -ω·Δt × { 6 項 tensor 展開 }
     = -omega*dt × Σ_α,β [3·c_iα·c_iβ - δ_αβ] · (du_α/dk)·(dk/dx_β)
 ```
 - 係數 3 = 1/c_s^2 (c=1 時 c_s²=1/3 → 1/c_s^2=3)；c≠1 時為 9·c_iα·c_iβ - 3·δ_αβ
-- `du/dk|wall = (4·u[k±1] - u[k±2]) / 2` (二階單邊差分, u[wall]=0)
+- `du/dk|wall = u[k±1]` (一階差分, u[wall]=0; 二階版本 `(4·u[k±1] - u[k±2])/2` 已註解保留)
 - `rho_wall = rho[k=4]` (零法向壓力梯度近似, 壁面 k=3)
 - dk/dx = 0 → 只有 β=y,z 存活 → 3α × 2β = 6 項
 
