@@ -59,6 +59,23 @@ __global__ void periodicSW(
 }
 
 
+// ===== Time-average accumulation kernel (GPU-side, every physical step) =====
+__global__ void AccumulateTavg_Kernel(double *v_tavg, double *w_tavg,
+                                      const double *v_src, const double *w_src, int N) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < N) {
+        v_tavg[idx] += v_src[idx];
+        w_tavg[idx] += w_src[idx];
+    }
+}
+
+void Launch_AccumulateTavg() {
+    const int N = NX6 * NYD6 * NZ6;
+    const int block = 256;
+    const int grid = (N + block - 1) / block;
+    AccumulateTavg_Kernel<<<grid, block>>>(v_tavg_d, w_tavg_d, v, w, N);
+}
+
 __global__ void AccumulateUbulk(
     double *Ub_avg,     double *v,
     double *x,          double *z  )

@@ -352,9 +352,10 @@ void InitFromMergedVTK(const char* vtk_path) {
         CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
     }
 
-    // 解析 header，讀取 step 和 Force 值
+    // 解析 header，讀取 step, Force, tavg_count 值
     double force_from_vtk = -1.0;
     int step_from_vtk = -1;
+    int tavg_count_from_vtk = 0;
     string vtk_line;
     while (getline(vtk_in, vtk_line)) {
         // 嘗試從 header 讀取 step (格式: "... step=50001 ...")
@@ -366,6 +367,11 @@ void InitFromMergedVTK(const char* vtk_path) {
         size_t fpos = vtk_line.find("Force=");
         if (fpos != string::npos) {
             sscanf(vtk_line.c_str() + fpos + 6, "%lf", &force_from_vtk);
+        }
+        // 嘗試從 header 讀取 tavg_count (格式: "... tavg_count=1234")
+        size_t tpos = vtk_line.find("tavg_count=");
+        if (tpos != string::npos) {
+            sscanf(vtk_line.c_str() + tpos + 11, "%d", &tavg_count_from_vtk);
         }
         if (vtk_line.find("VECTORS") != string::npos) break;
     }
@@ -396,6 +402,81 @@ void InitFromMergedVTK(const char* vtk_path) {
         }
     }}}
     vtk_in.close();
+
+    // ========== 讀取時間平均場 (v_time_avg, w_time_avg) ==========
+    // VTK 中存的是已除以 count 的平均值; 讀入 v_tavg_h/w_tavg_h 暫存平均值
+    // main.cu 稍後會乘回 tavg_count 得到累加和
+    if (tavg_count_from_vtk > 0 && v_tavg_h != NULL && w_tavg_h != NULL) {
+        // 重新開檔，跳過所有東西直到找到 v_time_avg
+        ifstream vtk_tavg(vtk_path);
+        string line_tavg;
+        bool found_vtavg = false, found_wtavg = false;
+
+        // 搜尋 v_time_avg SCALARS section
+        while (getline(vtk_tavg, line_tavg)) {
+            if (line_tavg.find("SCALARS v_time_avg") != string::npos) {
+                getline(vtk_tavg, line_tavg);  // skip LOOKUP_TABLE line
+                found_vtavg = true;
+                break;
+            }
+        }
+        if (found_vtavg) {
+            double val;
+            for (int k = 0; k < nzLocal; k++) {
+            for (int jg = 0; jg < nyGlobal; jg++) {
+            for (int i = 0; i < nxLocal; i++) {
+                vtk_tavg >> val;
+                if (jg >= jg_start && jg <= jg_end) {
+                    int j_local = jg - jg_start;
+                    int j  = j_local + 3;
+                    int kk = k + 3;
+                    int ii = i + 3;
+                    int index = j * NX6 * NZ6 + kk * NX6 + ii;
+                    v_tavg_h[index] = val;  // averaged value (will be × count in main.cu)
+                }
+            }}}
+        }
+
+        // 搜尋 w_time_avg SCALARS section (繼續從同一位置讀取)
+        while (getline(vtk_tavg, line_tavg)) {
+            if (line_tavg.find("SCALARS w_time_avg") != string::npos) {
+                getline(vtk_tavg, line_tavg);  // skip LOOKUP_TABLE line
+                found_wtavg = true;
+                break;
+            }
+        }
+        if (found_wtavg) {
+            double val;
+            for (int k = 0; k < nzLocal; k++) {
+            for (int jg = 0; jg < nyGlobal; jg++) {
+            for (int i = 0; i < nxLocal; i++) {
+                vtk_tavg >> val;
+                if (jg >= jg_start && jg <= jg_end) {
+                    int j_local = jg - jg_start;
+                    int j  = j_local + 3;
+                    int kk = k + 3;
+                    int ii = i + 3;
+                    int index = j * NX6 * NZ6 + kk * NX6 + ii;
+                    w_tavg_h[index] = val;  // averaged value
+                }
+            }}}
+        }
+
+        vtk_tavg.close();
+
+        if (found_vtavg && found_wtavg) {
+            time_avg_count = tavg_count_from_vtk;
+            if (myid == 0)
+                printf("  VTK restart: time-average restored (tavg_count=%d)\n", time_avg_count);
+        } else {
+            time_avg_count = 0;
+            if (myid == 0)
+                printf("  VTK restart: v_time_avg/w_time_avg not found, starting fresh (tavg_count=0)\n");
+        }
+    } else {
+        if (myid == 0 && tavg_count_from_vtk == 0)
+            printf("  VTK restart: no tavg_count in header, starting fresh.\n");
+    }
 
     // ========== x-direction 週期性邊界填充 buffer layer ==========
     // periodicSW 邏輯: left i=0,1,2 ← i=32,33,34; right i=36,37,38 ← i=4,5,6

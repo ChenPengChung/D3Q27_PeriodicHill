@@ -203,7 +203,7 @@
                                    "1256",
                                    "-batch",
                                    "chenpengchung@140.114.58.87",
-                                   "ssh cfdlab-ib${input:nodeFor87} \u0027cd /home/chenpengchung/D3Q27_PeriodicHill \u0026\u0026 nvcc main.cu -arch=sm_35 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out \u0026\u0026 nohup mpirun -np ${input:gpuCount} /usr/local/cuda-10.2/bin/nsys profile -t cuda,nvtx -o /home/chenpengchung/D3Q27_PeriodicHill/nsys_rank%q{OMPI_COMM_WORLD_RANK} --duration=600 -f true ./a.out \u003e log$(date +%Y%m%d) 2\u003e\u00261 \u0026\u0027"
+                                   "ssh cfdlab-ib${input:nodeFor87} \u0027cd /home/chenpengchung/D3Q27_PeriodicHill \u0026\u0026 nvcc main.cu -arch=sm_35 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out \u0026\u0026 nohup mpirun -np ${input:gpuCount} ./a.out \u003e log$(date +%Y%m%d) 2\u003e\u00261 \u0026\u0027"
                                ],
                       "group":  {
                                     "kind":  "build",
@@ -227,7 +227,7 @@
                                    "1256",
                                    "-batch",
                                    "chenpengchung@140.114.58.154",
-                                   "ssh cfdlab-ib${input:nodeFor154} \u0027cd /home/chenpengchung/D3Q27_PeriodicHill \u0026\u0026 nvcc main.cu -arch=sm_35 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out \u0026\u0026 nohup mpirun -np ${input:gpuCount} /usr/local/cuda-10.2/bin/nsys profile -t cuda,nvtx -o /home/chenpengchung/D3Q27_PeriodicHill/nsys_rank%q{OMPI_COMM_WORLD_RANK} --duration=600 -f true ./a.out \u003e log$(date +%Y%m%d) 2\u003e\u00261 \u0026\u0027"
+                                   "ssh cfdlab-ib${input:nodeFor154} \u0027cd /home/chenpengchung/D3Q27_PeriodicHill \u0026\u0026 nvcc main.cu -arch=sm_35 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out \u0026\u0026 nohup mpirun -np ${input:gpuCount} ./a.out \u003e log$(date +%Y%m%d) 2\u003e\u00261 \u0026\u0027"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -267,7 +267,7 @@
                                    "1256",
                                    "-batch",
                                    "chenpengchung@140.114.58.87",
-                                   "ssh cfdlab-ib${input:nodeFor87} \u0027cd /home/chenpengchung/D3Q27_PeriodicHill \u0026\u0026 nohup mpirun -np 4 /usr/local/cuda-10.2/bin/nsys profile -t cuda,nvtx -o /home/chenpengchung/D3Q27_PeriodicHill/nsys_rank%q{OMPI_COMM_WORLD_RANK} --duration=600 -f true ./a.out \u003e log$(date +%Y%m%d) 2\u003e\u00261 \u0026\u0027"
+                                   "ssh cfdlab-ib${input:nodeFor87} \u0027cd /home/chenpengchung/D3Q27_PeriodicHill \u0026\u0026 nohup mpirun -np 4 ./a.out \u003e log$(date +%Y%m%d) 2\u003e\u00261 \u0026\u0027"
                                ],
                       "presentation":  {
                                            "reveal":  "always",
@@ -287,7 +287,7 @@
                                    "1256",
                                    "-batch",
                                    "chenpengchung@140.114.58.87",
-                                   "ssh cfdlab-ib${input:nodeFor87} \u0027cd /home/chenpengchung/D3Q27_PeriodicHill \u0026\u0026 nohup mpirun -np 8 /usr/local/cuda-10.2/bin/nsys profile -t cuda,nvtx -o /home/chenpengchung/D3Q27_PeriodicHill/nsys_rank%q{OMPI_COMM_WORLD_RANK} --duration=600 -f true ./a.out \u003e log$(date +%Y%m%d) 2\u003e\u00261 \u0026\u0027"
+                                   "ssh cfdlab-ib${input:nodeFor87} \u0027cd /home/chenpengchung/D3Q27_PeriodicHill \u0026\u0026 nohup mpirun -np 8 ./a.out \u003e log$(date +%Y%m%d) 2\u003e\u00261 \u0026\u0027"
                                ],
                       "presentation":  {
                                            "reveal":  "always",

@@ -88,10 +88,11 @@ double  *Force_h,   *Force_d;
 
 double *rho_modify_h, *rho_modify_d;
 
-// Time-average accumulation (host-side, for VTK output)
-// v = streamwise, w = wall-normal; accumulated every outer iteration
-double *v_tavg_h = NULL, *w_tavg_h = NULL;
-int time_avg_count = 1 ;
+// Time-average accumulation
+// v = streamwise, w = wall-normal; GPU-side accumulation every physical step
+double *v_tavg_h = NULL, *w_tavg_h = NULL;   // host (for VTK output)
+double *v_tavg_d = NULL, *w_tavg_d = NULL;   // device (accumulated on GPU)
+int time_avg_count = 0 ;
 
 int nProcs, myid;
 
@@ -162,6 +163,15 @@ int main(int argc, char *argv[])
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
     AllocateMemory();
+
+    // Allocate time-average accumulation arrays early (before possible VTK restart read)
+    {
+        size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
+        v_tavg_h = (double*)calloc(nTotal, sizeof(double));
+        w_tavg_h = (double*)calloc(nTotal, sizeof(double));
+        time_avg_count = 0;
+    }
+
     //pre-check whether the directories exit or not
     PreCheckDir();
     CreateDataType();
@@ -387,14 +397,27 @@ int main(int argc, char *argv[])
     } 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
-    // Allocate time-average accumulation arrays (zero-initialized via calloc)
-    {
-        size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
-        v_tavg_h = (double*)calloc(nTotal, sizeof(double));
-        w_tavg_h = (double*)calloc(nTotal, sizeof(double));
-        time_avg_count = 1 ;
-        if (myid == 0) printf("Time-average arrays allocated (%.1f MB each).\n",
-                               nTotal * sizeof(double) / 1.0e6);
+    // Restore time-average from VTK restart (if available)
+    if (restart_step > 0 && time_avg_count > 0) {
+        // v_tavg_h/w_tavg_h contain averaged values from VTK; multiply by count to get cumulative sums
+        const size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
+        for (size_t idx = 0; idx < nTotal; idx++) {
+            v_tavg_h[idx] *= (double)time_avg_count;
+            w_tavg_h[idx] *= (double)time_avg_count;
+        }
+        // Copy accumulated sums to GPU
+        const size_t tavg_bytes = nTotal * sizeof(double);
+        CHECK_CUDA( cudaMemcpy(v_tavg_d, v_tavg_h, tavg_bytes, cudaMemcpyHostToDevice) );
+        CHECK_CUDA( cudaMemcpy(w_tavg_d, w_tavg_h, tavg_bytes, cudaMemcpyHostToDevice) );
+        if (myid == 0)
+            printf("Time-average restored from VTK: tavg_count=%d, copied to GPU (%.1f MB each).\n",
+                   time_avg_count, tavg_bytes / 1.0e6);
+    } else {
+        if (myid == 0) {
+            size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
+            printf("Time-average arrays allocated (%.1f MB each), starting fresh.\n",
+                   nTotal * sizeof(double) / 1.0e6);
+        }
     }
 
     CHECK_CUDA( cudaEventRecord(start,0) );
@@ -466,6 +489,8 @@ int main(int argc, char *argv[])
         if( (int)TBSWITCH ) { Launch_TurbulentSum( fd ); }
 
         CHECK_CUDA( cudaDeviceSynchronize() );
+        Launch_AccumulateTavg();  // accumulate sub-step 1
+        time_avg_count++;
         step += 1;
         accu_num += 1;
 
@@ -475,6 +500,8 @@ int main(int argc, char *argv[])
         if( (int)TBSWITCH ) { Launch_TurbulentSum( ft ); }
 
         CHECK_CUDA( cudaDeviceSynchronize() );
+        Launch_AccumulateTavg();  // accumulate sub-step 2
+        time_avg_count++;
 
         if ( myid == 0 && step%5000 == 1 ) {
             CHECK_CUDA( cudaEventRecord( stop1,0 ) );
@@ -504,6 +531,10 @@ int main(int argc, char *argv[])
         // 注意: step 在迴圈中是奇數 (1,3,5...)，所以用 % 1000 == 1
         if ( step % 1000 == 1 ) {
             SendDataToCPU( ft );
+            // Copy GPU tavg → host for VTK output
+            const size_t tavg_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
+            CHECK_CUDA( cudaMemcpy(v_tavg_h, v_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
+            CHECK_CUDA( cudaMemcpy(w_tavg_h, w_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
             fileIO_velocity_vtk_merged( step );
         }
 
@@ -528,16 +559,7 @@ int main(int argc, char *argv[])
                 cudaMemcpy(rho_modify_d, rho_modify_h, sizeof(double), cudaMemcpyHostToDevice);
             }
 
-        // Time-average accumulation (每 outer iteration = 每 2 physical steps)
-        // v_h_p/w_h_p 已由上方 SendDataToCPU(ft) 更新至 CPU
-        {
-            const int nTotal = NX6 * NYD6 * NZ6;
-            for (int idx = 0; idx < nTotal; idx++) {
-                v_tavg_h[idx] += v_h_p[idx];
-                w_tavg_h[idx] += w_h_p[idx];
-            }
-            time_avg_count++;
-        }
+        // (Time-average accumulation moved to GPU: Launch_AccumulateTavg after each sub-step)
 
         //Check Mass Conservation + NaN early stop
         if ( step % 100 == 1){

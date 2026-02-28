@@ -115,6 +115,15 @@ void AllocateMemory() {
         CHECK_CUDA( cudaMemset(omegadt_local_d, 0, omega_bytes) );
     }
 
+    // Time-average accumulation (GPU-side)
+    {
+        size_t tavg_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
+        CHECK_CUDA( cudaMalloc(&v_tavg_d, tavg_bytes) );
+        CHECK_CUDA( cudaMalloc(&w_tavg_d, tavg_bytes) );
+        CHECK_CUDA( cudaMemset(v_tavg_d, 0, tavg_bytes) );
+        CHECK_CUDA( cudaMemset(w_tavg_d, 0, tavg_bytes) );
+    }
+
     nBytes = NZ6 * sizeof(double);
     CHECK_CUDA( cudaMallocHost( (void**)&xi_h, nBytes ) );
     CHECK_CUDA( cudaMalloc( &xi_d, nBytes ) );
@@ -179,6 +188,8 @@ void FreeSource() {
     FreeDeviceArray(2,  dt_local_d, omega_local_d);
     // GILBM two-pass arrays
     FreeDeviceArray(3,  f_pc_d, feq_d, omegadt_local_d);
+    // Time-average accumulation (GPU)
+    FreeDeviceArray(2,  v_tavg_d, w_tavg_d);
 
     for( int i = 0; i < 3; i++ ){
         FreeHostArray(  3,  Xdep_h[i], Ydep_h[i], Zdep_h[i]);
