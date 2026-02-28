@@ -21,7 +21,7 @@
 #define     NZ6    (NZ+6)
 
 //coefficient for non-uniform grid
-#define     CFL                 0.75
+#define     CFL                 0.5
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
 //1 : Yes,  0 : No
 #define     Uniform_In_Xdir     1
@@ -31,6 +31,9 @@
 #define     LXi        (10.0)
 
 #define     TBSWITCH            (1)
+
+// Collision operator: 0=BGK/SRT, 1=MRT (Multi-Relaxation-Time)
+#define     USE_MRT             1
 
 //#define     Re         300
 //#define     U_0        0.1018591
@@ -62,7 +65,7 @@
 /****************** SECONDARY PARAMETER ******************/
 #define     cs          (1.0/1.732050807568877)
 #define     dt          minSize //因為直角坐標系中，c=1
-#define     Uref        0.05
+#define     Uref        0.0583  //不可以任意提高，否則變向雷諾數降低
 //[Senior Data] : Re700:0.0583 , Re14002800:0.0776 , Re5600:0.0464 , Re10595:0.0878 <=0.17320508075 //<= 0.17320508075
 #define     niu         Uref/Re
 // Flow-through time: T_FT = L / Uref (lattice time units)

@@ -36,6 +36,13 @@ __constant__ double GILBM_dt;
 __constant__ double GILBM_delta_eta[19];
 __constant__ double GILBM_delta_xi[19];
 
+#if USE_MRT
+// MRT transformation matrix M[19][19] and inverse M⁻¹[19][19]
+// Values from MRT_Matrix.h (d'Humières 2002 D3Q19)
+__constant__ double GILBM_M[19][19];
+__constant__ double GILBM_Mi[19][19];
+#endif
+
 // Include sub-modules (after __constant__ declarations they depend on)
 #include "interpolation_gilbm.h"
 #include "boundary_conditions.h"
@@ -82,6 +89,76 @@ __device__ __forceinline__ void compute_macroscopic_at(
     v_out = (f[3]+f[7]+f[8]+f[15]+f[17] - (f[4]+f[9]+f[10]+f[16]+f[18])) / rho_out;
     w_out = (f[5]+f[11]+f[12]+f[15]+f[16] - (f[6]+f[13]+f[14]+f[17]+f[18])) / rho_out;
 }
+//使用在 計算a粒子碰撞前插植後一般態分佈函數重估陣列 後面
+#if USE_MRT
+// ============================================================================
+// MRT collision device function for GILBM with Local Time Stepping
+//
+// Standard MRT: f* = f̃ - M⁻¹ S (M·f̃ - M·feq)
+//   where S = diag(s0..s18) is the relaxation rate matrix
+//
+// LTS localization: only viscosity-related moments use local tau
+//   s9 = s11 = s13 = s14 = s15 = 1/tau_A  (LOCAL, from omega_A)
+//   all other s_i = fixed global constants (same as MRT_Matrix.h)
+//
+// Body force: first-order Guo (consistent with original MRT_Process.h)
+//   f_q += w_q * 3 * e_y[q] * Force * dt_A
+// ============================================================================
+__device__ void gilbm_mrt_collision(
+    double f_re[19],          // in/out: re-estimated distribution → post-collision
+    const double feq_B[19],   // input: equilibrium distribution at node B
+    double s_visc,            // 1/omega_A = 1/tau_A (local viscosity relaxation rate)
+    double dt_A,              // local time step at point A (for body force scaling)
+    double Force0             // body force magnitude (y-direction streamwise)
+) {
+    // ---- Step 3a: Compute non-equilibrium moments ----
+    // m_neq[i] = Σ_q M[i][q] × (f̃[q] - feq[q])
+    double m_neq[19];
+    for (int i = 0; i < 19; i++) {
+        double sum = 0.0;
+        for (int q = 0; q < 19; q++)
+            sum += GILBM_M[i][q] * (f_re[q] - feq_B[q]);
+        m_neq[i] = sum;
+    }
+
+    // ---- Step 3b: Apply per-moment relaxation rates ----
+    // dm[i] = s_i × m_neq[i]
+    // Conserved moments (s=0): dm[0]=dm[3]=dm[5]=dm[7]=0
+    // Viscosity moments: s_visc = 1/tau_A (LOCAL)
+    // Other moments: fixed global values (MRT_Matrix.h Relaxation)
+    double dm[19];
+    dm[0]  = 0.0;                    // s0  = 0.0 (conserved: density)
+    dm[1]  = 1.19  * m_neq[1];      // s1  = 1.19 (energy)
+    dm[2]  = 1.4   * m_neq[2];      // s2  = 1.4  (energy square)
+    dm[3]  = 0.0;                    // s3  = 0.0 (conserved: momentum-x)
+    dm[4]  = 1.2   * m_neq[4];      // s4  = 1.2  (energy flux)
+    dm[5]  = 0.0;                    // s5  = 0.0 (conserved: momentum-y)
+    dm[6]  = 1.2   * m_neq[6];      // s6  = 1.2  (energy flux)
+    dm[7]  = 0.0;                    // s7  = 0.0 (conserved: momentum-z)
+    dm[8]  = 1.2   * m_neq[8];      // s8  = 1.2  (energy flux)
+    dm[9]  = s_visc * m_neq[9];     // s9  = 1/tau_A ★ LOCAL (stress p_xx-p_yy)
+    dm[10] = 1.4   * m_neq[10];     // s10 = 1.4
+    dm[11] = s_visc * m_neq[11];    // s11 = 1/tau_A ★ LOCAL (stress p_ww)
+    dm[12] = 1.4   * m_neq[12];     // s12 = 1.4
+    dm[13] = s_visc * m_neq[13];    // s13 = 1/tau_A ★ LOCAL (stress p_xy)
+    dm[14] = s_visc * m_neq[14];    // s14 = 1/tau_A ★ LOCAL (stress p_yz)
+    dm[15] = s_visc * m_neq[15];    // s15 = 1/tau_A ★ LOCAL (stress p_xz)
+    dm[16] = 1.5   * m_neq[16];     // s16 = 1.5 (kinetic 3rd-order)
+    dm[17] = 1.5   * m_neq[17];     // s17 = 1.5
+    dm[18] = 1.5   * m_neq[18];     // s18 = 1.5
+
+    // ---- Step 3c: Inverse transform + body force ----
+    // f*[q] = f̃[q] - Σ_i Mi[q][i] × dm[i] + force_source[q]
+    for (int q = 0; q < 19; q++) {
+        double correction = 0.0;
+        for (int i = 0; i < 19; i++)
+            correction += GILBM_Mi[q][i] * dm[i];
+        f_re[q] -= correction;
+        // Body force: w_q × 3 × e_y[q] × Force × dt_A (y=streamwise)//adding the discrete force term for each alpha index F_i delta_t
+        f_re[q] += GILBM_W[q] * 3.0 * GILBM_e[q][1] * Force0 * dt_A;
+    }
+}
+#endif // USE_MRT
 
 // ============================================================================
 // Core GILBM 4-step logic (shared by Buffer and Full kernels)
@@ -333,24 +410,91 @@ __device__ void gilbm_compute_point(
     w_out[index] = w_A;
 
     // ==================================================================
-    // STEPS 2+3: Re-estimation (Eq.35) + Collision (Eq.3) per q
+    // STEPS 2+3: Re-estimation (Eq.35) + Collision
+    // 計算 重估陣列 計算 碰撞後陣列 for one point 
     //   Eq.35: f̃_B = feq_B + (f_B - feq_B) × R_AB
     //          R_AB = (ω_A·Δt_A)/(ω_B·Δt_B) = omegadt_A / omegadt_B
-    //   Eq.3:  f*_B = f̃_B - (1/ω_A)(f̃_B - feq_B)
+    //   BGK Eq.3:  f*_B = f̃_B - (1/ω_A)(f̃_B - feq_B)
+    //   MRT:       f*   = f̃ - M⁻¹ S (M·f̃ - M·feq_B)
     //   ω_A = omega_A (code variable), feq_B is per-stencil-node B.
     // ==================================================================
+
+#if USE_MRT
+    // ========== MRT collision: loop structure = for B { all 19 q } ==========
+    // MRT requires all 19 f values at each stencil node B for moment transformation.
+    // Re-estimation stays in distribution space (same R_AB as BGK).
+    // Collision uses M⁻¹ S (m - meq) with local s_visc for viscosity moments.
+
+    // Pre-check BC directions for all 19 q
+    bool need_bc_arr[19];
+    need_bc_arr[0] = false;  // q=0 (rest) is never BC
+    for (int q = 1; q < 19; q++) {
+        need_bc_arr[q] = false;
+        if (is_bottom) need_bc_arr[q] = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
+        else if (is_top) need_bc_arr[q] = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
+    }
+
+    double s_visc = 1.0 / omega_A ; //omega_A 作為 relaxation time 直接使用在碰撞矩陣中，作為分佈函數與平衡態分佈函數的前綴
+
+    for (int si = 0; si < 7; si++) {
+        int gi = bi + si; //計算內插成員座標點具體位置 
+        for (int sj = 0; sj < 7; sj++) {
+            int gj = bj + sj; //計算內插成員座標點具體位置 
+            for (int sk = 0; sk < 7; sk++) {
+                int gk = bk + sk;//計算內插成員座標點具體位置  
+                //==========for each interpolation node position 
+                //==========便歷每一個內插成員座標點位置 
+
+                int idx_B = gj * nface + gk * NX6 + gi;
+                int flat  = si * 49 + sj * 7 + sk;
+
+                // ---- Gather all 19 f_B and feq_B at stencil node B ----
+                double f_re_mrt[19], feq_B_arr[19];
+                //在stencil 內部的每點，先寫入19個編號的分布佈函數與平衡態分佈函數 
+                bool ghost_j = (gj < 3 || gj >= NYD6 - 3);
+                     
+                // Ghost zone: compute macroscopic once for all 19 feq
+                double rho_B_g, u_B_g, v_B_g, w_B_g;
+                //若為buffer layer,  則有一個 時序缺陷 | f_new 在 ghost zone 是舊值（MPI 還沒交換）→ feq 滯後一步 |
+                if (ghost_j)
+                    compute_macroscopic_at(f_new_ptrs, idx_B, rho_B_g, u_B_g, v_B_g, w_B_g);
+                //如果是buffer layer 則重新計算，若為interrior ，則直接讀取 
+                for (int q = 0; q < 19; q++) {
+                    f_re_mrt[q] = f_new_ptrs[q][idx_B];
+                    feq_B_arr[q] = ghost_j
+                        ? compute_feq_alpha(q, rho_B_g, u_B_g, v_B_g, w_B_g)
+                        : feq_d[q * GRID_SIZE + idx_B];
+                }
+                //===========此區為逐點操作，但是是所有編號同時一起操作===========
+                // ---- Step 2: Re-estimation (distribution space, same as BGK) ----
+                double omegadt_B = omegadt_local_d[idx_B];
+                double R_AB = omegadt_A / omegadt_B;
+                for (int q = 0; q < 19; q++)
+                    f_re_mrt[q] = feq_B_arr[q] + (f_re_mrt[q] - feq_B_arr[q]) * R_AB;
+
+                // ---- Step 3: MRT collision ----
+                gilbm_mrt_collision(f_re_mrt, feq_B_arr, s_visc, dt_A, Force[0]);
+                //===========此區為逐點操作，但是是所有編號同時一起操作===========
+                // ---- Write back to A's PRIVATE f_pc (skip BC directions) ----
+                //同一個內插成員點要寫回19筆資料 
+                for (int q = 0; q < 19; q++) {
+                    if (!need_bc_arr[q])
+                        f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index] = f_re_mrt[q];
+                }
+            }
+        }
+    }
+
+#else
+    // ========== Original BGK/SRT collision (unchanged) ==========
     for (int q = 0; q < 19; q++) {
         // Skip BC directions: f_pc not needed, f_new already has BC value
         bool need_bc = false;
         if (is_bottom) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
-        //我要讓他>0為true<0為false
         else if (is_top) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
         if (need_bc) continue;
 
         // Body force source term for this q (y-direction pressure gradient)
-        // Streamwise = y in this code (AccumulateUbulk uses v, hill H(y))
-        // S_q = w_q * (e · F) / c_s^2 * dt_A = w_q * 3 * e_y[q] * F[0] * dt_A
-        // Precomputed outside stencil loop: same for all 343 nodes
         double force_source_q = GILBM_W[q] * 3.0 * (double)GILBM_e[q][1] * Force[0] * dt_A;
 
         for (int si = 0; si < 7; si++) {
@@ -368,7 +512,6 @@ __device__ void gilbm_compute_point(
                     // Read feq_B with ghost zone fallback
                     double feq_B;
                     if (gj < 3 || gj >= NYD6 - 3) {
-                        // Ghost zone: compute on-the-fly
                         double rho_B, u_B, v_B, w_B;
                         compute_macroscopic_at(f_new_ptrs, idx_B,
                                                rho_B, u_B, v_B, w_B);
@@ -379,13 +522,12 @@ __device__ void gilbm_compute_point(
 
                     // Read omega_dt at B
                     double omegadt_B = omegadt_local_d[idx_B];
-                    // Eq.35: R_AB = (ω_A·Δt_A)/(ω_B·Δt_B) = omegadt_A / omegadt_B
                     double R_AB = omegadt_A / omegadt_B;
 
                     // Eq.35: Re-estimation
                     double f_re = feq_B + (f_B - feq_B) * R_AB;
 
-                    // Eq.3: Collision with ω_A → f* = f - (1/ω_A)(f - feq_B)
+                    // Eq.3: BGK Collision
                     f_re -= (1.0 / omega_A) * (f_re - feq_B);
 
                     // Add body force source term
@@ -397,6 +539,7 @@ __device__ void gilbm_compute_point(
             }
         }
     }
+#endif // USE_MRT
 }
 
 // ============================================================================

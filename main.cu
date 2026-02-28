@@ -278,6 +278,20 @@ int main(int argc, char *argv[])
     // Kernel's a_local = dt_A / GILBM_dt scales delta_eta/xi to local dt.
     { double gilbm_dt_val = dt_global;
       CHECK_CUDA( cudaMemcpyToSymbol(GILBM_dt, &gilbm_dt_val, sizeof(double)) ); }
+
+#if USE_MRT
+    // Phase 3.5: MRT transformation matrices → __constant__ memory
+    // ★ 直接使用 MRT_Matrix.h 的 Matrix / Inverse_Matrix 巨集展開為 host 端陣列
+    //   若日後修改 MRT_Matrix.h 的矩陣值，此處自動同步，不需手動複製
+    {
+        Matrix;           // MRT_Matrix.h 巨集 → double M[19][19] = { ... };
+        Inverse_Matrix;   // MRT_Matrix.h 巨集 → double Mi[19][19] = { ... };
+        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_M,  M,  sizeof(M)) );
+        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_Mi, Mi, sizeof(Mi)) );
+        if (myid == 0) printf("GILBM-MRT: M[19x19] and Mi[19x19] copied to __constant__ memory (from MRT_Matrix.h).\n");
+    }
+#endif
+
     // Phase 4: LTS fields to GPU (omega_local is 2D; omegadt_local_d is 3D, filled by Init_OmegaDt_Kernel)
     CHECK_CUDA( cudaMemcpy(dt_local_d,      dt_local_h,      NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaMemcpy(omega_local_d,   omega_local_h,   NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );

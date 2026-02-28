@@ -89,10 +89,8 @@ __device__ double ChapmanEnskogBC(
         (3.0 * ez * ez - 1.0) * dw_dk * dk_dz_val   // ⑥ (3·c_z²−1) · (dw/dk)·(dk/dz)//z->w;z->z
     );
 
-    // 正確 CE 前置因子：3*(τ - 0.5)*Δt = 9ν (物理常數，不隨網格變化)
-    // omega_local 在代碼中 = τ (= 0.5 + 3ν/Δt)，非 1/τ
-    // 舊版誤用 -τ*Δt，比正確值 -3(τ-0.5)*Δt 偏大 τ/[3(τ-0.5)] 倍
-    C_alpha *= -3.0 * (omega_local - 0.5) * localtimestep;
+    
+    C_alpha *= -(omega_local ) * localtimestep; //根據Imamura公式 
     // equilibrium distribution function = GILBM_W[alpha] * rho_wall
     // f_alpha = f_eq * (1 + C_alpha)   (Imamura Eq. A.9)
     double f_eq_atwall = GILBM_W[alpha] * rho_wall;
