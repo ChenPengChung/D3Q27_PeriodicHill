@@ -352,10 +352,16 @@ void InitFromMergedVTK(const char* vtk_path) {
         CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
     }
 
-    // 解析 header，嘗試讀取 Force 值
+    // 解析 header，讀取 step 和 Force 值
     double force_from_vtk = -1.0;
+    int step_from_vtk = -1;
     string vtk_line;
     while (getline(vtk_in, vtk_line)) {
+        // 嘗試從 header 讀取 step (格式: "... step=50001 ...")
+        size_t spos = vtk_line.find("step=");
+        if (spos != string::npos) {
+            sscanf(vtk_line.c_str() + spos + 5, "%d", &step_from_vtk);
+        }
         // 嘗試從 header 讀取 Force (格式: "... Force=1.23456E-04")
         size_t fpos = vtk_line.find("Force=");
         if (fpos != string::npos) {
@@ -364,9 +370,11 @@ void InitFromMergedVTK(const char* vtk_path) {
         if (vtk_line.find("VECTORS") != string::npos) break;
     }
 
-    // 計算本 rank 的 jg 範圍
-    int jg_start = myid * nyLocal;
-    int jg_end   = jg_start + nyLocal - 1;
+    // 計算本 rank 的 jg 範圍 (stride-based, 端點重疊)
+    // rank0: 0~32, rank1: 32~64, rank2: 64~96, rank3: 96~128
+    const int stride = nyLocal - 1;  // = 32 (unique y-points per rank)
+    int jg_start = myid * stride;
+    int jg_end   = jg_start + nyLocal - 1;  // = jg_start + 32
     if (jg_end > nyGlobal - 1) jg_end = nyGlobal - 1;
 
     // 按 VTK 寫入順序讀取: k(outer) → jg(middle) → i(inner)
@@ -512,7 +520,33 @@ void InitFromMergedVTK(const char* vtk_path) {
         }
         CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
     }
+
+    // 立即套用 Anti-windup Force cap (避免前 NDTFRC 步使用過高外力)
+    {
+        double h_eff = (double)LZ - (double)H_HILL;
+        double Force_max = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff) * 3.0;
+        if (Force_h[0] > Force_max) {
+            if (myid == 0)
+                printf("  [ANTI-WINDUP] Force capped on restart: %.5E -> %.5E\n",
+                       Force_h[0], Force_max);
+            Force_h[0] = Force_max;
+        }
+    }
     CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+
+    // 設定續跑起始步 = VTK step (用於顯示和 FTT 計算)
+    // 注意: for-loop 實際從 restart_step+1 (偶數) 開始，以對齊 step%N==1 監測
+    if (step_from_vtk > 0) {
+        restart_step = step_from_vtk;
+        if (myid == 0) {
+            double FTT_restart = (double)restart_step * dt_global / (double)flow_through_time;
+            printf("  Restart step = %d, FTT = %.4f\n", restart_step, FTT_restart);
+        }
+    } else {
+        if (myid == 0)
+            printf("  WARNING: step= not found in VTK header, restarting from step 0.\n");
+        restart_step = 0;
+    }
 
     printf("Rank %d: Initialized from VTK [%s], jg=%d..%d -> local j=%d..%d\n",
            myid, vtk_path, jg_start, jg_end, 3, 3 + (jg_end - jg_start));
@@ -553,6 +587,41 @@ void fileIO_velocity_vtk_merged(int step) {
         idx++;
     }}}
 
+    // 準備本地時間平均資料 (若有累積)
+    double *vt_local = NULL, *wt_local = NULL;
+    if (time_avg_count > 0) {
+        vt_local = (double*)malloc(localPoints * sizeof(double));
+        wt_local = (double*)malloc(localPoints * sizeof(double));
+        double inv_count = 1.0 / (double)time_avg_count;
+        int tidx = 0;
+        for( int k = 3; k < NZ6-3; k++ ){
+        for( int j = 3; j < NYD6-3; j++ ){
+        for( int i = 3; i < NX6-3; i++ ){
+            int index = j*NZ6*NX6 + k*NX6 + i;
+            vt_local[tidx] = v_tavg_h[index] * inv_count;
+            wt_local[tidx] = w_tavg_h[index] * inv_count;
+            tidx++;
+        }}}
+    }
+
+    // Compute instantaneous omega_y = du/dz - dw/dx
+    // Curvilinear: du/dz = dk_dz * du/dk,  dw/dx = (1/dx) * dw/di
+    double *oy_local = (double*)malloc(localPoints * sizeof(double));
+    {
+        double dx_val = (double)LX / (double)(NX6 - 7);
+        double dx_inv = 1.0 / dx_val;
+        const int nface = NX6 * NZ6;
+        int oidx = 0;
+        for (int k = 3; k < NZ6-3; k++) {
+        for (int j = 3; j < NYD6-3; j++) {
+        for (int i = 3; i < NX6-3; i++) {
+            double dkdz = dk_dz_h[j * NZ6 + k];
+            double du_dk = (u_h_p[j*nface + (k+1)*NX6 + i] - u_h_p[j*nface + (k-1)*NX6 + i]) * 0.5;
+            double dw_di = (w_h_p[j*nface + k*NX6 + (i+1)] - w_h_p[j*nface + k*NX6 + (i-1)]) * 0.5;
+            oy_local[oidx++] = dkdz * du_dk - dx_inv * dw_di;
+        }}}
+    }
+
     // 準備本地 z 座標
     int zidx = 0;
     for( int j = 3; j < NYD6-3; j++ ){
@@ -572,13 +641,30 @@ void fileIO_velocity_vtk_merged(int step) {
         w_global = (double*)malloc(gatherPoints * sizeof(double));
         z_global = (double*)malloc(zLocalSize * nProcs * sizeof(double));
     }
-    
+
+    double *vt_global = NULL, *wt_global = NULL;
+    if( myid == 0 && time_avg_count > 0 ) {
+        vt_global = (double*)malloc(gatherPoints * sizeof(double));
+        wt_global = (double*)malloc(gatherPoints * sizeof(double));
+    }
+
+    double *oy_global = NULL;
+    if( myid == 0 ) {
+        oy_global = (double*)malloc(gatherPoints * sizeof(double));
+    }
+
     // 所有 rank 一起呼叫 MPI_Gather
     MPI_Gather(u_local, localPoints, MPI_DOUBLE, u_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(v_local, localPoints, MPI_DOUBLE, v_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(w_local, localPoints, MPI_DOUBLE, w_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(z_local, zLocalSize, MPI_DOUBLE, z_global, zLocalSize, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    
+
+    if (time_avg_count > 0) {
+        MPI_Gather(vt_local, localPoints, MPI_DOUBLE, vt_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(wt_local, localPoints, MPI_DOUBLE, wt_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    }
+    MPI_Gather(oy_local, localPoints, MPI_DOUBLE, oy_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
     // rank 0 輸出合併的 VTK
     if( myid == 0 ) {
         // 計算全域 y 座標 (uniform grid)
@@ -600,7 +686,7 @@ void fileIO_velocity_vtk_merged(int step) {
         }
         
         out << "# vtk DataFile Version 3.0\n";
-        out << "LBM Velocity Field (merged) step=" << step << " Force=" << scientific << setprecision(8) << Force_h[0] << "\n";
+        out << "LBM Velocity Field (merged) step=" << step << " Force=" << scientific << setprecision(8) << Force_h[0] << " tavg_count=" << time_avg_count << "\n";
         out << "ASCII\n";
         out << "DATASET STRUCTURED_GRID\n";
         out << "DIMENSIONS " << nxLocal << " " << nyGlobal << " " << nzLocal << "\n";
@@ -608,18 +694,19 @@ void fileIO_velocity_vtk_merged(int step) {
         // 輸出座標點
         out << "POINTS " << globalPoints << " double\n";
         out << fixed << setprecision(6);
+        const int stride = nyLocal - 1;  // = 32 (unique y-points per rank, overlap=1)
         for( int k = 0; k < nzLocal; k++ ){
         for( int jg = 0; jg < nyGlobal; jg++ ){
         for( int i = 0; i < nxLocal; i++ ){
-            int gpu_id = jg / nyLocal;
+            int gpu_id = jg / stride;
             if( gpu_id >= jp ) gpu_id = jp - 1;
-            int j_local = jg % nyLocal;
-            
+            int j_local = jg - gpu_id * stride;
+
             // z 座標在 gather 後的位置
             int z_gpu_offset = gpu_id * zLocalSize;
             int z_local_idx = j_local * nzLocal + k;
             double z_val = z_global[z_gpu_offset + z_local_idx];
-            
+
             out << x_h[i+3] << " " << y_global_arr[jg+3] << " " << z_val << "\n";
         }}}
         
@@ -631,31 +718,84 @@ void fileIO_velocity_vtk_merged(int step) {
         for( int k = 0; k < nzLocal; k++ ){
         for( int jg = 0; jg < nyGlobal; jg++ ){
         for( int i = 0; i < nxLocal; i++ ){
-            int gpu_id = jg / nyLocal;
+            int gpu_id = jg / stride;
             if( gpu_id >= jp ) gpu_id = jp - 1;
-            int j_local = jg % nyLocal;
-            
+            int j_local = jg - gpu_id * stride;
+
             int gpu_offset = gpu_id * localPoints;
             int local_idx = k * nyLocal * nxLocal + j_local * nxLocal + i;
             int global_idx = gpu_offset + local_idx;
-            
+
             out << u_global[global_idx] << " " << v_global[global_idx] << " " << w_global[global_idx] << "\n";
         }}}
-        
+
+        // 輸出時間平均場 (若有累積)
+        if (time_avg_count > 0) {
+            // v_time_avg (streamwise, y-direction)
+            out << "\nSCALARS v_time_avg double 1\n";
+            out << "LOOKUP_TABLE default\n";
+            for( int k = 0; k < nzLocal; k++ ){
+            for( int jg = 0; jg < nyGlobal; jg++ ){
+            for( int i = 0; i < nxLocal; i++ ){
+                int gpu_id = jg / stride;
+                if( gpu_id >= jp ) gpu_id = jp - 1;
+                int j_local = jg - gpu_id * stride;
+                int gpu_offset = gpu_id * localPoints;
+                int local_idx = k * nyLocal * nxLocal + j_local * nxLocal + i;
+                out << vt_global[gpu_offset + local_idx] << "\n";
+            }}}
+
+            // w_time_avg (wall-normal, z-direction)
+            out << "\nSCALARS w_time_avg double 1\n";
+            out << "LOOKUP_TABLE default\n";
+            for( int k = 0; k < nzLocal; k++ ){
+            for( int jg = 0; jg < nyGlobal; jg++ ){
+            for( int i = 0; i < nxLocal; i++ ){
+                int gpu_id = jg / stride;
+                if( gpu_id >= jp ) gpu_id = jp - 1;
+                int j_local = jg - gpu_id * stride;
+                int gpu_offset = gpu_id * localPoints;
+                int local_idx = k * nyLocal * nxLocal + j_local * nxLocal + i;
+                out << wt_global[gpu_offset + local_idx] << "\n";
+            }}}
+        }
+
+        // omega_y: instantaneous vorticity y-component (du/dz - dw/dx)
+        out << "\nSCALARS omega_y double 1\n";
+        out << "LOOKUP_TABLE default\n";
+        for( int k = 0; k < nzLocal; k++ ){
+        for( int jg = 0; jg < nyGlobal; jg++ ){
+        for( int i = 0; i < nxLocal; i++ ){
+            int gpu_id = jg / stride;
+            if( gpu_id >= jp ) gpu_id = jp - 1;
+            int j_local = jg - gpu_id * stride;
+            int gpu_offset = gpu_id * localPoints;
+            int local_idx = k * nyLocal * nxLocal + j_local * nxLocal + i;
+            out << oy_global[gpu_offset + local_idx] << "\n";
+        }}}
+
         out.close();
-        cout << "Merged VTK output: velocity_merged_" << setfill('0') << setw(6) << step << ".vtk\n";
+        cout << "Merged VTK output: velocity_merged_" << setfill('0') << setw(6) << step << ".vtk";
+        if (time_avg_count > 0) cout << " (tavg_count=" << time_avg_count << ")";
+        cout << "\n";
         
         free(u_global);
         free(v_global);
         free(w_global);
         free(z_global);
         free(y_global_arr);
+        if (vt_global) free(vt_global);
+        if (wt_global) free(wt_global);
+        if (oy_global) free(oy_global);
     }
-    
+
     free(u_local);
     free(v_local);
     free(w_local);
     free(z_local);
+    if (vt_local) free(vt_local);
+    if (wt_local) free(wt_local);
+    free(oy_local);
     
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }

@@ -88,11 +88,15 @@ double  *Force_h,   *Force_d;
 
 double *rho_modify_h, *rho_modify_d;
 
-
+// Time-average accumulation (host-side, for VTK output)
+// v = streamwise, w = wall-normal; accumulated every outer iteration
+double *v_tavg_h = NULL, *w_tavg_h = NULL;
+int time_avg_count = 0;
 
 int nProcs, myid;
 
 int step;
+int restart_step = 0;  // 續跑起始步 (INIT=2 時從 VTK header 解析)
 int accu_num = 0;
 
 int l_nbr, r_nbr;
@@ -368,9 +372,57 @@ int main(int argc, char *argv[])
         }
     } 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
+
+    // Allocate time-average accumulation arrays (zero-initialized via calloc)
+    {
+        size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
+        v_tavg_h = (double*)calloc(nTotal, sizeof(double));
+        w_tavg_h = (double*)calloc(nTotal, sizeof(double));
+        time_avg_count = 0;
+        if (myid == 0) printf("Time-average arrays allocated (%.1f MB each).\n",
+                               nTotal * sizeof(double) / 1.0e6);
+    }
+
     CHECK_CUDA( cudaEventRecord(start,0) );
 	CHECK_CUDA( cudaEventRecord(start1,0) );
-    for( step = 0 ; step < loop ; step++, accu_num++ ) {
+    // 續跑初始狀態輸出: 從 CPU 資料計算 Ub，完整顯示重啟狀態
+    if (restart_step > 0) {
+        // Compute Ub from CPU data (rank 0 only, j=3 hill-crest cross-section)
+        // 同 Launch_ModifyForcingTerm 的公式: Σ v(j=3,k,i) / (LX*(LZ-1))
+        double Ub_init = 0.0;
+        if (myid == 0) {
+            for (int k = 3; k < NZ6-3; k++) {
+            for (int i = 3; i < NX6-4; i++) {
+                int index = 3 * NX6 * NZ6 + k * NX6 + i;
+                Ub_init += v_h_p[index];
+            }}
+            Ub_init /= (double)(LX * (LZ - 1.0));
+        }
+        MPI_Bcast(&Ub_init, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        Ub_avg_global = Ub_init;
+
+        if (myid == 0) {
+            double FTT_init = (double)restart_step * dt_global / (double)flow_through_time;
+            double Ustar = Ub_init / (double)Uref;
+            double Fstar = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);
+            double Re_now = Ub_init * (double)H_HILL / (double)niu;
+            double Ma_init = Ub_init / (double)cs;
+
+            printf("+----------------------------------------------------------------+\n");
+            printf("| Step = %d    FTT = %.2f\n", restart_step, FTT_init);
+            printf("|%s running with %4dx%4dx%4d grids\n", argv[0], (int)NX6, (int)NY6, (int)NZ6);
+            printf("| Loop %d more steps, end at step %d\n", (int)loop, restart_step + 1 + (int)loop);
+            printf("+----------------------------------------------------------------+\n");
+            printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f\n",
+                   restart_step, FTT_init, Ub_init, Ustar, Force_h[0], Fstar, Re_now, Ma_init);
+        }
+        // 輸出初始 VTK (驗證重啟載入正確 + 使用修正後的 stride mapping)
+        fileIO_velocity_vtk_merged(restart_step);
+    }
+    // VTK step 為奇數 (step%1000==1), for-loop 須從偶數開始
+    // 以確保 step+=1 後 monitoring 在奇數步 (step%N==1) 正確觸發
+    int loop_start = (restart_step > 0) ? restart_step + 1 : 0;
+    for( step = loop_start ; step < loop_start + loop ; step++, accu_num++ ) {
 
         Launch_CollisionStreaming( ft, fd );
 
@@ -438,11 +490,21 @@ int main(int argc, char *argv[])
                 rho_modify_h[0] =( rho_global - rho_GlobalSum ) / ((NX6-7)*(NY6-7)*(NZ6-6));
                 cudaMemcpy(rho_modify_d, rho_modify_h, sizeof(double), cudaMemcpyHostToDevice);
             }
-        
-        
-        //Check Mass Conservation
+
+        // Time-average accumulation (每 outer iteration = 每 2 physical steps)
+        // v_h_p/w_h_p 已由上方 SendDataToCPU(ft) 更新至 CPU
+        {
+            const int nTotal = NX6 * NYD6 * NZ6;
+            for (int idx = 0; idx < nTotal; idx++) {
+                v_tavg_h[idx] += v_h_p[idx];
+                w_tavg_h[idx] += w_h_p[idx];
+            }
+            time_avg_count++;
+        }
+
+        //Check Mass Conservation + NaN early stop
         if ( step % 100 == 1){
-            SendDataToCPU( ft ); 
+            SendDataToCPU( ft );
             double rho_LocalSum = 0;
             double rho_GlobalSum = 0;
             double rho_initial = 1.0 ;
@@ -455,6 +517,24 @@ int main(int argc, char *argv[])
             double rho_LocalAvg;
             rho_LocalAvg = rho_LocalSum / ((NX6-7)*(NYD6-7)*(NZ6-6));  // 64 個 k 計算點
             MPI_Reduce((void *)&rho_LocalAvg, (void *)&rho_GlobalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+            // NaN / divergence early stop
+            int nan_flag = 0;
+            if (myid == 0) {
+                double rho_avg_check = rho_GlobalSum / (double)jp;
+                if (isnan(rho_avg_check) || isinf(rho_avg_check) || fabs(rho_avg_check - 1.0) > 0.01) {
+                    printf("[FATAL] Divergence detected at step %d: rho_avg = %.6e, stopping.\n", step, rho_avg_check);
+                    nan_flag = 1;
+                }
+            }
+            MPI_Bcast(&nan_flag, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            if (nan_flag) {
+                // 輸出最後一步 VTK 供分析
+                SendDataToCPU( ft );
+                fileIO_velocity_vtk_merged( step );
+                break;
+            }
+
             if( myid ==0 ){
                 double FTT_rho = step * dt_global / (double)flow_through_time;
                 FILE *checkrho;
@@ -491,6 +571,8 @@ int main(int argc, char *argv[])
         rho_avg = rrhhoo / (NX6*NYD6*NZ6) ;
         printf(" step = %d \t rho = %lf \n",step, rho_avg );
     } */
+    free(v_tavg_h);
+    free(w_tavg_h);
     FreeSource();
     MPI_Finalize();
 

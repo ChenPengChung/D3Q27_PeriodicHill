@@ -43,7 +43,13 @@ void InitialUsingDftFunc() {
     
     }}}
 
-Force_h[0] = (8.0*niu*Uref)/((LZ)*(LZ))*5.0;    CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+// 初始力 = Poiseuille 理論值 × 2 (加速啟動，但不過分)
+// 使用有效通道高度 h = LZ - H_HILL (扣除山丘)
+{
+    double h_eff = (double)LZ - (double)H_HILL;
+    Force_h[0] = (8.0 * (double)niu * (double)Uref) / (h_eff * h_eff) * 2.0;
+}
+CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
 
 }
 

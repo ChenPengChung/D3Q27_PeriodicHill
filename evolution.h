@@ -183,17 +183,33 @@ void Launch_ModifyForcingTerm()
     }
     Force_h[0] = Force_h[0] + gain * error * (double)Uref / (double)LY;
 
-    // 2. Force 非負 clamp: 壓力梯度不能反向驅動流體 (否則造成反向流 → 發散)
+    // 2. Anti-windup Force cap: 限制 Force 不超過物理估計的 3 倍
+    //    理論 Poiseuille: F = 8νU/h², h = LZ - H_HILL (有效通道高度)
+    {
+        double h_eff = (double)LZ - (double)H_HILL;
+        double Force_max = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff) * 3.0;
+        if (Force_h[0] > Force_max) {
+            if (myid == 0)
+                printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (max=3x Poiseuille)\n", Force_h[0], Force_max);
+            Force_h[0] = Force_max;
+        }
+    }
+
+    // 3. Force 非負 clamp: 壓力梯度不能反向驅動流體 (否則造成反向流 → 發散)
     if (Force_h[0] < 0.0) {
         Force_h[0] = 0.0;
     }
 
-    // 3. Ma 安全檢查: LBM 穩定性要求 Ma < 0.3
-    if (Ma_now > 0.3) {
-        // 緊急剎車: 大幅削減外力
+    // 4. Ma 安全檢查: 分段制動 (LBM 穩定性要求 Ma < 0.3)
+    if (Ma_now > 0.25) {
         Force_h[0] *= 0.5;
         if (myid == 0)
-            printf("[WARNING] Ma=%.4f > 0.3, Force halved to %.5E for stability!\n", Ma_now, Force_h[0]);
+            printf("[WARNING] Ma=%.4f > 0.25, Force halved to %.5E\n", Ma_now, Force_h[0]);
+    }
+    if (Ma_now > 0.28) {
+        Force_h[0] *= 0.1;
+        if (myid == 0)
+            printf("[CRITICAL] Ma=%.4f > 0.28, Force reduced to %.5E\n", Ma_now, Force_h[0]);
     }
 
     // ★ 所有 rank 使用相同 Ub_avg → 計算出相同 Force_h[0]
