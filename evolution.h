@@ -223,13 +223,22 @@ void Launch_ModifyForcingTerm()
     double F_star = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);  // F* = F*L/(rho*Uref^2), rho=1
     double Re_now = Ub_avg / (double)niu;
 
+    // 全場最大 Ma (山丘頂部加速區可達 2×Ma_bulk)
+    double Ma_max = ComputeMaMax();
+
     const char *status_tag = "";
-    if (U_star > 1.2)       status_tag = " [OVERSHOOT!]";
+    if (Ma_max > 0.35)      status_tag = " [WARNING: Ma_max>0.35, reduce Uref]";
+    else if (U_star > 1.2)  status_tag = " [OVERSHOOT!]";
     else if (U_star > 1.05) status_tag = " [OVERSHOOT]";
 
     if (myid == 0) {
-        printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f%s\n",
-               step, FTT, Ub_avg, U_star, Force_h[0], F_star, Ub_avg / ((double)Uref/(double)Re), Ma_now, status_tag);
+        printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f  Ma_max=%.4f%s\n",
+               step, FTT, Ub_avg, U_star, Force_h[0], F_star, Ub_avg / ((double)Uref/(double)Re), Ma_now, Ma_max, status_tag);
+    }
+
+    if (Ma_max > 0.35 && myid == 0) {
+        printf("  >>> BGK stability limit: Ma < 0.3. Current Ma_max=%.4f at hill crest.\n", Ma_max);
+        printf("  >>> Recommended: reduce Uref to %.4f (target Ma_max<0.25)\n", (double)Uref * 0.25 / Ma_max);
     }
 
     CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );

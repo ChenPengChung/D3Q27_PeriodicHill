@@ -21,7 +21,7 @@
 #define     NZ6    (NZ+6)
 
 //coefficient for non-uniform grid
-#define     CFL                 0.6
+#define     CFL                 0.75
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
 //1 : Yes,  0 : No
 #define     Uniform_In_Xdir     1
@@ -56,13 +56,14 @@
 //0 : from initialization
 //1 : from backup file
 //2 : from merged VTK file (specify RESTART_VTK_FILE below)
-#define     INIT    (2)   //2代表使用初始化資料 
+#define     INIT    (0)   //2代表使用初始化資料 
 #define     TBINIT  (1)
-#define     RESTART_VTK_FILE  "result/velocity_merged_050001.vtk"
+#define     RESTART_VTK_FILE  "result/velocity_merged_044001.vtk"
 /****************** SECONDARY PARAMETER ******************/
 #define     cs          (1.0/1.732050807568877)
 #define     dt          minSize //因為直角坐標系中，c=1
-#define     Uref        0.1220508075 //Re700:0.0583 , Re14002800:0.0776 , Re5600:0.0464 , Re10595:0.0878 <=0.17320508075 //<= 0.17320508075
+#define     Uref        0.05
+//[Senior Data] : Re700:0.0583 , Re14002800:0.0776 , Re5600:0.0464 , Re10595:0.0878 <=0.17320508075 //<= 0.17320508075
 #define     niu         Uref/Re
 // Flow-through time: T_FT = L / Uref (lattice time units)
 // 論文 Fig.5 x軸: T*Uref/L, 其中 L = LY = 9h (hill-to-hill streamwise periodic length)

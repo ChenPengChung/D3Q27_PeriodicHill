@@ -403,6 +403,9 @@ int main(int argc, char *argv[])
         MPI_Bcast(&Ub_init, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         Ub_avg_global = Ub_init;
 
+        // Ma_max: 需所有 rank 參與 MPI_Allreduce，放在 if(myid==0) 之外
+        double Ma_max_init = ComputeMaMax();
+
         if (myid == 0) {
             double FTT_init = (double)restart_step * dt_global / (double)flow_through_time;
             double Ustar = Ub_init / (double)Uref;
@@ -415,8 +418,14 @@ int main(int argc, char *argv[])
             printf("|%s running with %4dx%4dx%4d grids\n", argv[0], (int)NX6, (int)NY6, (int)NZ6);
             printf("| Loop %d more steps, end at step %d\n", (int)loop, restart_step + 1 + (int)loop);
             printf("+----------------------------------------------------------------+\n");
-            printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f\n",
-                   restart_step, FTT_init, Ub_init, Ustar, Force_h[0], Fstar, Re_now, Ma_init);
+            printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f  Ma_max=%.4f\n",
+                   restart_step, FTT_init, Ub_init, Ustar, Force_h[0], Fstar, Re_now, Ma_init, Ma_max_init);
+
+            if (Ma_max_init > 0.35)
+                printf("  >>> [WARNING] Ma_max=%.4f > 0.35 — BGK stability risk, consider reducing Uref\n", Ma_max_init);
+
+            if (Ustar > 1.3)
+                printf("  >>> [NOTE] U*=%.4f >> 1.0 — VTK velocity from old Uref, flow will decelerate to new target\n", Ustar);
         }
         // Anti-windup Force cap (顯示原始狀態後才套用，避免前 NDTFRC 步用過高外力)
         {
