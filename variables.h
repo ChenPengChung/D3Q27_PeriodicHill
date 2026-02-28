@@ -61,7 +61,7 @@
 //2 : from merged VTK file (specify RESTART_VTK_FILE below)
 #define     INIT    (0)   //2代表使用初始化資料 
 #define     TBINIT  (1)
-#define     RESTART_VTK_FILE  "result/velocity_merged_044001.vtk"
+#define     RESTART_VTK_FILE  "result/velocity_merged_005001.vtk"
 /****************** SECONDARY PARAMETER ******************/
 #define     cs          (1.0/1.732050807568877)
 #define     dt          minSize //因為直角坐標系中，c=1

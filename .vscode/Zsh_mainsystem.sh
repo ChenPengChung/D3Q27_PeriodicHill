@@ -2075,7 +2075,7 @@ function cmd_run() {
   gpu_count="${2:-$CFDLAB_DEFAULT_GPU_COUNT}"
   [[ "$gpu_count" =~ ^[0-9]+$ ]] || die "gpu_count must be an integer"
 
-  remote_cmd="cd ${CFDLAB_REMOTE_PATH} && nvcc main.cu -arch=${CFDLAB_NVCC_ARCH} -I${CFDLAB_MPI_INCLUDE} -L${CFDLAB_MPI_LIB} -lmpi -o a.out && nohup mpirun -np ${gpu_count} ./a.out > log\$(date +%Y%m%d) 2>&1 &"
+  remote_cmd="cd ${CFDLAB_REMOTE_PATH} && nvcc main.cu -arch=${CFDLAB_NVCC_ARCH} -I${CFDLAB_MPI_INCLUDE} -L${CFDLAB_MPI_LIB} -lmpi -o a.out && nohup mpirun -np ${gpu_count} /usr/local/cuda-10.2/bin/nsys profile -t cuda,nvtx -o ${CFDLAB_REMOTE_PATH}/nsys_rank%q{OMPI_COMM_WORLD_RANK} --duration=600 -f true ./a.out > log\$(date +%Y%m%d) 2>&1 &"
   run_on_node "$server" "$node" "$remote_cmd"
 }
 
@@ -2108,7 +2108,7 @@ function cmd_execute() {
   gpu_count="${2:-$CFDLAB_DEFAULT_GPU_COUNT}"
   [[ "$gpu_count" =~ ^[0-9]+$ ]] || die "gpu_count must be an integer"
 
-  remote_cmd="cd ${CFDLAB_REMOTE_PATH} && nohup mpirun -np ${gpu_count} ./a.out > log\$(date +%Y%m%d) 2>&1 &"
+  remote_cmd="cd ${CFDLAB_REMOTE_PATH} && nohup mpirun -np ${gpu_count} /usr/local/cuda-10.2/bin/nsys profile -t cuda,nvtx -o ${CFDLAB_REMOTE_PATH}/nsys_rank%q{OMPI_COMM_WORLD_RANK} --duration=600 -f true ./a.out > log\$(date +%Y%m%d) 2>&1 &"
   run_on_node "$server" "$node" "$remote_cmd"
 }
 
