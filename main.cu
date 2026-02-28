@@ -91,7 +91,7 @@ double *rho_modify_h, *rho_modify_d;
 // Time-average accumulation (host-side, for VTK output)
 // v = streamwise, w = wall-normal; accumulated every outer iteration
 double *v_tavg_h = NULL, *w_tavg_h = NULL;
-int time_avg_count = 0;
+int time_avg_count = 1 ;
 
 int nProcs, myid;
 
@@ -378,7 +378,7 @@ int main(int argc, char *argv[])
         size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
         v_tavg_h = (double*)calloc(nTotal, sizeof(double));
         w_tavg_h = (double*)calloc(nTotal, sizeof(double));
-        time_avg_count = 0;
+        time_avg_count = 1 ;
         if (myid == 0) printf("Time-average arrays allocated (%.1f MB each).\n",
                                nTotal * sizeof(double) / 1.0e6);
     }
@@ -388,13 +388,15 @@ int main(int argc, char *argv[])
     // 續跑初始狀態輸出: 從 CPU 資料計算 Ub，完整顯示重啟狀態
     if (restart_step > 0) {
         // Compute Ub from CPU data (rank 0 only, j=3 hill-crest cross-section)
-        // 同 Launch_ModifyForcingTerm 的公式: Σ v(j=3,k,i) / (LX*(LZ-1))
+        // 同 AccumulateUbulk kernel: Σ v(j=3,k,i) * dx * dz / (LX*(LZ-1))
         double Ub_init = 0.0;
         if (myid == 0) {
             for (int k = 3; k < NZ6-3; k++) {
             for (int i = 3; i < NX6-4; i++) {
                 int index = 3 * NX6 * NZ6 + k * NX6 + i;
-                Ub_init += v_h_p[index];
+                double dx_loc = (x_h[i+1] - x_h[i-1]) / 2.0;
+                double dz_loc = (z_h[3*NZ6 + k+1] - z_h[3*NZ6 + k-1]) / 2.0;
+                Ub_init += v_h_p[index] * dx_loc * dz_loc;
             }}
             Ub_init /= (double)(LX * (LZ - 1.0));
         }
@@ -405,7 +407,7 @@ int main(int argc, char *argv[])
             double FTT_init = (double)restart_step * dt_global / (double)flow_through_time;
             double Ustar = Ub_init / (double)Uref;
             double Fstar = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);
-            double Re_now = Ub_init * (double)H_HILL / (double)niu;
+            double Re_now = Ub_init / ((double)Uref / (double)Re);
             double Ma_init = Ub_init / (double)cs;
 
             printf("+----------------------------------------------------------------+\n");
@@ -415,6 +417,18 @@ int main(int argc, char *argv[])
             printf("+----------------------------------------------------------------+\n");
             printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f\n",
                    restart_step, FTT_init, Ub_init, Ustar, Force_h[0], Fstar, Re_now, Ma_init);
+        }
+        // Anti-windup Force cap (顯示原始狀態後才套用，避免前 NDTFRC 步用過高外力)
+        {
+            double h_eff = (double)LZ - (double)H_HILL;
+            double Force_max = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff) * 3.0;
+            if (Force_h[0] > Force_max) {
+                if (myid == 0)
+                    printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (max=3x Poiseuille)\n",
+                           Force_h[0], Force_max);
+                Force_h[0] = Force_max;
+                CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+            }
         }
         // 輸出初始 VTK (驗證重啟載入正確 + 使用修正後的 stride mapping)
         fileIO_velocity_vtk_merged(restart_step);
@@ -460,7 +474,7 @@ int main(int argc, char *argv[])
         }
 
 		if ( step%(int)NDTMIT == 1 ) {
-			Launch_Monitor( accu_num );
+			Launch_Monitor();
 		}
 
         // 每1000步輸出合併 VTK 追蹤流場 (所有GPU合併為單一檔案)
