@@ -99,6 +99,7 @@ int nProcs, myid;
 int step;
 int restart_step = 0;  // 續跑起始步 (INIT=2 時從 VTK header 解析)
 int accu_num = 0;
+int ub_accu_count = 0;  // AccumulateUbulk 累加計數 (Launch_ModifyForcingTerm 用後重設)
 
 int l_nbr, r_nbr;
 
@@ -291,11 +292,11 @@ int main(int argc, char *argv[])
 
 #if USE_MRT
     // Phase 3.5: MRT transformation matrices → __constant__ memory
-    // ★ 直接使用 MRT_Matrix.h 的 Matrix / Inverse_Matrix 巨集展開為 host 端陣列
+    // ★ 直接使用 MRT_Matrix.h 的 Matrix / Inverse_Matrix 嬉集展開為 host 端陣列
     //   若日後修改 MRT_Matrix.h 的矩陣值，此處自動同步，不需手動複製
     {
-        Matrix;           // MRT_Matrix.h 巨集 → double M[19][19] = { ... };
-        Inverse_Matrix;   // MRT_Matrix.h 巨集 → double Mi[19][19] = { ... };
+        Matrix;           // MRT_Matrix.h 嬉集 → double M[19][19] = { ... };
+        Inverse_Matrix;   // MRT_Matrix.h 嬉集 → double Mi[19][19] = { ... };
         CHECK_CUDA( cudaMemcpyToSymbol(GILBM_M,  M,  sizeof(M)) );
         CHECK_CUDA( cudaMemcpyToSymbol(GILBM_Mi, Mi, sizeof(Mi)) );
         if (myid == 0) printf("GILBM-MRT: M[19x19] and Mi[19x19] copied to __constant__ memory (from MRT_Matrix.h).\n");
@@ -553,17 +554,21 @@ int main(int argc, char *argv[])
     for( step = loop_start ; step < loop_start + loop ; step++, accu_num++ ) {
 
         Launch_CollisionStreaming( ft, fd );
+        if (step > 0) ub_accu_count++;  // step=0 不計入 Ub 累加
 
         if( (int)TBSWITCH ) { Launch_TurbulentSum( fd ); }
 
         CHECK_CUDA( cudaDeviceSynchronize() );
-        Launch_AccumulateTavg();  // accumulate sub-step 1
-        time_avg_count++;
+        if (step > 0) {               // skip step=0 initial state
+            Launch_AccumulateTavg();    // accumulate sub-step 1
+            time_avg_count++;
+        }
         step += 1;
         accu_num += 1;
 
         //Launch_ModifyForcingTerm();
         Launch_CollisionStreaming( fd, ft );
+        ub_accu_count++;  // step >= 1 here, always count
 
         if( (int)TBSWITCH ) { Launch_TurbulentSum( ft ); }
 
@@ -671,7 +676,7 @@ int main(int argc, char *argv[])
             // NaN / divergence early stop
             int nan_flag = 0;
             if (myid == 0) {
-                double rho_avg_check = rho_GlobalSum / (double)jp;
+                double rho_avg_check = rho_global;
                 if (isnan(rho_avg_check) || isinf(rho_avg_check) || fabs(rho_avg_check - 1.0) > 0.01) {
                     printf("[FATAL] Divergence detected at step %d: rho_avg = %.6e, stopping.\n", step, rho_avg_check);
                     nan_flag = 1;
@@ -689,7 +694,7 @@ int main(int argc, char *argv[])
                 double FTT_rho = step * dt_global / (double)flow_through_time;
                 FILE *checkrho;
                 checkrho = fopen("checkrho.dat","a");
-                fprintf(checkrho,"%d\t %.4f\t %lf\t %lf\n",step, FTT_rho, rho_initial, rho_GlobalSum/(double)jp );
+                fprintf(checkrho,"%d\t %.4f\t %lf\t %lf\n",step, FTT_rho, rho_initial, rho_global);
                 fclose (checkrho);
             }
         }

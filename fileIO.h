@@ -697,7 +697,6 @@ void fileIO_velocity_vtk_merged(int step) {
             double dkdz = dk_dz_h[j * NZ6 + k];
             double dkdy = dk_dy_h[j * NZ6 + k];
 
-            double du_di = (u_h_p[j*nface + k*NX6 + (i+1)] - u_h_p[j*nface + k*NX6 + (i-1)]) * 0.5;
             double du_dj = (u_h_p[(j+1)*nface + k*NX6 + i] - u_h_p[(j-1)*nface + k*NX6 + i]) * 0.5;
             double du_dk = (u_h_p[j*nface + (k+1)*NX6 + i] - u_h_p[j*nface + (k-1)*NX6 + i]) * 0.5;
 

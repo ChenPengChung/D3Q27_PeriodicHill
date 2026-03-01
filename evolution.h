@@ -176,8 +176,9 @@ void Launch_ModifyForcingTerm()
         Ub_avg = Ub_avg + Ub_avg_h[k*NX6+i];
         Ub_avg_h[k*NX6+i] = 0.0;
     }}
-    //計算當前瞬時入口端平均速度
-    Ub_avg = Ub_avg / (double)(LX*(LZ-1.0))/NDTFRC;
+    // 計算 Step (step-ub_accu_count+1) ~ Step (step) 區間的入口端時間平均速度
+    int step_from = step - ub_accu_count + 1;
+    Ub_avg = Ub_avg / (double)(LX*(LZ-1.0)) / (double)ub_accu_count;
 
     CHECK_CUDA( cudaMemcpy(Ub_avg_d, Ub_avg_h, nBytes, cudaMemcpyHostToDevice) );
 
@@ -237,8 +238,8 @@ void Launch_ModifyForcingTerm()
     else if (U_star > 1.05) status_tag = " [OVERSHOOT]";
 
     if (myid == 0) {
-        printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f  Ma_max=%.4f%s\n",
-               step, FTT, Ub_avg, U_star, Force_h[0], F_star, Ub_avg / ((double)Uref/(double)Re), Ma_now, Ma_max, status_tag);
+        printf("[Step %d~%d | FTT=%.2f] Ub_avg=%.6f  U*_avg=%.4f  Force=%.5E  F*=%.4f  Re_avg(%d~%d)=%.1f  Ma_avg(%d~%d)=%.4f  Ma_max=%.4f%s\n",
+               step_from, step, FTT, Ub_avg, U_star, Force_h[0], F_star, step_from, step, Re_now, step_from, step, Ma_now, Ma_max, status_tag);
     }
 
     if (Ma_max > 0.35 && myid == 0) {
@@ -247,6 +248,8 @@ void Launch_ModifyForcingTerm()
     }
 
     CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+
+    ub_accu_count = 0;  // 重設 Ub 累加計數，下一區間重新累加
     
     CHECK_CUDA( cudaDeviceSynchronize() );
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
