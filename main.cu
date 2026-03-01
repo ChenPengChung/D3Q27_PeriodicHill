@@ -467,12 +467,12 @@ int main(int argc, char *argv[])
         // Anti-windup Force cap (顯示原始狀態後才套用，避免前 NDTFRC 步用過高外力)
         {
             double h_eff = (double)LZ - (double)H_HILL;
-            double Force_max = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff) * 3.0;
-            if (Force_h[0] > Force_max) {
+            double Force_initial  = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff) * 3.0;
+            if (Force_h[0] > Force_initial) {
                 if (myid == 0)
                     printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (max=3x Poiseuille)\n",
-                           Force_h[0], Force_max);
-                Force_h[0] = Force_max;
+                           Force_h[0], Force_initial);
+                Force_h[0] = Force_initial;
                 CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
             }
         }

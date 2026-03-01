@@ -49,7 +49,7 @@
 //how many time steps to output val of monitor point(NX/2, NY/2, NZ/2)
 #define		NDTMIT	   50
 //how many time steps to modify the forcing term
-#define     NDTFRC     1000 //每一萬步驟-更新外力
+#define     NDTFRC     10000 //每一萬步驟-更新外力
 #define     force_alpha 3 //瑋傑學長的論文:alpha = 3~14 
 //Re=100  , alpha = 10 
 //Re=2800 , alpha = 3 or 14 
@@ -59,9 +59,9 @@
 //0 : from initialization
 //1 : from backup file
 //2 : from merged VTK file (specify RESTART_VTK_FILE below)
-#define     INIT    (0)   //2代表使用初始化資料 
+#define     INIT    (2)   //2代表使用初始化資料 
 #define     TBINIT  (1)
-#define     RESTART_VTK_FILE  "result/velocity_merged_005001.vtk"
+#define     RESTART_VTK_FILE  "result/velocity_merged_133001.vtk"
 /****************** SECONDARY PARAMETER ******************/
 #define     cs          (1.0/1.732050807568877)
 #define     dt          minSize //因為直角坐標系中，c=1
