@@ -61,7 +61,7 @@
 //2 : from merged VTK file (specify RESTART_VTK_FILE below)
 #define     INIT    (2)   //2代表使用初始化資料 
 #define     TBINIT  (1)
-#define     RESTART_VTK_FILE  "result/velocity_merged_171001.vtk"
+#define     RESTART_VTK_FILE  "result/velocity_merged_177001.vtk"
 // Perturbation injection at startup (trigger 3D turbulent transition)
 // PERTURB_INIT=1: inject random noise on u,v,w to break spanwise symmetry
 // PERTURB_INIT=0: no perturbation (set to 0 after turbulence established)
