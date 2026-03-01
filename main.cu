@@ -676,7 +676,7 @@ int main(int argc, char *argv[])
             // NaN / divergence early stop
             int nan_flag = 0;
             if (myid == 0) {
-                double rho_avg_check = rho_global;
+                double rho_avg_check = rho_GlobalSum / (double)jp;
                 if (isnan(rho_avg_check) || isinf(rho_avg_check) || fabs(rho_avg_check - 1.0) > 0.01) {
                     printf("[FATAL] Divergence detected at step %d: rho_avg = %.6e, stopping.\n", step, rho_avg_check);
                     nan_flag = 1;
@@ -694,7 +694,7 @@ int main(int argc, char *argv[])
                 double FTT_rho = step * dt_global / (double)flow_through_time;
                 FILE *checkrho;
                 checkrho = fopen("checkrho.dat","a");
-                fprintf(checkrho,"%d\t %.4f\t %lf\t %lf\n",step, FTT_rho, rho_initial, rho_global);
+                fprintf(checkrho,"%d\t %.4f\t %lf\t %lf\n",step, FTT_rho, rho_initial, rho_GlobalSum / (double)jp);
                 fclose (checkrho);
             }
         }
