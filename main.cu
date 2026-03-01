@@ -499,6 +499,36 @@ int main(int argc, char *argv[])
             printf("Reynolds stress restored from binary checkpoint (rey_avg_count=%d)\n", rey_avg_count);
     }
 
+    // FTT-gate check: discard old statistics if restart FTT is below threshold
+    // 防止從舊版 VTK (無 FTT gating) 繼承的污染數據在 FTT < threshold 時持續輸出
+    if (restart_step > 0) {
+        double FTT_restart = (double)restart_step * dt_global / (double)flow_through_time;
+        const size_t nTotal_gate = (size_t)NX6 * NYD6 * NZ6;
+        const size_t tavg_bytes_gate = nTotal_gate * sizeof(double);
+
+        if (FTT_restart < FTT_STAGE1 && vel_avg_count > 0) {
+            if (myid == 0)
+                printf("[FTT-GATE] FTT_restart=%.2f < FTT_STAGE1=%.1f: discarding old velocity averages (vel_avg_count=%d -> 0)\n",
+                       FTT_restart, FTT_STAGE1, vel_avg_count);
+            vel_avg_count = 0;
+            stage1_announced = false;
+            memset(u_tavg_h, 0, tavg_bytes_gate);
+            memset(v_tavg_h, 0, tavg_bytes_gate);
+            memset(w_tavg_h, 0, tavg_bytes_gate);
+            CHECK_CUDA( cudaMemset(u_tavg_d, 0, tavg_bytes_gate) );
+            CHECK_CUDA( cudaMemset(v_tavg_d, 0, tavg_bytes_gate) );
+            CHECK_CUDA( cudaMemset(w_tavg_d, 0, tavg_bytes_gate) );
+        }
+        if (FTT_restart < FTT_STAGE2 && rey_avg_count > 0) {
+            if (myid == 0)
+                printf("[FTT-GATE] FTT_restart=%.2f < FTT_STAGE2=%.1f: discarding old RS data (rey_avg_count=%d -> 0)\n",
+                       FTT_restart, FTT_STAGE2, rey_avg_count);
+            rey_avg_count = 0;
+            stage2_announced = false;
+            // TBSWITCH arrays already cudaMemset'd to 0 in AllocateMemory; readbin was skipped or data is stale
+        }
+    }
+
     CHECK_CUDA( cudaEventRecord(start,0) );
 	CHECK_CUDA( cudaEventRecord(start1,0) );
     // 續跑初始狀態輸出: 從 CPU 資料計算 Ub，完整顯示重啟狀態
