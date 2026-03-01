@@ -675,12 +675,18 @@ void fileIO_velocity_vtk_merged(int step) {
         }}}
     }
 
-    // Compute instantaneous omega_x (spanwise vorticity) = dw/dy - dv/dz
-    // Curvilinear:
-    //   dw/dy = (1/dy)(dw/dj) + dk_dy(dw/dk)
-    //   dv/dz = dk_dz(dv/dk)
-    double *ox_local = (double*)malloc(localPoints * sizeof(double));
+    // Compute vorticity vector (omega_x, omega_y, omega_z) + omega_x' (fluctuation)
+    // Curvilinear coordinate derivatives:
+    //   ∂φ/∂x = (1/dx) ∂φ/∂i
+    //   ∂φ/∂y = (1/dy) ∂φ/∂j + dk_dy ∂φ/∂k
+    //   ∂φ/∂z = dk_dz ∂φ/∂k
+    double *ox_local  = (double*)malloc(localPoints * sizeof(double));
+    double *oy_local  = (double*)malloc(localPoints * sizeof(double));
+    double *oz_local  = (double*)malloc(localPoints * sizeof(double));
+    double *oxp_local = (double*)malloc(localPoints * sizeof(double));
     {
+        double dx_val = (double)LX / (double)(NX6 - 7);
+        double dx_inv = 1.0 / dx_val;
         double dy_val = (double)LY / (double)(NY6 - 7);
         double dy_inv = 1.0 / dy_val;
         const int nface = NX6 * NZ6;
@@ -690,11 +696,39 @@ void fileIO_velocity_vtk_merged(int step) {
         for (int i = 3; i < NX6-3; i++) {
             double dkdz = dk_dz_h[j * NZ6 + k];
             double dkdy = dk_dy_h[j * NZ6 + k];
+
+            double du_di = (u_h_p[j*nface + k*NX6 + (i+1)] - u_h_p[j*nface + k*NX6 + (i-1)]) * 0.5;
+            double du_dj = (u_h_p[(j+1)*nface + k*NX6 + i] - u_h_p[(j-1)*nface + k*NX6 + i]) * 0.5;
+            double du_dk = (u_h_p[j*nface + (k+1)*NX6 + i] - u_h_p[j*nface + (k-1)*NX6 + i]) * 0.5;
+
+            double dv_di = (v_h_p[j*nface + k*NX6 + (i+1)] - v_h_p[j*nface + k*NX6 + (i-1)]) * 0.5;
+            double dv_dk = (v_h_p[j*nface + (k+1)*NX6 + i] - v_h_p[j*nface + (k-1)*NX6 + i]) * 0.5;
+
+            double dw_di = (w_h_p[j*nface + k*NX6 + (i+1)] - w_h_p[j*nface + k*NX6 + (i-1)]) * 0.5;
             double dw_dj = (w_h_p[(j+1)*nface + k*NX6 + i] - w_h_p[(j-1)*nface + k*NX6 + i]) * 0.5;
             double dw_dk = (w_h_p[j*nface + (k+1)*NX6 + i] - w_h_p[j*nface + (k-1)*NX6 + i]) * 0.5;
-            double dv_dk = (v_h_p[j*nface + (k+1)*NX6 + i] - v_h_p[j*nface + (k-1)*NX6 + i]) * 0.5;
-            ox_local[oidx++] = dy_inv * dw_dj + dkdy * dw_dk - dkdz * dv_dk;
+
+            // omega_x = ∂w/∂y - ∂v/∂z
+            ox_local[oidx] = dy_inv * dw_dj + dkdy * dw_dk - dkdz * dv_dk;
+            // omega_y = ∂u/∂z - ∂w/∂x
+            oy_local[oidx] = dkdz * du_dk - dx_inv * dw_di;
+            // omega_z = ∂v/∂x - ∂u/∂y
+            oz_local[oidx] = dx_inv * dv_di - dy_inv * du_dj - dkdy * du_dk;
+
+            oidx++;
         }}}
+
+        // omega_x' = omega_x - <omega_x>_x  (subtract spanwise/x-direction average)
+        for (int k = 0; k < nzLocal; k++) {
+        for (int j = 0; j < nyLocal; j++) {
+            double sum_ox = 0.0;
+            for (int i = 0; i < nxLocal; i++)
+                sum_ox += ox_local[k * nyLocal * nxLocal + j * nxLocal + i];
+            double avg_ox = sum_ox / (double)nxLocal;
+            for (int i = 0; i < nxLocal; i++)
+                oxp_local[k * nyLocal * nxLocal + j * nxLocal + i] =
+                    ox_local[k * nyLocal * nxLocal + j * nxLocal + i] - avg_ox;
+        }}
     }
 
     // 準備本地 z 座標
@@ -723,9 +757,12 @@ void fileIO_velocity_vtk_merged(int step) {
         wt_global = (double*)malloc(gatherPoints * sizeof(double));
     }
 
-    double *ox_global = NULL;
+    double *ox_global = NULL, *oy_global = NULL, *oz_global = NULL, *oxp_global = NULL;
     if( myid == 0 ) {
-        ox_global = (double*)malloc(gatherPoints * sizeof(double));
+        ox_global  = (double*)malloc(gatherPoints * sizeof(double));
+        oy_global  = (double*)malloc(gatherPoints * sizeof(double));
+        oz_global  = (double*)malloc(gatherPoints * sizeof(double));
+        oxp_global = (double*)malloc(gatherPoints * sizeof(double));
     }
 
     // 所有 rank 一起呼叫 MPI_Gather
@@ -738,7 +775,10 @@ void fileIO_velocity_vtk_merged(int step) {
         MPI_Gather(vt_local, localPoints, MPI_DOUBLE, vt_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(wt_local, localPoints, MPI_DOUBLE, wt_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
-    MPI_Gather(ox_local, localPoints, MPI_DOUBLE, ox_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Gather(ox_local,  localPoints, MPI_DOUBLE, ox_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Gather(oy_local,  localPoints, MPI_DOUBLE, oy_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Gather(oz_local,  localPoints, MPI_DOUBLE, oz_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Gather(oxp_local, localPoints, MPI_DOUBLE, oxp_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     // rank 0 輸出合併的 VTK
     if( myid == 0 ) {
@@ -835,8 +875,22 @@ void fileIO_velocity_vtk_merged(int step) {
             }}}
         }
 
-        // omega_x: instantaneous spanwise vorticity (dw/dy - dv/dz)
-        out << "\nSCALARS omega_x double 1\n";
+        // Vorticity vector: (omega_x, omega_y, omega_z)
+        out << "\nVECTORS vorticity double\n";
+        for( int k = 0; k < nzLocal; k++ ){
+        for( int jg = 0; jg < nyGlobal; jg++ ){
+        for( int i = 0; i < nxLocal; i++ ){
+            int gpu_id = jg / stride;
+            if( gpu_id >= jp ) gpu_id = jp - 1;
+            int j_local = jg - gpu_id * stride;
+            int gpu_offset = gpu_id * localPoints;
+            int local_idx = k * nyLocal * nxLocal + j_local * nxLocal + i;
+            int gidx = gpu_offset + local_idx;
+            out << ox_global[gidx] << " " << oy_global[gidx] << " " << oz_global[gidx] << "\n";
+        }}}
+
+        // omega_x' = omega_x - <omega_x>_x (spanwise fluctuation)
+        out << "\nSCALARS omega_x_prime double 1\n";
         out << "LOOKUP_TABLE default\n";
         for( int k = 0; k < nzLocal; k++ ){
         for( int jg = 0; jg < nyGlobal; jg++ ){
@@ -846,7 +900,7 @@ void fileIO_velocity_vtk_merged(int step) {
             int j_local = jg - gpu_id * stride;
             int gpu_offset = gpu_id * localPoints;
             int local_idx = k * nyLocal * nxLocal + j_local * nxLocal + i;
-            out << ox_global[gpu_offset + local_idx] << "\n";
+            out << oxp_global[gpu_offset + local_idx] << "\n";
         }}}
 
         out.close();
@@ -861,7 +915,10 @@ void fileIO_velocity_vtk_merged(int step) {
         free(y_global_arr);
         if (vt_global) free(vt_global);
         if (wt_global) free(wt_global);
-        if (ox_global) free(ox_global);
+        if (ox_global)  free(ox_global);
+        if (oy_global)  free(oy_global);
+        if (oz_global)  free(oz_global);
+        if (oxp_global) free(oxp_global);
     }
 
     free(u_local);
@@ -871,6 +928,9 @@ void fileIO_velocity_vtk_merged(int step) {
     if (vt_local) free(vt_local);
     if (wt_local) free(wt_local);
     free(ox_local);
+    free(oy_local);
+    free(oz_local);
+    free(oxp_local);
     
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }
