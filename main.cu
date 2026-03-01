@@ -536,6 +536,22 @@ int main(int argc, char *argv[])
             CHECK_CUDA( cudaMemcpy(v_tavg_h, v_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
             CHECK_CUDA( cudaMemcpy(w_tavg_h, w_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
             fileIO_velocity_vtk_merged( step );
+
+            // 每次 VTK 輸出時顯示即時狀態 (rank 0 j=3 hillcrest)
+            if (myid == 0) {
+                double Ub_vtk = 0.0;
+                for (int kk = 3; kk < NZ6-3; kk++)
+                for (int ii = 3; ii < NX6-4; ii++) {
+                    int idx = 3*NX6*NZ6 + kk*NX6 + ii;
+                    double dx_loc = (x_h[ii+1] - x_h[ii-1]) / 2.0;
+                    double dz_loc = (z_h[3*NZ6+kk+1] - z_h[3*NZ6+kk-1]) / 2.0;
+                    Ub_vtk += v_h_p[idx] * dx_loc * dz_loc;
+                }
+                Ub_vtk /= (double)(LX * (LZ - 1.0));
+                double FTT_vtk = step * dt_global / (double)flow_through_time;
+                printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  Ma=%.4f\n",
+                       step, FTT_vtk, Ub_vtk, Ub_vtk/(double)Uref, Force_h[0], Ub_vtk/(double)cs);
+            }
         }
 
         cudaDeviceSynchronize();
