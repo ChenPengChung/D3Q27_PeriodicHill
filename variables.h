@@ -61,7 +61,12 @@
 //2 : from merged VTK file (specify RESTART_VTK_FILE below)
 #define     INIT    (2)   //2代表使用初始化資料 
 #define     TBINIT  (1)
-#define     RESTART_VTK_FILE  "result/velocity_merged_133001.vtk"
+#define     RESTART_VTK_FILE  "result/velocity_merged_149001.vtk"
+// Perturbation injection at startup (trigger 3D turbulent transition)
+// PERTURB_INIT=1: inject random noise on u,v,w to break spanwise symmetry
+// PERTURB_INIT=0: no perturbation (set to 0 after turbulence established)
+#define     PERTURB_INIT    1       //1.加入擾動量，0.不要加入擾動量
+#define     PERTURB_PERCENT 5       // amplitude (% of Uref), typical 1-10%
 /****************** SECONDARY PARAMETER ******************/
 #define     cs          (1.0/1.732050807568877)
 #define     dt          minSize //因為直角坐標系中，c=1

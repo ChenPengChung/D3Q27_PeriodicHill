@@ -8,7 +8,7 @@
 #include "variables.h"
 using namespace std;
 /************************** Host Variables **************************/
-double  *fh_p[19];
+double  *fh_p[19]; //主機端一般態分佈函數
 double  *rho_h_p,  *u_h_p,  *v_h_p,  *w_h_p;
 
 
@@ -319,7 +319,70 @@ int main(int argc, char *argv[])
         printf("Initializing from merged VTK: %s\n", RESTART_VTK_FILE);
         InitFromMergedVTK(RESTART_VTK_FILE);
     }
-     
+
+    // ---- Perturbation injection: break spanwise symmetry to trigger 3D turbulence ----//加入擾動量
+    // 使用 additive δfeq 方法: f[q] += feq(ρ, u+δu) - feq(ρ, u)
+    // 保留已發展流場的非平衡部分 (viscous stress), 只注入速度擾動
+#if PERTURB_INIT
+    {
+        double e_lbm[19][3] = {
+            {0,0,0},{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
+            {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},{1,0,1},{-1,0,1},{1,0,-1},
+            {-1,0,-1},{0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}};
+        double W_lbm[19] = {
+            1.0/3,  1.0/18, 1.0/18, 1.0/18, 1.0/18, 1.0/18, 1.0/18,
+            1.0/36, 1.0/36, 1.0/36, 1.0/36, 1.0/36, 1.0/36, 1.0/36,
+            1.0/36, 1.0/36, 1.0/36, 1.0/36, 1.0/36};
+
+        double amp = (PERTURB_PERCENT / 100.0) * (double)Uref;
+        // 每個 rank 用不同的 seed → 不同的擾動 pattern
+        srand(42 + myid * 13579);
+
+        int count = 0;
+        for (int j = 3; j < NYD6 - 3; j++)
+        for (int k = 3; k < NZ6 - 3; k++)
+        for (int i = 3; i < NX6 - 3; i++) { //遍歷每一個物理空間計算點 
+            int index = j * NX6 * NZ6 + k * NX6 + i;
+
+            // 壁面距離 envelope: sin(π·z_norm), 壁面=0, 中心=1
+            double z_bot  = z_h[j * NZ6 + 3];
+            double z_top  = z_h[j * NZ6 + (NZ6 - 4)];
+            double z_norm = (z_h[j * NZ6 + k] - z_bot) / (z_top - z_bot);
+            double envelope = sin(pi * z_norm);
+
+            // 三分量隨機擾動 [-amp, +amp] × envelope
+            double du = amp * envelope * (2.0 * rand() / (double)RAND_MAX - 1.0);
+            double dv = amp * envelope * (2.0 * rand() / (double)RAND_MAX - 1.0);
+            double dw = amp * envelope * (2.0 * rand() / (double)RAND_MAX - 1.0);
+
+            double rho_p = rho_h_p[index];
+            double u_old = u_h_p[index], v_old = v_h_p[index], w_old = w_h_p[index];
+            double u_new = u_old + du,    v_new = v_old + dv,    w_new = w_old + dw;
+
+            // 更新宏觀速度
+            u_h_p[index] = u_new;
+            v_h_p[index] = v_new;
+            w_h_p[index] = w_new;
+
+            // Additive δfeq: 保留 f_neq, 只加入擾動的平衡態差值
+            //S_{i}= (feq(ρ, u+δu) - feq(ρ, u)) 相當於一個外力進去，理論根據 : Kupershtokh2004-
+            double udot_old = u_old * u_old + v_old * v_old + w_old * w_old;
+            double udot_new = u_new * u_new + v_new * v_new + w_new * w_new;
+            for (int q = 0; q < 19; q++) {
+                double eu_old = e_lbm[q][0]*u_old + e_lbm[q][1]*v_old + e_lbm[q][2]*w_old;
+                double eu_new = e_lbm[q][0]*u_new + e_lbm[q][1]*v_new + e_lbm[q][2]*w_new;
+                double feq_old = W_lbm[q] * rho_p * (1.0 + 3.0*eu_old + 4.5*eu_old*eu_old - 1.5*udot_old);
+                double feq_new = W_lbm[q] * rho_p * (1.0 + 3.0*eu_new + 4.5*eu_new*eu_new - 1.5*udot_new);
+                fh_p[q][index] += (feq_new - feq_old);
+            }
+            count++;
+        }
+        if (myid == 0)
+            printf("Perturbation injected: amp=%.2e (%d%% Uref), %d interior points/rank, envelope=sin(pi*z_norm)\n",
+                   amp, (int)PERTURB_PERCENT, count);
+    }
+#endif
+
     // Phase 1.5 acceptance diagnostic: delta_xi, delta_zeta range, interpolation, C-E BC
     DiagnoseGILBM_Phase1(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, fh_p, NYD6, NZ6, myid, dt_global);
 
@@ -482,6 +545,11 @@ int main(int argc, char *argv[])
     // VTK step 為奇數 (step%1000==1), for-loop 須從偶數開始
     // 以確保 step+=1 後 monitoring 在奇數步 (step%N==1) 正確觸發
     int loop_start = (restart_step > 0) ? restart_step + 1 : 0;
+
+
+
+
+    //從此開始進入迴圈
     for( step = loop_start ; step < loop_start + loop ; step++, accu_num++ ) {
 
         Launch_CollisionStreaming( ft, fd );
@@ -529,15 +597,17 @@ int main(int argc, char *argv[])
 
         // 每1000步輸出合併 VTK 追蹤流場 (所有GPU合併為單一檔案)
         // 注意: step 在迴圈中是奇數 (1,3,5...)，所以用 % 1000 == 1
+        //每1000步都要 輸出顯示計算，所以每1000步都要做一次面平均
         if ( step % 1000 == 1 ) {
             SendDataToCPU( ft );
             // Copy GPU tavg → host for VTK output
             const size_t tavg_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
             CHECK_CUDA( cudaMemcpy(v_tavg_h, v_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
             CHECK_CUDA( cudaMemcpy(w_tavg_h, w_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
-            fileIO_velocity_vtk_merged( step );
 
-            // 每次 VTK 輸出時顯示即時狀態 (rank 0 j=3 hillcrest)
+            // VTK-step status: 在 VTK 輸出前顯示完整狀態
+            // ComputeMaMax 需要全 rank 參與 (MPI_Allreduce)
+            double Ma_max_vtk = ComputeMaMax();
             if (myid == 0) {
                 double Ub_vtk = 0.0;
                 for (int kk = 3; kk < NZ6-3; kk++)
@@ -548,10 +618,15 @@ int main(int argc, char *argv[])
                     Ub_vtk += v_h_p[idx] * dx_loc * dz_loc;
                 }
                 Ub_vtk /= (double)(LX * (LZ - 1.0));
-                double FTT_vtk = step * dt_global / (double)flow_through_time;
-                printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  Ma=%.4f\n",
-                       step, FTT_vtk, Ub_vtk, Ub_vtk/(double)Uref, Force_h[0], Ub_vtk/(double)cs);
+                printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f  Ma_max=%.4f\n",
+                       step, step * dt_global / (double)flow_through_time,
+                       Ub_vtk, Ub_vtk / (double)Uref, Force_h[0],
+                       Force_h[0] * (double)LY / ((double)Uref * (double)Uref),
+                       Ub_vtk / ((double)Uref / (double)Re),
+                       Ub_vtk / (double)cs, Ma_max_vtk);
             }
+
+            fileIO_velocity_vtk_merged( step );
         }
 
         cudaDeviceSynchronize();
