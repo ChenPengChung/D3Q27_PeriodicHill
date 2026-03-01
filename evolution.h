@@ -227,7 +227,7 @@ void Launch_ModifyForcingTerm()
     double FTT    = step * dt_global / (double)flow_through_time;  // T*Uref/L (用 dt_global, 非 minSize)
     double U_star = Ub_avg / (double)Uref;                          // U* = Ub/Uref
     double F_star = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);  // F* = F*L/(rho*Uref^2), rho=1
-    double Re_now = Ub_avg / (double)niu;
+    double Re_now = Ub_avg / ((double)Uref / (double)Re);  // niu 巨集無括號，不能用 (double)niu
 
     // 全場最大 Ma (山丘頂部加速區可達 2×Ma_bulk)
     double Ma_max = ComputeMaMax();
