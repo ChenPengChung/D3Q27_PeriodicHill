@@ -231,7 +231,7 @@ void statistics_readbin(double * arr_d, const char *fname, const int myid){
 void statistics_writebin_stress(){
     if( myid == 0 ) {
         ofstream fp_accu("./statistics/accu.dat");
-        fp_accu << accu_num;
+        fp_accu << rey_avg_count;
         fp_accu.close();
     }
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
@@ -273,10 +273,10 @@ void statistics_writebin_stress(){
 }
 //4.statistics系列主函數2.
 void statistics_readbin_stress() {
-    int accu_num = 0;
     ifstream fp_accu("./statistics/accu.dat");
-    fp_accu >> accu_num;
+    fp_accu >> rey_avg_count;
     fp_accu.close();
+    if (myid == 0) printf("  statistics_readbin_stress: rey_avg_count=%d loaded from accu.dat\n", rey_avg_count);
 
     statistics_readbin(U, "U", myid);
 	statistics_readbin(V, "V", myid);
@@ -352,26 +352,34 @@ void InitFromMergedVTK(const char* vtk_path) {
         CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
     }
 
-    // 解析 header，讀取 step, Force, tavg_count 值
+    // 解析 header，讀取 step, Force, vel_avg_count, rey_avg_count 值
     double force_from_vtk = -1.0;
     int step_from_vtk = -1;
-    int tavg_count_from_vtk = 0;
+    int vel_avg_count_from_vtk = 0;
+    int rey_avg_count_from_vtk = 0;
     string vtk_line;
     while (getline(vtk_in, vtk_line)) {
-        // 嘗試從 header 讀取 step (格式: "... step=50001 ...")
         size_t spos = vtk_line.find("step=");
         if (spos != string::npos) {
             sscanf(vtk_line.c_str() + spos + 5, "%d", &step_from_vtk);
         }
-        // 嘗試從 header 讀取 Force (格式: "... Force=1.23456E-04")
         size_t fpos = vtk_line.find("Force=");
         if (fpos != string::npos) {
             sscanf(vtk_line.c_str() + fpos + 6, "%lf", &force_from_vtk);
         }
-        // 嘗試從 header 讀取 tavg_count (格式: "... tavg_count=1234")
+        // New format: vel_avg_count=XXX rey_avg_count=YYY
+        size_t vpos = vtk_line.find("vel_avg_count=");
+        if (vpos != string::npos) {
+            sscanf(vtk_line.c_str() + vpos + 14, "%d", &vel_avg_count_from_vtk);
+        }
+        size_t rpos = vtk_line.find("rey_avg_count=");
+        if (rpos != string::npos) {
+            sscanf(vtk_line.c_str() + rpos + 14, "%d", &rey_avg_count_from_vtk);
+        }
+        // Backward compat: old "tavg_count=" → treat as vel_avg_count
         size_t tpos = vtk_line.find("tavg_count=");
-        if (tpos != string::npos) {
-            sscanf(vtk_line.c_str() + tpos + 11, "%d", &tavg_count_from_vtk);
+        if (tpos != string::npos && vel_avg_count_from_vtk == 0) {
+            sscanf(vtk_line.c_str() + tpos + 11, "%d", &vel_avg_count_from_vtk);
         }
         if (vtk_line.find("VECTORS") != string::npos) break;
     }
@@ -403,79 +411,82 @@ void InitFromMergedVTK(const char* vtk_path) {
     }}}
     vtk_in.close();
 
-    // ========== 讀取時間平均場 (v_time_avg, w_time_avg) ==========
-    // VTK 中存的是已除以 count 的平均值; 讀入 v_tavg_h/w_tavg_h 暫存平均值
-    // main.cu 稍後會乘回 tavg_count 得到累加和
-    if (tavg_count_from_vtk > 0 && v_tavg_h != NULL && w_tavg_h != NULL) {
-        // 重新開檔，跳過所有東西直到找到 v_time_avg
+    // ========== 讀取時間平均場 ==========
+    // New format: U_mean (÷Uref), W_mean (÷Uref), V_mean (÷Uref)
+    // Old format: v_time_avg, w_time_avg (lattice units, no Uref normalization)
+    // VTK 中存的是已除以 count 的平均值; main.cu 稍後會乘回 vel_avg_count 得到累加和
+    if (vel_avg_count_from_vtk > 0 && v_tavg_h != NULL && w_tavg_h != NULL && u_tavg_h != NULL) {
         ifstream vtk_tavg(vtk_path);
         string line_tavg;
-        bool found_vtavg = false, found_wtavg = false;
+        bool found_U_mean = false, found_W_mean = false, found_V_mean = false;
+        bool found_vtavg = false, found_wtavg = false;  // old format fallback
 
-        // 搜尋 v_time_avg SCALARS section
-        while (getline(vtk_tavg, line_tavg)) {
-            if (line_tavg.find("SCALARS v_time_avg") != string::npos) {
-                getline(vtk_tavg, line_tavg);  // skip LOOKUP_TABLE line
-                found_vtavg = true;
-                break;
-            }
-        }
-        if (found_vtavg) {
-            double val;
-            for (int k = 0; k < nzLocal; k++) {
-            for (int jg = 0; jg < nyGlobal; jg++) {
-            for (int i = 0; i < nxLocal; i++) {
-                vtk_tavg >> val;
-                if (jg >= jg_start && jg <= jg_end) {
-                    int j_local = jg - jg_start;
-                    int j  = j_local + 3;
-                    int kk = k + 3;
-                    int ii = i + 3;
-                    int index = j * NX6 * NZ6 + kk * NX6 + ii;
-                    v_tavg_h[index] = val;  // averaged value (will be × count in main.cu)
-                }
-            }}}
-        }
-
-        // 搜尋 w_time_avg SCALARS section (繼續從同一位置讀取)
-        while (getline(vtk_tavg, line_tavg)) {
-            if (line_tavg.find("SCALARS w_time_avg") != string::npos) {
-                getline(vtk_tavg, line_tavg);  // skip LOOKUP_TABLE line
-                found_wtavg = true;
-                break;
-            }
-        }
-        if (found_wtavg) {
-            double val;
-            for (int k = 0; k < nzLocal; k++) {
-            for (int jg = 0; jg < nyGlobal; jg++) {
-            for (int i = 0; i < nxLocal; i++) {
-                vtk_tavg >> val;
-                if (jg >= jg_start && jg <= jg_end) {
-                    int j_local = jg - jg_start;
-                    int j  = j_local + 3;
-                    int kk = k + 3;
-                    int ii = i + 3;
-                    int index = j * NX6 * NZ6 + kk * NX6 + ii;
-                    w_tavg_h[index] = val;  // averaged value
-                }
-            }}}
+        // Helper lambda-like: read one scalar field from VTK into tavg array
+        // We search for new names first, then fall back to old names
+        #define READ_SCALAR_FIELD(tavg_arr, search_str, found_flag, uref_scale) \
+        { \
+            vtk_tavg.clear(); vtk_tavg.seekg(0); \
+            string _line; \
+            while (getline(vtk_tavg, _line)) { \
+                if (_line.find(search_str) != string::npos) { \
+                    getline(vtk_tavg, _line); /* skip LOOKUP_TABLE */ \
+                    found_flag = true; \
+                    double _val; \
+                    for (int _k = 0; _k < nzLocal; _k++) { \
+                    for (int _jg = 0; _jg < nyGlobal; _jg++) { \
+                    for (int _i = 0; _i < nxLocal; _i++) { \
+                        vtk_tavg >> _val; \
+                        if (_jg >= jg_start && _jg <= jg_end) { \
+                            int _jl = _jg - jg_start; \
+                            int _idx = (_jl+3)*NX6*NZ6 + (_k+3)*NX6 + (_i+3); \
+                            tavg_arr[_idx] = _val * uref_scale; \
+                        } \
+                    }}} \
+                    break; \
+                } \
+            } \
         }
 
+        // Try new format first (normalized by Uref → multiply back to lattice units)
+        READ_SCALAR_FIELD(v_tavg_h, "SCALARS U_mean", found_U_mean, (double)Uref);
+        READ_SCALAR_FIELD(w_tavg_h, "SCALARS W_mean", found_W_mean, (double)Uref);
+        READ_SCALAR_FIELD(u_tavg_h, "SCALARS V_mean", found_V_mean, (double)Uref);
+
+        // Backward compat: fall back to old names (no Uref normalization)
+        if (!found_U_mean) {
+            READ_SCALAR_FIELD(v_tavg_h, "SCALARS v_time_avg", found_vtavg, 1.0);
+        }
+        if (!found_W_mean) {
+            READ_SCALAR_FIELD(w_tavg_h, "SCALARS w_time_avg", found_wtavg, 1.0);
+        }
+
+        #undef READ_SCALAR_FIELD
         vtk_tavg.close();
 
-        if (found_vtavg && found_wtavg) {
-            time_avg_count = tavg_count_from_vtk;
-            if (myid == 0)
-                printf("  VTK restart: time-average restored (tavg_count=%d)\n", time_avg_count);
+        bool have_streamwise = found_U_mean || found_vtavg;
+        bool have_wallnormal = found_W_mean || found_wtavg;
+
+        if (have_streamwise && have_wallnormal) {
+            vel_avg_count = vel_avg_count_from_vtk;
+            rey_avg_count = rey_avg_count_from_vtk;
+            if (myid == 0) {
+                printf("  VTK restart: velocity time-average restored (vel_avg_count=%d", vel_avg_count);
+                if (found_U_mean) printf(", U_mean format");
+                else printf(", v_time_avg format");
+                if (found_V_mean) printf(", V_mean");
+                printf(")\n");
+                if (rey_avg_count_from_vtk > 0)
+                    printf("  VTK restart: rey_avg_count=%d (binary checkpoint will be loaded separately)\n", rey_avg_count);
+            }
         } else {
-            time_avg_count = 0;
+            vel_avg_count = 0;
+            rey_avg_count = 0;
             if (myid == 0)
-                printf("  VTK restart: v_time_avg/w_time_avg not found, starting fresh (tavg_count=0)\n");
+                printf("  VTK restart: time-average fields not found, starting fresh\n");
         }
     } else {
-        if (myid == 0 && tavg_count_from_vtk == 0)
-            printf("  VTK restart: no tavg_count in header, starting fresh.\n");
+        if (myid == 0 && vel_avg_count_from_vtk == 0)
+            printf("  VTK restart: no vel_avg_count in header, starting fresh.\n");
     }
 
     // ========== x-direction 週期性邊界填充 buffer layer ==========
@@ -658,21 +669,75 @@ void fileIO_velocity_vtk_merged(int step) {
         idx++;
     }}}
 
-    // 準備本地時間平均資料 (若有累積)
-    double *vt_local = NULL, *wt_local = NULL;
-    if (time_avg_count > 0) {
+    // 準備本地時間平均資料 (若有累積), 正規化: ÷vel_avg_count÷Uref
+    double *ut_local = NULL, *vt_local = NULL, *wt_local = NULL;
+    if (vel_avg_count > 0) {
+        ut_local = (double*)malloc(localPoints * sizeof(double));
         vt_local = (double*)malloc(localPoints * sizeof(double));
         wt_local = (double*)malloc(localPoints * sizeof(double));
-        double inv_count = 1.0 / (double)time_avg_count;
+        double inv_count_uref = 1.0 / ((double)vel_avg_count * (double)Uref);
         int tidx = 0;
         for( int k = 3; k < NZ6-3; k++ ){
         for( int j = 3; j < NYD6-3; j++ ){
         for( int i = 3; i < NX6-3; i++ ){
             int index = j*NZ6*NX6 + k*NX6 + i;
-            vt_local[tidx] = v_tavg_h[index] * inv_count;
-            wt_local[tidx] = w_tavg_h[index] * inv_count;
+            ut_local[tidx] = u_tavg_h[index] * inv_count_uref;  // V_mean (spanwise=code u)
+            vt_local[tidx] = v_tavg_h[index] * inv_count_uref;  // U_mean (streamwise=code v)
+            wt_local[tidx] = w_tavg_h[index] * inv_count_uref;  // W_mean (wall-normal=code w)
             tidx++;
         }}}
+    }
+
+    // 準備 Reynolds stress 資料 (若有累積), 正規化: ÷Uref²
+    double *uu_local = NULL, *ww_local = NULL, *vv_local = NULL, *uw_local = NULL, *k_local = NULL;
+    if (rey_avg_count > 0 && (int)TBSWITCH) {
+        uu_local = (double*)malloc(localPoints * sizeof(double));
+        ww_local = (double*)malloc(localPoints * sizeof(double));
+        vv_local = (double*)malloc(localPoints * sizeof(double));
+        uw_local = (double*)malloc(localPoints * sizeof(double));
+        k_local  = (double*)malloc(localPoints * sizeof(double));
+
+        // Copy 7 MeanVars arrays from GPU → temporary host buffers
+        size_t grid_bytes_rs = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
+        double *U_h_rs = (double*)malloc(grid_bytes_rs);
+        double *V_h_rs = (double*)malloc(grid_bytes_rs);
+        double *W_h_rs = (double*)malloc(grid_bytes_rs);
+        double *UU_h_rs = (double*)malloc(grid_bytes_rs);
+        double *VV_h_rs = (double*)malloc(grid_bytes_rs);
+        double *WW_h_rs = (double*)malloc(grid_bytes_rs);
+        double *VW_h_rs = (double*)malloc(grid_bytes_rs);
+        CHECK_CUDA(cudaMemcpy(U_h_rs,  U,  grid_bytes_rs, cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(V_h_rs,  V,  grid_bytes_rs, cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(W_h_rs,  W,  grid_bytes_rs, cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(UU_h_rs, UU, grid_bytes_rs, cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(VV_h_rs, VV, grid_bytes_rs, cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(WW_h_rs, WW, grid_bytes_rs, cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(VW_h_rs, VW, grid_bytes_rs, cudaMemcpyDeviceToHost));
+
+        double inv_N = 1.0 / (double)rey_avg_count;
+        double inv_Uref2 = 1.0 / ((double)Uref * (double)Uref);
+        int ridx = 0;
+        for( int k = 3; k < NZ6-3; k++ ){
+        for( int j = 3; j < NYD6-3; j++ ){
+        for( int i = 3; i < NX6-3; i++ ){
+            int index = j*NZ6*NX6 + k*NX6 + i;
+            double u_m = U_h_rs[index]*inv_N;  // <u_code> (spanwise)
+            double v_m = V_h_rs[index]*inv_N;  // <v_code> (streamwise = benchmark U)
+            double w_m = W_h_rs[index]*inv_N;  // <w_code> (wall-normal = benchmark W)
+            // Code→Benchmark mapping: v→U, w→W, u→V
+            double uu_val = (VV_h_rs[index]*inv_N - v_m*v_m) * inv_Uref2;  // <u'u'>/Uref² (benchmark)
+            double ww_val = (WW_h_rs[index]*inv_N - w_m*w_m) * inv_Uref2;  // <w'w'>/Uref²
+            double vv_val = (UU_h_rs[index]*inv_N - u_m*u_m) * inv_Uref2;  // <v'v'>/Uref² (spanwise)
+            double uw_val = (VW_h_rs[index]*inv_N - v_m*w_m) * inv_Uref2;  // <u'w'>/Uref²
+            uu_local[ridx] = uu_val;
+            ww_local[ridx] = ww_val;
+            vv_local[ridx] = vv_val;
+            uw_local[ridx] = uw_val;
+            k_local[ridx]  = 0.5 * (uu_val + ww_val + vv_val);  // TKE/Uref²
+            ridx++;
+        }}}
+        free(U_h_rs); free(V_h_rs); free(W_h_rs);
+        free(UU_h_rs); free(VV_h_rs); free(WW_h_rs); free(VW_h_rs);
     }
 
     // Compute vorticity vector (omega_x, omega_y, omega_z) + omega_x' (fluctuation)
@@ -750,10 +815,20 @@ void fileIO_velocity_vtk_merged(int step) {
         z_global = (double*)malloc(zLocalSize * nProcs * sizeof(double));
     }
 
-    double *vt_global = NULL, *wt_global = NULL;
-    if( myid == 0 && time_avg_count > 0 ) {
+    double *ut_global = NULL, *vt_global = NULL, *wt_global = NULL;
+    if( myid == 0 && vel_avg_count > 0 ) {
+        ut_global = (double*)malloc(gatherPoints * sizeof(double));
         vt_global = (double*)malloc(gatherPoints * sizeof(double));
         wt_global = (double*)malloc(gatherPoints * sizeof(double));
+    }
+
+    double *uu_global = NULL, *ww_global = NULL, *vv_global = NULL, *uw_global = NULL, *k_global = NULL;
+    if( myid == 0 && rey_avg_count > 0 && (int)TBSWITCH ) {
+        uu_global = (double*)malloc(gatherPoints * sizeof(double));
+        ww_global = (double*)malloc(gatherPoints * sizeof(double));
+        vv_global = (double*)malloc(gatherPoints * sizeof(double));
+        uw_global = (double*)malloc(gatherPoints * sizeof(double));
+        k_global  = (double*)malloc(gatherPoints * sizeof(double));
     }
 
     double *ox_global = NULL, *oy_global = NULL, *oz_global = NULL, *oxp_global = NULL;
@@ -770,9 +845,17 @@ void fileIO_velocity_vtk_merged(int step) {
     MPI_Gather(w_local, localPoints, MPI_DOUBLE, w_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(z_local, zLocalSize, MPI_DOUBLE, z_global, zLocalSize, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-    if (time_avg_count > 0) {
+    if (vel_avg_count > 0) {
+        MPI_Gather(ut_local, localPoints, MPI_DOUBLE, ut_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(vt_local, localPoints, MPI_DOUBLE, vt_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(wt_local, localPoints, MPI_DOUBLE, wt_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    }
+    if (rey_avg_count > 0 && (int)TBSWITCH) {
+        MPI_Gather(uu_local, localPoints, MPI_DOUBLE, uu_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(ww_local, localPoints, MPI_DOUBLE, ww_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(vv_local, localPoints, MPI_DOUBLE, vv_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(uw_local, localPoints, MPI_DOUBLE, uw_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(k_local,  localPoints, MPI_DOUBLE, k_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
     MPI_Gather(ox_local,  localPoints, MPI_DOUBLE, ox_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(oy_local,  localPoints, MPI_DOUBLE, oy_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
@@ -800,7 +883,7 @@ void fileIO_velocity_vtk_merged(int step) {
         }
         
         out << "# vtk DataFile Version 3.0\n";
-        out << "LBM Velocity Field (merged) step=" << step << " Force=" << scientific << setprecision(8) << Force_h[0] << " tavg_count=" << time_avg_count << "\n";
+        out << "LBM Velocity Field (merged) step=" << step << " Force=" << scientific << setprecision(8) << Force_h[0] << " vel_avg_count=" << vel_avg_count << " rey_avg_count=" << rey_avg_count << "\n";
         out << "ASCII\n";
         out << "DATASET STRUCTURED_GRID\n";
         out << "DIMENSIONS " << nxLocal << " " << nyGlobal << " " << nzLocal << "\n";
@@ -843,10 +926,10 @@ void fileIO_velocity_vtk_merged(int step) {
             out << u_global[global_idx] << " " << v_global[global_idx] << " " << w_global[global_idx] << "\n";
         }}}
 
-        // 輸出時間平均場 (若有累積)
-        if (time_avg_count > 0) {
-            // v_time_avg (streamwise, y-direction)
-            out << "\nSCALARS v_time_avg double 1\n";
+        // 輸出時間平均場: U_mean, W_mean, V_mean (正規化: ÷Uref)
+        if (vel_avg_count > 0) {
+            // U_mean (streamwise = benchmark U = code v, ÷Uref)
+            out << "\nSCALARS U_mean double 1\n";
             out << "LOOKUP_TABLE default\n";
             for( int k = 0; k < nzLocal; k++ ){
             for( int jg = 0; jg < nyGlobal; jg++ ){
@@ -854,13 +937,12 @@ void fileIO_velocity_vtk_merged(int step) {
                 int gpu_id = jg / stride;
                 if( gpu_id >= jp ) gpu_id = jp - 1;
                 int j_local = jg - gpu_id * stride;
-                int gpu_offset = gpu_id * localPoints;
-                int local_idx = k * nyLocal * nxLocal + j_local * nxLocal + i;
-                out << vt_global[gpu_offset + local_idx] << "\n";
+                int gidx = gpu_id * localPoints + k * nyLocal * nxLocal + j_local * nxLocal + i;
+                out << vt_global[gidx] << "\n";
             }}}
 
-            // w_time_avg (wall-normal, z-direction)
-            out << "\nSCALARS w_time_avg double 1\n";
+            // W_mean (wall-normal = benchmark W = code w, ÷Uref)
+            out << "\nSCALARS W_mean double 1\n";
             out << "LOOKUP_TABLE default\n";
             for( int k = 0; k < nzLocal; k++ ){
             for( int jg = 0; jg < nyGlobal; jg++ ){
@@ -868,10 +950,41 @@ void fileIO_velocity_vtk_merged(int step) {
                 int gpu_id = jg / stride;
                 if( gpu_id >= jp ) gpu_id = jp - 1;
                 int j_local = jg - gpu_id * stride;
-                int gpu_offset = gpu_id * localPoints;
-                int local_idx = k * nyLocal * nxLocal + j_local * nxLocal + i;
-                out << wt_global[gpu_offset + local_idx] << "\n";
+                int gidx = gpu_id * localPoints + k * nyLocal * nxLocal + j_local * nxLocal + i;
+                out << wt_global[gidx] << "\n";
             }}}
+
+            // V_mean (spanwise = benchmark V = code u, ÷Uref, should ≈ 0)
+            out << "\nSCALARS V_mean double 1\n";
+            out << "LOOKUP_TABLE default\n";
+            for( int k = 0; k < nzLocal; k++ ){
+            for( int jg = 0; jg < nyGlobal; jg++ ){
+            for( int i = 0; i < nxLocal; i++ ){
+                int gpu_id = jg / stride;
+                if( gpu_id >= jp ) gpu_id = jp - 1;
+                int j_local = jg - gpu_id * stride;
+                int gidx = gpu_id * localPoints + k * nyLocal * nxLocal + j_local * nxLocal + i;
+                out << ut_global[gidx] << "\n";
+            }}}
+        }
+
+        // 輸出 Reynolds stress + TKE (正規化: ÷Uref²)
+        if (rey_avg_count > 0 && (int)TBSWITCH) {
+            const char *rs_names[] = {"uu", "ww", "vv", "uw", "k"};
+            double *rs_arrays[] = {uu_global, ww_global, vv_global, uw_global, k_global};
+            for (int rs = 0; rs < 5; rs++) {
+                out << "\nSCALARS " << rs_names[rs] << " double 1\n";
+                out << "LOOKUP_TABLE default\n";
+                for( int k = 0; k < nzLocal; k++ ){
+                for( int jg = 0; jg < nyGlobal; jg++ ){
+                for( int i = 0; i < nxLocal; i++ ){
+                    int gpu_id = jg / stride;
+                    if( gpu_id >= jp ) gpu_id = jp - 1;
+                    int j_local = jg - gpu_id * stride;
+                    int gidx = gpu_id * localPoints + k * nyLocal * nxLocal + j_local * nxLocal + i;
+                    out << rs_arrays[rs][gidx] << "\n";
+                }}}
+            }
         }
 
         // Vorticity vector: (omega_x, omega_y, omega_z)
@@ -904,32 +1017,45 @@ void fileIO_velocity_vtk_merged(int step) {
 
         out.close();
         cout << "Merged VTK output: velocity_merged_" << setfill('0') << setw(6) << step << ".vtk";
-        if (time_avg_count > 0) cout << " (tavg_count=" << time_avg_count << ")";
+        if (vel_avg_count > 0) cout << " (vel=" << vel_avg_count << ")";
+        if (rey_avg_count > 0) cout << " (rey=" << rey_avg_count << ")";
         cout << "\n";
-        
+
         free(u_global);
         free(v_global);
         free(w_global);
         free(z_global);
         free(y_global_arr);
+        if (ut_global) free(ut_global);
         if (vt_global) free(vt_global);
         if (wt_global) free(wt_global);
         if (ox_global)  free(ox_global);
         if (oy_global)  free(oy_global);
         if (oz_global)  free(oz_global);
         if (oxp_global) free(oxp_global);
+        if (uu_global) free(uu_global);
+        if (ww_global) free(ww_global);
+        if (vv_global) free(vv_global);
+        if (uw_global) free(uw_global);
+        if (k_global)  free(k_global);
     }
 
     free(u_local);
     free(v_local);
     free(w_local);
     free(z_local);
+    if (ut_local) free(ut_local);
     if (vt_local) free(vt_local);
     if (wt_local) free(wt_local);
     free(ox_local);
     free(oy_local);
     free(oz_local);
     free(oxp_local);
+    if (uu_local) free(uu_local);
+    if (ww_local) free(ww_local);
+    if (vv_local) free(vv_local);
+    if (uw_local) free(uw_local);
+    if (k_local)  free(k_local);
     
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }

@@ -36,8 +36,7 @@ double  *x_h, *y_h, *z_h, *xi_h,
 double  *Xdep_h[3], *Ydep_h[3], *Zdep_h[3],
         *Xdep_d[3], *Ydep_d[3], *Zdep_d[3];
 
-// ZSlopePara retained for MeanDerivatives kernel in statistics.h (TBSWITCH=0, dead path)
-double  *ZSlopePara_d[5];
+// ZSlopePara removed — MeanDerivatives now uses dk_dz_d/dk_dy_d metric terms
 
 
 
@@ -88,18 +87,21 @@ double  *Force_h,   *Force_d;
 
 double *rho_modify_h, *rho_modify_d;
 
-// Time-average accumulation
-// v = streamwise, w = wall-normal; GPU-side accumulation every physical step
-double *v_tavg_h = NULL, *w_tavg_h = NULL;   // host (for VTK output)
-double *v_tavg_d = NULL, *w_tavg_d = NULL;   // device (accumulated on GPU)
-int time_avg_count = 0 ;
+// Time-average accumulation (FTT-gated)
+// u=spanwise, v=streamwise, w=wall-normal; GPU-side accumulation
+double *u_tavg_h = NULL, *v_tavg_h = NULL, *w_tavg_h = NULL;   // host (for VTK output)
+double *u_tavg_d = NULL, *v_tavg_d = NULL, *w_tavg_d = NULL;   // device (accumulated on GPU)
+int vel_avg_count = 0;      // Stage 1: mean velocity accumulation count (FTT >= FTT_STAGE1)
+int rey_avg_count = 0;      // Stage 2: Reynolds stress accumulation count (FTT >= FTT_STAGE2)
+bool stage1_announced = false;
+bool stage2_announced = false;
 
 int nProcs, myid;
 
 int step;
 int restart_step = 0;  // 續跑起始步 (INIT=2 時從 VTK header 解析)
 int accu_num = 0;
-int ub_accu_count = 0;  // AccumulateUbulk 累加計數 (Launch_ModifyForcingTerm 用後重設)
+// ub_accu_count removed — Launch_ModifyForcingTerm now uses instantaneous Ub
 
 int l_nbr, r_nbr;
 
@@ -168,9 +170,11 @@ int main(int argc, char *argv[])
     // Allocate time-average accumulation arrays early (before possible VTK restart read)
     {
         size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
+        u_tavg_h = (double*)calloc(nTotal, sizeof(double));
         v_tavg_h = (double*)calloc(nTotal, sizeof(double));
         w_tavg_h = (double*)calloc(nTotal, sizeof(double));
-        time_avg_count = 0;
+        vel_avg_count = 0;
+        rey_avg_count = 0;
     }
 
     //pre-check whether the directories exit or not
@@ -462,26 +466,37 @@ int main(int argc, char *argv[])
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
     // Restore time-average from VTK restart (if available)
-    if (restart_step > 0 && time_avg_count > 0) {
-        // v_tavg_h/w_tavg_h contain averaged values from VTK; multiply by count to get cumulative sums
+    if (restart_step > 0 && vel_avg_count > 0) {
+        // tavg_h arrays contain averaged values from VTK; multiply by count to get cumulative sums
         const size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
         for (size_t idx = 0; idx < nTotal; idx++) {
-            v_tavg_h[idx] *= (double)time_avg_count;
-            w_tavg_h[idx] *= (double)time_avg_count;
+            u_tavg_h[idx] *= (double)vel_avg_count;
+            v_tavg_h[idx] *= (double)vel_avg_count;
+            w_tavg_h[idx] *= (double)vel_avg_count;
         }
         // Copy accumulated sums to GPU
         const size_t tavg_bytes = nTotal * sizeof(double);
+        CHECK_CUDA( cudaMemcpy(u_tavg_d, u_tavg_h, tavg_bytes, cudaMemcpyHostToDevice) );
         CHECK_CUDA( cudaMemcpy(v_tavg_d, v_tavg_h, tavg_bytes, cudaMemcpyHostToDevice) );
         CHECK_CUDA( cudaMemcpy(w_tavg_d, w_tavg_h, tavg_bytes, cudaMemcpyHostToDevice) );
         if (myid == 0)
-            printf("Time-average restored from VTK: tavg_count=%d, copied to GPU (%.1f MB each).\n",
-                   time_avg_count, tavg_bytes / 1.0e6);
+            printf("Velocity time-average restored from VTK: vel_avg_count=%d, copied to GPU (%.1f MB each).\n",
+                   vel_avg_count, tavg_bytes / 1.0e6);
+        stage1_announced = true;
     } else {
         if (myid == 0) {
             size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
             printf("Time-average arrays allocated (%.1f MB each), starting fresh.\n",
                    nTotal * sizeof(double) / 1.0e6);
         }
+    }
+
+    // Restore Reynolds stress from binary checkpoint (if available)
+    if (restart_step > 0 && rey_avg_count > 0 && (int)TBSWITCH) {
+        statistics_readbin_stress();
+        stage2_announced = true;
+        if (myid == 0)
+            printf("Reynolds stress restored from binary checkpoint (rey_avg_count=%d)\n", rey_avg_count);
     }
 
     CHECK_CUDA( cudaEventRecord(start,0) );
@@ -550,48 +565,77 @@ int main(int argc, char *argv[])
 
 
 
-    //從此開始進入迴圈
+    //從此開始進入迴圈 (FTT-gated two-stage time averaging)
     for( step = loop_start ; step < loop_start + loop ; step++, accu_num++ ) {
+        double FTT_now = step * dt_global / (double)flow_through_time;
 
+        // ===== Sub-step 1: even step (ft → fd) =====
         Launch_CollisionStreaming( ft, fd );
-        if (step > 0) ub_accu_count++;  // step=0 不計入 Ub 累加
 
-        if( (int)TBSWITCH ) { Launch_TurbulentSum( fd ); }
+        // Stage 2: MeanVars + MeanDerivatives (FTT >= FTT_STAGE2)
+        if (FTT_now >= FTT_STAGE2 && (int)TBSWITCH) {
+            Launch_TurbulentSum( fd );
+            rey_avg_count++;
+        }
 
         CHECK_CUDA( cudaDeviceSynchronize() );
-        if (step > 0) {               // skip step=0 initial state
-            Launch_AccumulateTavg();    // accumulate sub-step 1
-            time_avg_count++;
+
+        // Stage 1: velocity mean (FTT >= FTT_STAGE1)
+        if (FTT_now >= FTT_STAGE1 && step > 0) {
+            Launch_AccumulateTavg();
+            vel_avg_count++;
         }
+
+        // Stage transition messages
+        if (!stage1_announced && FTT_now >= FTT_STAGE1) {
+            stage1_announced = true;
+            if (myid == 0) printf("\n>>> [FTT=%.2f] STAGE 1: Mean velocity accumulation STARTED <<<\n\n", FTT_now);
+        }
+        if (!stage2_announced && FTT_now >= FTT_STAGE2) {
+            stage2_announced = true;
+            if (myid == 0) printf("\n>>> [FTT=%.2f] STAGE 2: Reynolds stress accumulation STARTED <<<\n\n", FTT_now);
+        }
+
+        // ===== Sub-step 2: odd step (fd → ft) =====
         step += 1;
         accu_num += 1;
+        FTT_now = step * dt_global / (double)flow_through_time;
 
-        //Launch_ModifyForcingTerm();
         Launch_CollisionStreaming( fd, ft );
-        ub_accu_count++;  // step >= 1 here, always count
 
-        if( (int)TBSWITCH ) { Launch_TurbulentSum( ft ); }
+        if (FTT_now >= FTT_STAGE2 && (int)TBSWITCH) {
+            Launch_TurbulentSum( ft );
+            rey_avg_count++;
+        }
 
         CHECK_CUDA( cudaDeviceSynchronize() );
-        Launch_AccumulateTavg();  // accumulate sub-step 2
-        time_avg_count++;
 
+        if (FTT_now >= FTT_STAGE1) {
+            Launch_AccumulateTavg();
+            vel_avg_count++;
+        }
+
+        // ===== Status display (every 5000 steps) =====
         if ( myid == 0 && step%5000 == 1 ) {
             CHECK_CUDA( cudaEventRecord( stop1,0 ) );
             CHECK_CUDA( cudaEventSynchronize( stop1 ) );
 			float cudatime1;
 			CHECK_CUDA( cudaEventElapsedTime( &cudatime1,start1,stop1 ) );
 
-            double FTT_now = step * dt_global / (double)flow_through_time;
             printf("+----------------------------------------------------------------+\n");
 			printf("| Step = %d    FTT = %.2f \n", step, FTT_now);
             printf("|%s running with %4dx%4dx%4d grids            \n", argv[0], (int)NX6, (int)NY6, (int)NZ6 );
-            printf("| Running %6f mins                                           \n", (cudatime1/60/1000) ),
+            printf("| Running %6f mins                                           \n", (cudatime1/60/1000) );
+            printf("| Stage: %s | %s\n",
+                   (FTT_now >= FTT_STAGE1) ? "VelAvg ON" : "VelAvg OFF",
+                   (FTT_now >= FTT_STAGE2) ? "RS ON" : "RS OFF");
+            printf("| vel_avg_count=%d  rey_avg_count=%d\n", vel_avg_count, rey_avg_count);
             printf("+----------------------------------------------------------------+\n");
 
             cudaEventRecord(start1,0);
         }
 
+        // ===== Force modification (every NDTFRC steps) =====
         if ( (step%(int)NDTFRC == 1) ) {
             Launch_ModifyForcingTerm();
         }
@@ -600,18 +644,16 @@ int main(int argc, char *argv[])
 			Launch_Monitor();
 		}
 
-        // 每1000步輸出合併 VTK 追蹤流場 (所有GPU合併為單一檔案)
-        // 注意: step 在迴圈中是奇數 (1,3,5...)，所以用 % 1000 == 1
-        //每1000步都要 輸出顯示計算，所以每1000步都要做一次面平均
+        // ===== VTK output + binary checkpoint (every 1000 steps) =====
         if ( step % 1000 == 1 ) {
             SendDataToCPU( ft );
             // Copy GPU tavg → host for VTK output
             const size_t tavg_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
+            CHECK_CUDA( cudaMemcpy(u_tavg_h, u_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
             CHECK_CUDA( cudaMemcpy(v_tavg_h, v_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
             CHECK_CUDA( cudaMemcpy(w_tavg_h, w_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
 
-            // VTK-step status: 在 VTK 輸出前顯示完整狀態
-            // ComputeMaMax 需要全 rank 參與 (MPI_Allreduce)
+            // VTK-step status
             double Ma_max_vtk = ComputeMaMax();
             if (myid == 0) {
                 double Ub_vtk = 0.0;
@@ -623,57 +665,60 @@ int main(int argc, char *argv[])
                     Ub_vtk += v_h_p[idx] * dx_loc * dz_loc;
                 }
                 Ub_vtk /= (double)(LX * (LZ - 1.0));
-                printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f  Ma_max=%.4f\n",
-                       step, step * dt_global / (double)flow_through_time,
+                printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re=%.1f  Ma=%.4f  Ma_max=%.4f  vel=%d  rey=%d\n",
+                       step, FTT_now,
                        Ub_vtk, Ub_vtk / (double)Uref, Force_h[0],
                        Force_h[0] * (double)LY / ((double)Uref * (double)Uref),
                        Ub_vtk / ((double)Uref / (double)Re),
-                       Ub_vtk / (double)cs, Ma_max_vtk);
+                       Ub_vtk / (double)cs, Ma_max_vtk, vel_avg_count, rey_avg_count);
             }
 
             fileIO_velocity_vtk_merged( step );
+
+            // Binary checkpoint for Reynolds stress arrays (only when data exists)
+            if (rey_avg_count > 0 && (int)TBSWITCH) {
+                statistics_writebin_stress();
+            }
         }
 
+        // ===== Global Mass Conservation Modify =====
         cudaDeviceSynchronize();
-        cudaMemcpy(Force_h, Force_d, sizeof(double), cudaMemcpyDeviceToHost);   
-        //Global Mass Conservation Modify
-        
+        cudaMemcpy(Force_h, Force_d, sizeof(double), cudaMemcpyDeviceToHost);
+        {
             SendDataToCPU( ft );
             double rho_LocalSum  = 0.0;
             double rho_GlobalSum = 0.0;
             double rho_global;
             for( int j = 3 ; j < NYD6-4; j++){
-            for( int k = 3 ; k < NZ6-3; k++){     // 包含壁面 k=3 和 k=NZ6-4
+            for( int k = 3 ; k < NZ6-3; k++){
             for( int i = 3 ; i < NX6-4; i++){
                 int index = j*NX6*NZ6 + k*NX6 + i;
                 rho_LocalSum =  rho_LocalSum + rho_h_p[index];
             }}}
             MPI_Reduce((void *)&rho_LocalSum, (void *)&rho_GlobalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
             if ( myid == 0){
-                rho_global = 1.0*(NX6-7)*(NY6-7)*(NZ6-6);   // 64 個 k 計算點 (k=3..NZ6-4)
+                rho_global = 1.0*(NX6-7)*(NY6-7)*(NZ6-6);
                 rho_modify_h[0] =( rho_global - rho_GlobalSum ) / ((NX6-7)*(NY6-7)*(NZ6-6));
                 cudaMemcpy(rho_modify_d, rho_modify_h, sizeof(double), cudaMemcpyHostToDevice);
             }
+        }
 
-        // (Time-average accumulation moved to GPU: Launch_AccumulateTavg after each sub-step)
-
-        //Check Mass Conservation + NaN early stop
+        // ===== Mass Conservation Check + NaN early stop (every 100 steps) =====
         if ( step % 100 == 1){
             SendDataToCPU( ft );
             double rho_LocalSum = 0;
             double rho_GlobalSum = 0;
             double rho_initial = 1.0 ;
             for( int j = 3 ; j < NYD6-4; j++){
-            for( int k = 3 ; k < NZ6-3; k++){     // 包含壁面 k=3 和 k=NZ6-4
+            for( int k = 3 ; k < NZ6-3; k++){
             for( int i = 3 ; i < NX6-4; i++){
                 int index = j*NX6*NZ6 + k*NX6 + i;
                 rho_LocalSum =  rho_LocalSum + rho_h_p[index] ;
             }}}
             double rho_LocalAvg;
-            rho_LocalAvg = rho_LocalSum / ((NX6-7)*(NYD6-7)*(NZ6-6));  // 64 個 k 計算點
+            rho_LocalAvg = rho_LocalSum / ((NX6-7)*(NYD6-7)*(NZ6-6));
             MPI_Reduce((void *)&rho_LocalAvg, (void *)&rho_GlobalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
-            // NaN / divergence early stop
             int nan_flag = 0;
             if (myid == 0) {
                 double rho_avg_check = rho_GlobalSum / (double)jp;
@@ -684,7 +729,6 @@ int main(int argc, char *argv[])
             }
             MPI_Bcast(&nan_flag, 1, MPI_INT, 0, MPI_COMM_WORLD);
             if (nan_flag) {
-                // 輸出最後一步 VTK 供分析
                 SendDataToCPU( ft );
                 fileIO_velocity_vtk_merged( step );
                 break;
@@ -698,34 +742,34 @@ int main(int argc, char *argv[])
                 fclose (checkrho);
             }
         }
-        //fprintf(checkrho, "Step =%d\tRho_inital=%lf\tRho_avg=%lf\n",step, rho_inital, rho_avg );
-         
     }
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
     SendDataToCPU( ft );
     result_writebin_velocityandf();
-    //Output3Dvelocity();
-    if( TBSWITCH ) {
+
+    // Final comprehensive statistics output
+    if (rey_avg_count > 0 && (int)TBSWITCH) {
+        double FTT_final = step * dt_global / (double)flow_through_time;
+        double FTT_rs = (double)rey_avg_count * dt_global / (double)flow_through_time;
+        if (myid == 0) {
+            printf("\n========================================================\n");
+            printf("[FINAL OUTPUT] FTT = %.3f (timestep = %d)\n", FTT_final, step);
+            printf("  -> Velocity mean accumulation: %d steps\n", vel_avg_count);
+            printf("  -> Reynolds stress accumulation: %.3f FTTs (%d steps)\n", FTT_rs, rey_avg_count);
+            printf("  -> Writing complete statistics (32 arrays)\n");
+            printf("========================================================\n\n");
+        }
+
+    #if FINAL_STATS_VTK
+        // TODO: fileIO_final_stats_vtk(step);  // merged VTK with all 32 arrays normalized
+        statistics_writebin_stress();  // fallback to binary for now
+    #else
         statistics_writebin_stress();
+    #endif
     }
-    
-    /* for( step = 0 ; step < loop ; step++ ){
-        double rrhhoo = 0;
-        for( int j = 0 ; j < NYD6; j++){
-            for( int k = 0; k < NZ6; k++){
-                for( int i = 0 ; i < NX6 ; i++){ 
-                 
-                int index = j*NX6*NZ6 + k*NX6 + i;
-                //printf(" i = %d \t j = %d \t k = %d \t rho = %lf \n", i, j, k, rho_h_p[index]);
-                rrhhoo =  rrhhoo + rho_h_p[index] ;
-                }
-            }
-        }   
-        double rho_avg;
-        rho_avg = rrhhoo / (NX6*NYD6*NZ6) ;
-        printf(" step = %d \t rho = %lf \n",step, rho_avg );
-    } */
+
+    free(u_tavg_h);
     free(v_tavg_h);
     free(w_tavg_h);
     FreeSource();

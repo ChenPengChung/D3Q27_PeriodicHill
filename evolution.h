@@ -59,11 +59,13 @@ __global__ void periodicSW(
 }
 
 
-// ===== Time-average accumulation kernel (GPU-side, every physical step) =====
-__global__ void AccumulateTavg_Kernel(double *v_tavg, double *w_tavg,
-                                      const double *v_src, const double *w_src, int N) {
+// ===== Time-average accumulation kernel (GPU-side, FTT-gated in main.cu) =====
+// Accumulates all 3 velocity components: u(spanwise), v(streamwise), w(wall-normal)
+__global__ void AccumulateTavg_Kernel(double *u_tavg, double *v_tavg, double *w_tavg,
+                                      const double *u_src, const double *v_src, const double *w_src, int N) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N) {
+        u_tavg[idx] += u_src[idx];
         v_tavg[idx] += v_src[idx];
         w_tavg[idx] += w_src[idx];
     }
@@ -73,7 +75,7 @@ void Launch_AccumulateTavg() {
     const int N = NX6 * NYD6 * NZ6;
     const int block = 256;
     const int grid = (N + block - 1) / block;
-    AccumulateTavg_Kernel<<<grid, block>>>(v_tavg_d, w_tavg_d, v, w, N);
+    AccumulateTavg_Kernel<<<grid, block>>>(u_tavg_d, v_tavg_d, w_tavg_d, u, v, w, N);
 }
 
 __global__ void AccumulateUbulk(
@@ -126,11 +128,7 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     u, v, w, rho_d, Force_d, rho_modify_d, NYD6-7
     );
 
-    dim3 griddim_Ubulk(  NX6/NT+1, 1, NZ6);
-    dim3 blockdim_Ubulk( NT, 1, 1);
-    AccumulateUbulk<<<griddim_Ubulk, blockdim_Ubulk, 0, stream1>>>(
-    Ub_avg_d, v, x_d, z_d
-    );
+    // AccumulateUbulk removed from streaming — now computed instantaneously in Launch_ModifyForcingTerm
 
     GILBM_StreamCollide_Kernel<<<griddim, blockdim, 0, stream0>>>(
     f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6], f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12], f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
@@ -167,46 +165,43 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
 
 void Launch_ModifyForcingTerm()
 {
+    // ====== Instantaneous Ub: zero → accumulate once → read ======
     const size_t nBytes = NX6 * NZ6 * sizeof(double);
-    CHECK_CUDA( cudaMemcpy(Ub_avg_h, Ub_avg_d, nBytes, cudaMemcpyDeviceToHost) );
-    
-    double Ub_avg = 0.0;
-    for( int k = 3; k < NZ6-3; k++ ){    // 包含壁面計算點
-    for( int i = 3; i < NX6-4; i++ ){
-        Ub_avg = Ub_avg + Ub_avg_h[k*NX6+i];
-        Ub_avg_h[k*NX6+i] = 0.0;
-    }}
-    // 計算 Step (step-ub_accu_count+1) ~ Step (step) 區間的入口端時間平均速度
-    int step_from = step - ub_accu_count + 1;
-    Ub_avg = Ub_avg / (double)(LX*(LZ-1.0)) / (double)ub_accu_count;
+    CHECK_CUDA( cudaMemset(Ub_avg_d, 0, nBytes) );   // always clean before single-shot
 
-    CHECK_CUDA( cudaMemcpy(Ub_avg_d, Ub_avg_h, nBytes, cudaMemcpyHostToDevice) );
+    dim3 griddim_Ubulk(NX6/NT+1, 1, NZ6);
+    dim3 blockdim_Ubulk(NT, 1, 1);
+    AccumulateUbulk<<<griddim_Ubulk, blockdim_Ubulk>>>(Ub_avg_d, v, x_d, z_d);
+    CHECK_CUDA( cudaDeviceSynchronize() );
+
+    CHECK_CUDA( cudaMemcpy(Ub_avg_h, Ub_avg_d, nBytes, cudaMemcpyDeviceToHost) );
+
+    double Ub_avg = 0.0;
+    for( int k = 3; k < NZ6-3; k++ ){
+    for( int i = 3; i < NX6-4; i++ ){
+        Ub_avg += Ub_avg_h[k*NX6+i];
+    }}
+    Ub_avg /= (double)(LX*(LZ-1.0));  // instantaneous: NO ub_accu_count division
 
     // ★ 只有 rank 0 的 j=3 = 山丘頂入口截面，具有物理意義
-    //   Bcast rank 0 的 Ub_avg → 所有 rank 使用相同的入口 u_bulk
     CHECK_MPI( MPI_Bcast(&Ub_avg, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD) );
-    Ub_avg_global = Ub_avg;  // 存入全域變數，供 Launch_Monitor 等使用
+    Ub_avg_global = Ub_avg;
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
-    
+
     double beta = max(0.001, force_alpha/(double)Re);
     double Ma_now = Ub_avg / (double)cs;
 
-    // 1. 超速時使用更強的修正增益 (asymmetric gain)
     double error = (double)Uref - Ub_avg;
     double gain = beta;
-    /*if (error < 0.0) {
-        // Ub > Uref: 加倍增益以快速壓制
-        gain = beta * 3.0;
-    }*/
     Force_h[0] = Force_h[0] + gain * error * (double)Uref / (double)LY;
 
-    // 3. Force 非負 clamp: 壓力梯度不能反向驅動流體 (否則造成反向流 → 發散)
+    // Force 非負 clamp
     if (Force_h[0] < 0.0) {
         Force_h[0] = 0.0;
     }
 
-    // 4. Ma 安全檢查: 分段制動 (LBM 穩定性要求 Ma < 0.3)
+    // Ma 安全檢查
     if (Ma_now > 0.3) {
         Force_h[0] *= 0.5;
         if (myid == 0)
@@ -218,18 +213,12 @@ void Launch_ModifyForcingTerm()
             printf("[CRITICAL] Ma=%.4f > 0.35, Force reduced to %.5E\n", Ma_now, Force_h[0]);
     }
 
-    // ★ 所有 rank 使用相同 Ub_avg → 計算出相同 Force_h[0]
-    //   不再需要 MPI_Reduce + Bcast Force (已天然同步)
-
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
-    // 無因次化量 (論文 Fig.5)
-    double FTT    = step * dt_global / (double)flow_through_time;  // T*Uref/L (用 dt_global, 非 minSize)
-    double U_star = Ub_avg / (double)Uref;                          // U* = Ub/Uref
-    double F_star = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);  // F* = F*L/(rho*Uref^2), rho=1
-    double Re_now = Ub_avg / ((double)Uref / (double)Re);  // niu 巨集無括號，不能用 (double)niu
-
-    // 全場最大 Ma (山丘頂部加速區可達 2×Ma_bulk)
+    double FTT    = step * dt_global / (double)flow_through_time;
+    double U_star = Ub_avg / (double)Uref;
+    double F_star = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);
+    double Re_now = Ub_avg / ((double)Uref / (double)Re);
     double Ma_max = ComputeMaMax();
 
     const char *status_tag = "";
@@ -238,8 +227,8 @@ void Launch_ModifyForcingTerm()
     else if (U_star > 1.05) status_tag = " [OVERSHOOT]";
 
     if (myid == 0) {
-        printf("[Step %d~%d | FTT=%.2f] Ub_avg=%.6f  U*_avg=%.4f  Force=%.5E  F*=%.4f  Re_avg(%d~%d)=%.1f  Ma_avg(%d~%d)=%.4f  Ma_max=%.4f%s\n",
-               step_from, step, FTT, Ub_avg, U_star, Force_h[0], F_star, step_from, step, Re_now, step_from, step, Ma_now, Ma_max, status_tag);
+        printf("[Step %d | FTT=%.2f] Ub_inst=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re=%.1f  Ma=%.4f  Ma_max=%.4f%s\n",
+               step, FTT, Ub_avg, U_star, Force_h[0], F_star, Re_now, Ma_now, Ma_max, status_tag);
     }
 
     if (Ma_max > 0.35 && myid == 0) {
@@ -249,11 +238,8 @@ void Launch_ModifyForcingTerm()
 
     CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
 
-    ub_accu_count = 0;  // 重設 Ub 累加計數，下一區間重新累加
-    
     CHECK_CUDA( cudaDeviceSynchronize() );
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
-    
 }
 
 #endif

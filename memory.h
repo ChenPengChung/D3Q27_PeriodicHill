@@ -66,15 +66,33 @@ void AllocateMemory() {
     }
 
     if( TBSWITCH ) {
-        //AllocateDeviceArray(nBytes, 2,  &KT, &DISS);
-        //AllocateDeviceArray(nBytes, 9,  &DUDX2, &DUDY2, &DUDZ2, &DVDX2, &DVDY2, &DVDZ2, &DWDX2, &DWDY2, &DWDZ2);
         AllocateDeviceArray(nBytes, 4,  &U,  &V,  &W,  &P);
+        CHECK_CUDA(cudaMemset(U, 0, nBytes));  CHECK_CUDA(cudaMemset(V, 0, nBytes));
+        CHECK_CUDA(cudaMemset(W, 0, nBytes));  CHECK_CUDA(cudaMemset(P, 0, nBytes));
+
         AllocateDeviceArray(nBytes, 10, &UU, &UV, &UW, &VV, &VW, &WW, &PU, &PV, &PW, &PP);
+        CHECK_CUDA(cudaMemset(UU, 0, nBytes)); CHECK_CUDA(cudaMemset(UV, 0, nBytes));
+        CHECK_CUDA(cudaMemset(UW, 0, nBytes)); CHECK_CUDA(cudaMemset(VV, 0, nBytes));
+        CHECK_CUDA(cudaMemset(VW, 0, nBytes)); CHECK_CUDA(cudaMemset(WW, 0, nBytes));
+        CHECK_CUDA(cudaMemset(PU, 0, nBytes)); CHECK_CUDA(cudaMemset(PV, 0, nBytes));
+        CHECK_CUDA(cudaMemset(PW, 0, nBytes)); CHECK_CUDA(cudaMemset(PP, 0, nBytes));
+
         AllocateDeviceArray(nBytes, 1,  &KT);
+        CHECK_CUDA(cudaMemset(KT, 0, nBytes));
+
         AllocateDeviceArray(nBytes, 9,  &DUDX2, &DUDY2, &DUDZ2, &DVDX2, &DVDY2, &DVDZ2, &DWDX2, &DWDY2, &DWDZ2);
+        CHECK_CUDA(cudaMemset(DUDX2, 0, nBytes)); CHECK_CUDA(cudaMemset(DUDY2, 0, nBytes));
+        CHECK_CUDA(cudaMemset(DUDZ2, 0, nBytes)); CHECK_CUDA(cudaMemset(DVDX2, 0, nBytes));
+        CHECK_CUDA(cudaMemset(DVDY2, 0, nBytes)); CHECK_CUDA(cudaMemset(DVDZ2, 0, nBytes));
+        CHECK_CUDA(cudaMemset(DWDX2, 0, nBytes)); CHECK_CUDA(cudaMemset(DWDY2, 0, nBytes));
+        CHECK_CUDA(cudaMemset(DWDZ2, 0, nBytes));
+
     	AllocateDeviceArray(nBytes, 9,  &UUU,   &UUV,   &UUW,   &VVU,   &VVV,   &VVW,   &WWU,   &WWV,   &WWW);
-        for (int i = 0; i < 5; i++)
-            AllocateDeviceArray(nBytes, 1, &ZSlopePara_d[i]);
+        CHECK_CUDA(cudaMemset(UUU, 0, nBytes)); CHECK_CUDA(cudaMemset(UUV, 0, nBytes));
+        CHECK_CUDA(cudaMemset(UUW, 0, nBytes)); CHECK_CUDA(cudaMemset(VVU, 0, nBytes));
+        CHECK_CUDA(cudaMemset(VVV, 0, nBytes)); CHECK_CUDA(cudaMemset(VVW, 0, nBytes));
+        CHECK_CUDA(cudaMemset(WWU, 0, nBytes)); CHECK_CUDA(cudaMemset(WWV, 0, nBytes));
+        CHECK_CUDA(cudaMemset(WWW, 0, nBytes));
     }
 
     nBytes = NYD6 * sizeof(double);
@@ -115,11 +133,13 @@ void AllocateMemory() {
         CHECK_CUDA( cudaMemset(omegadt_local_d, 0, omega_bytes) );
     }
 
-    // Time-average accumulation (GPU-side)
+    // Time-average accumulation (GPU-side): u_tavg(spanwise), v_tavg(streamwise), w_tavg(wall-normal)
     {
         size_t tavg_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
+        CHECK_CUDA( cudaMalloc(&u_tavg_d, tavg_bytes) );
         CHECK_CUDA( cudaMalloc(&v_tavg_d, tavg_bytes) );
         CHECK_CUDA( cudaMalloc(&w_tavg_d, tavg_bytes) );
+        CHECK_CUDA( cudaMemset(u_tavg_d, 0, tavg_bytes) );
         CHECK_CUDA( cudaMemset(v_tavg_d, 0, tavg_bytes) );
         CHECK_CUDA( cudaMemset(w_tavg_d, 0, tavg_bytes) );
     }
@@ -130,8 +150,8 @@ void AllocateMemory() {
 
     nBytes = NZ6 * NX6 * sizeof(double);
     CHECK_CUDA( cudaMallocHost( (void**)&Ub_avg_h, nBytes ) );
-    
     CHECK_CUDA( cudaMalloc( &Ub_avg_d, nBytes ) );
+    CHECK_CUDA( cudaMemset(Ub_avg_d, 0, nBytes) );
     
 
     nBytes = sizeof(double);
@@ -166,14 +186,11 @@ void FreeSource() {
     FreeDeviceArray(4,  rho_d, u, v, w);
 
     if( TBSWITCH ) {
-        //FreeDeviceArray(2,  KT, DISS);
-        //FreeDeviceArray(9,  DUDX2, DUDY2, DUDZ2, DVDX2, DVDY2, DVDZ2, DWDX2, DWDY2, DWDZ2);
         FreeDeviceArray(4,  U,  V,  W,  P);
         FreeDeviceArray(10, UU, UV, UW, VV, VW, WW, PU, PV, PW, PP);
         FreeDeviceArray(1,  KT);
         FreeDeviceArray(9,  DUDX2, DUDY2, DUDZ2, DVDX2, DVDY2, DVDZ2, DWDX2, DWDY2, DWDZ2);
         FreeDeviceArray(9,  UUU, UUV, UUW, VVU, VVV, VVW, WWU, WWV, WWW);
-        FreeDeviceArray(5,  ZSlopePara_d[0], ZSlopePara_d[1], ZSlopePara_d[2], ZSlopePara_d[3], ZSlopePara_d[4]);
     }
 
     FreeHostArray(  4,  x_h, y_h, z_h, xi_h);
@@ -189,7 +206,7 @@ void FreeSource() {
     // GILBM two-pass arrays
     FreeDeviceArray(3,  f_pc_d, feq_d, omegadt_local_d);
     // Time-average accumulation (GPU)
-    FreeDeviceArray(2,  v_tavg_d, w_tavg_d);
+    FreeDeviceArray(3,  u_tavg_d, v_tavg_d, w_tavg_d);
 
     for( int i = 0; i < 3; i++ ){
         FreeHostArray(  3,  Xdep_h[i], Ydep_h[i], Zdep_h[i]);

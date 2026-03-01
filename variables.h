@@ -61,7 +61,7 @@
 //2 : from merged VTK file (specify RESTART_VTK_FILE below)
 #define     INIT    (2)   //2代表使用初始化資料 
 #define     TBINIT  (1)
-#define     RESTART_VTK_FILE  "result/velocity_merged_177001.vtk"
+#define     RESTART_VTK_FILE  "result/velocity_merged_191001.vtk"
 // Perturbation injection at startup (trigger 3D turbulent transition)
 // PERTURB_INIT=1: inject random noise on u,v,w to break spanwise symmetry
 // PERTURB_INIT=0: no perturbation (set to 0 after turbulence established)
@@ -79,6 +79,13 @@
 // 第 n 步的 FTT 數 = n * dt_global / (LY / Uref) = n * dt_global * Uref / LY
 // 注意: 曲線坐標系用 dt_global (runtime), 非 dt=minSize (直角坐標 compile-time)
 #define     flow_through_time  (LY / Uref)
+// FTT-gated statistics thresholds (Flow-Through Time = LY/Uref lattice steps)
+#define     FTT_STAGE1      20.0    // Start mean velocity accumulation (u_tavg, v_tavg, w_tavg)
+#define     FTT_STAGE2      50.0    // Start Reynolds stress accumulation (MeanVars + MeanDerivatives)
+
+// Final output format toggle: 0=binary (.bin per rank), 1=merged VTK
+#define     FINAL_STATS_VTK  0
+
 //block size of each direction
 #define     NT          32     //block size x-dir threadnum
 #endif

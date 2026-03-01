@@ -173,13 +173,18 @@ __global__ void MeanVars(
 
 }
 
+// MeanDerivatives: accumulate squared velocity gradients using curvilinear metrics
+// Curvilinear coordinate system:
+//   ∂φ/∂x = (1/dx) ∂φ/∂η                    (x uniform, no cross-term)
+//   ∂φ/∂y = (1/dy) ∂φ/∂ξ + dk_dy · ∂φ/∂ζ   (y uniform + curvilinear correction)
+//   ∂φ/∂z = dk_dz · ∂φ/∂ζ                    (z non-uniform, fully curvilinear)
 __global__ void MeanDerivatives(
-          double *DUDX2,	    double *DUDY2,	      double *DUDZ2,
-		  double *DVDX2,	    double *DVDY2,	      double *DVDZ2,
-		  double *DWDX2,	    double *DWDY2,	      double *DWDZ2,
-          double *SlpPara_0,    double *SlpPara_1,    double *SlpPara_2,    double *SlpPara_3,    double *SlpPara_4,
-	const double *u,      const double *v,      const double *w,      const double *rho,
-	const double *x,      const double *y,      const double *z  )
+          double *DUDX2,      double *DUDY2,        double *DUDZ2,
+          double *DVDX2,      double *DVDY2,        double *DVDZ2,
+          double *DWDX2,      double *DWDY2,        double *DWDZ2,
+    const double *dk_dz_in,   const double *dk_dy_in,
+    const double *u,    const double *v,    const double *w,
+    const double *x,    const double *y  )
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -187,25 +192,38 @@ __global__ void MeanDerivatives(
 
     const int index = j*NX6*NZ6 + k*NX6 + i;
 
-    double dudx = 0.0, dudy = 0.0, dudz = 0.0, dvdx = 0.0, dvdy = 0.0, dvdz = 0.0, dwdx = 0.0, dwdy = 0.0, dwdz = 0.0;
-
     if( i <= 2 || i >= NX6-3 || j <= 2 || j >= NYD6-3 || k <= 3 || k >= NZ6-4 ) return;
 
-    dudx = (8.0*( u[index+1] - u[index-1] ) - ( u[index+2] - u[index-2] )) / 12.0 / ( x[i+1] - x[i] );
-	dvdx = (8.0*( v[index+1] - v[index-1] ) - ( v[index+2] - v[index-2] )) / 12.0 / ( x[i+1] - x[i] );
-	dwdx = (8.0*( w[index+1] - w[index-1] ) - ( w[index+2] - w[index-2] )) / 12.0 / ( x[i+1] - x[i] );
+    // x-direction: ∂φ/∂x = (1/dx) · ∂φ/∂η  (4th-order central diff)
+    double dx_inv = 1.0 / (x[i+1] - x[i]);
+    double dudx = (8.0*(u[index+1] - u[index-1]) - (u[index+2] - u[index-2])) / 12.0 * dx_inv;
+    double dvdx = (8.0*(v[index+1] - v[index-1]) - (v[index+2] - v[index-2])) / 12.0 * dx_inv;
+    double dwdx = (8.0*(w[index+1] - w[index-1]) - (w[index+2] - w[index-2])) / 12.0 * dx_inv;
 
-    dudy = (8.0*( u[index+NX6*NZ6] - u[index-NX6*NZ6] ) - ( u[index+2*NX6*NZ6] - u[index-2*NX6*NZ6] )) / 12.0 / ( y[j+1] - y[j] );
-	dvdy = (8.0*( v[index+NX6*NZ6] - v[index-NX6*NZ6] ) - ( v[index+2*NX6*NZ6] - v[index-2*NX6*NZ6] )) / 12.0 / ( y[j+1] - y[j] );
-	dwdy = (8.0*( w[index+NX6*NZ6] - w[index-NX6*NZ6] ) - ( w[index+2*NX6*NZ6] - w[index-2*NX6*NZ6] )) / 12.0 / ( y[j+1] - y[j] );
+    // k-direction finite difference: ∂φ/∂ζ (4th-order, shared by y and z)
+    double du_dk = (8.0*(u[index+NX6] - u[index-NX6]) - (u[index+2*NX6] - u[index-2*NX6])) / 12.0;
+    double dv_dk = (8.0*(v[index+NX6] - v[index-NX6]) - (v[index+2*NX6] - v[index-2*NX6])) / 12.0;
+    double dw_dk = (8.0*(w[index+NX6] - w[index-NX6]) - (w[index+2*NX6] - w[index-2*NX6])) / 12.0;
 
-    int n = k-2;
-    if( k <= 5 ) n = 4;
-    if( k >= NZ6-6 ) n = NZ6-9;
-    int idx = j*NX6*NZ6 + n*NX6 + i;
-    dudz = u[idx]*SlpPara_0[k] + u[idx+NX6]*SlpPara_1[k] + u[idx+2*NX6]*SlpPara_2[k] + u[idx+3*NX6]*SlpPara_3[k] + u[idx+4*NX6]*SlpPara_4[k];
-    dvdz = v[idx]*SlpPara_0[k] + v[idx+NX6]*SlpPara_1[k] + v[idx+2*NX6]*SlpPara_2[k] + v[idx+3*NX6]*SlpPara_3[k] + v[idx+4*NX6]*SlpPara_4[k];
-    dwdz = w[idx]*SlpPara_0[k] + w[idx+NX6]*SlpPara_1[k] + w[idx+2*NX6]*SlpPara_2[k] + w[idx+3*NX6]*SlpPara_3[k] + w[idx+4*NX6]*SlpPara_4[k];
+    // j-direction finite difference: ∂φ/∂ξ (4th-order)
+    const int nface = NX6 * NZ6;
+    double du_dj = (8.0*(u[index+nface] - u[index-nface]) - (u[index+2*nface] - u[index-2*nface])) / 12.0;
+    double dv_dj = (8.0*(v[index+nface] - v[index-nface]) - (v[index+2*nface] - v[index-2*nface])) / 12.0;
+    double dw_dj = (8.0*(w[index+nface] - w[index-nface]) - (w[index+2*nface] - w[index-2*nface])) / 12.0;
+
+    double dkdy = dk_dy_in[j*NZ6 + k];
+    double dkdz = dk_dz_in[j*NZ6 + k];
+    double dy_inv = 1.0 / (y[j+1] - y[j]);
+
+    // y-direction: ∂φ/∂y = (1/dy)·∂φ/∂ξ + dk_dy·∂φ/∂ζ
+    double dudy = du_dj * dy_inv + dkdy * du_dk;
+    double dvdy = dv_dj * dy_inv + dkdy * dv_dk;
+    double dwdy = dw_dj * dy_inv + dkdy * dw_dk;
+
+    // z-direction: ∂φ/∂z = dk_dz·∂φ/∂ζ
+    double dudz = dkdz * du_dk;
+    double dvdz = dkdz * dv_dk;
+    double dwdz = dkdz * dw_dk;
 
     DUDX2[index] += dudx * dudx;
     DUDY2[index] += dudy * dudy;
@@ -218,7 +236,6 @@ __global__ void MeanDerivatives(
     DWDX2[index] += dwdx * dwdx;
     DWDY2[index] += dwdy * dwdy;
     DWDZ2[index] += dwdz * dwdz;
-
 }
 
 void Launch_TurbulentSum(double *f_new[19]) {
@@ -235,9 +252,9 @@ void Launch_TurbulentSum(double *f_new[19]) {
 
     MeanDerivatives<<<griddimTB, blockdimTB, 0, tbsum_stream[1]>>>(
         DUDX2, DUDY2, DUDZ2, DVDX2, DVDY2, DVDZ2, DWDX2, DWDY2, DWDZ2,
-        ZSlopePara_d[0], ZSlopePara_d[1], ZSlopePara_d[2], ZSlopePara_d[3], ZSlopePara_d[4],
-		u, v, w, rho_d,
-		x_d, y_d, z_d
+        dk_dz_d, dk_dy_d,
+        u, v, w,
+        x_d, y_d
     );
     CHECK_CUDA( cudaGetLastError() );
 
