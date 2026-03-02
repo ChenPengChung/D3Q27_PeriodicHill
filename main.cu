@@ -164,7 +164,14 @@ int main(int argc, char *argv[])
     CHECK_MPI( MPI_Init(&argc, &argv) );
     CHECK_MPI( MPI_Comm_size(MPI_COMM_WORLD, &nProcs) );
     CHECK_MPI( MPI_Comm_rank(MPI_COMM_WORLD, &myid) );
-	
+
+    // Safety check: compiled jp must match runtime MPI rank count
+    if (nProcs != jp) {
+        if (myid == 0)
+            fprintf(stderr, "FATAL: nProcs=%d but compiled with jp=%d. Recompile with correct jp!\n", nProcs, jp);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
 	l_nbr = myid - 1;       r_nbr = myid + 1;
     if (myid == 0)    l_nbr = jp-1;
 	if (myid == jp-1) r_nbr = 0;
@@ -1030,8 +1037,10 @@ int main(int argc, char *argv[])
             if ( myid == 0){
                 rho_global = 1.0*(NX6-7)*(NY6-7)*(NZ6-6);
                 rho_modify_h[0] =( rho_global - rho_GlobalSum ) / ((NX6-7)*(NY6-7)*(NZ6-6));
-                cudaMemcpy(rho_modify_d, rho_modify_h, sizeof(double), cudaMemcpyHostToDevice);
             }
+            // Broadcast mass correction to ALL ranks (Bug #16 fix: was rank 0 only)
+            MPI_Bcast(rho_modify_h, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            cudaMemcpy(rho_modify_d, rho_modify_h, sizeof(double), cudaMemcpyHostToDevice);
         }
 
         // ===== Mass Conservation Check + NaN early stop (every 100 steps) =====

@@ -752,36 +752,37 @@ void InitFromMergedVTK(const char* vtk_path) {
         const int ghost_count = 3 * slice_size;  // 3 個 j-slices
         
         // 交換 u_h_p
-        // 發送 j=3..5 到左鄰居，接收從右鄰居到 j=NYD6-3..NYD6-1
-        MPI_Sendrecv(&u_h_p[3 * slice_size],       ghost_count, MPI_DOUBLE, l_nbr, 600,
+        // 發送 j=4..6 到左鄰居的 j=NYD6-3..NYD6-1，接收從右鄰居的 j=4..6 到 j=NYD6-3..NYD6-1
+        // (與 main loop iToLeft/iFromRight 相同 pattern: send j=Buffer+1, recv j=NYD6-Buffer)
+        MPI_Sendrecv(&u_h_p[4 * slice_size],       ghost_count, MPI_DOUBLE, l_nbr, 600,
                      &u_h_p[(NYD6-3) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 600,
                      MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        // 發送 j=NYD6-6..NYD6-4 到右鄰居，接收從左鄰居到 j=0..2
-        MPI_Sendrecv(&u_h_p[(NYD6-6) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 601,
+        // 發送 j=NYD6-7..NYD6-5 到右鄰居的 j=0..2，接收從左鄰居的 j=NYD6-7..NYD6-5 到 j=0..2
+        MPI_Sendrecv(&u_h_p[(NYD6-7) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 601,
                      &u_h_p[0],                      ghost_count, MPI_DOUBLE, l_nbr, 601,
                      MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        
+
         // 交換 v_h_p
-        MPI_Sendrecv(&v_h_p[3 * slice_size],       ghost_count, MPI_DOUBLE, l_nbr, 602,
+        MPI_Sendrecv(&v_h_p[4 * slice_size],       ghost_count, MPI_DOUBLE, l_nbr, 602,
                      &v_h_p[(NYD6-3) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 602,
                      MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        MPI_Sendrecv(&v_h_p[(NYD6-6) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 603,
+        MPI_Sendrecv(&v_h_p[(NYD6-7) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 603,
                      &v_h_p[0],                      ghost_count, MPI_DOUBLE, l_nbr, 603,
                      MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        
+
         // 交換 w_h_p
-        MPI_Sendrecv(&w_h_p[3 * slice_size],       ghost_count, MPI_DOUBLE, l_nbr, 604,
+        MPI_Sendrecv(&w_h_p[4 * slice_size],       ghost_count, MPI_DOUBLE, l_nbr, 604,
                      &w_h_p[(NYD6-3) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 604,
                      MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        MPI_Sendrecv(&w_h_p[(NYD6-6) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 605,
+        MPI_Sendrecv(&w_h_p[(NYD6-7) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 605,
                      &w_h_p[0],                      ghost_count, MPI_DOUBLE, l_nbr, 605,
                      MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        
+
         // 交換 rho_h_p
-        MPI_Sendrecv(&rho_h_p[3 * slice_size],       ghost_count, MPI_DOUBLE, l_nbr, 606,
+        MPI_Sendrecv(&rho_h_p[4 * slice_size],       ghost_count, MPI_DOUBLE, l_nbr, 606,
                      &rho_h_p[(NYD6-3) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 606,
                      MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        MPI_Sendrecv(&rho_h_p[(NYD6-6) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 607,
+        MPI_Sendrecv(&rho_h_p[(NYD6-7) * slice_size], ghost_count, MPI_DOUBLE, r_nbr, 607,
                      &rho_h_p[0],                      ghost_count, MPI_DOUBLE, l_nbr, 607,
                      MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         

@@ -13,7 +13,7 @@
 #define     NY      128
 #define     NZ      128
 
-#define     jp      4
+#define     jp      8
 
 #define     NX6    (NX+7)
 #define     NYD6   (NY/jp+7)
@@ -66,7 +66,7 @@
 // 1 = 讀取 statistics/ 目錄下 32 個 merged bin 檔 (U,V,W,P,UU,UV,...,WWW) + accu.dat (rey_avg_count)
 // 0 = 不讀取，FTT >= FTT_STAGE2 (50.0) 後從零開始累積
 #define     TBINIT  (0)
-#define     RESTART_VTK_FILE  "result/velocity_merged_310001.vtk"
+#define     RESTART_VTK_FILE  "result/velocity_merged_309001.vtk"
 // Perturbation injection at startup (trigger 3D turbulent transition)
 // PERTURB_INIT=1: inject random noise on u,v,w to break spanwise symmetry
 // PERTURB_INIT=0: no perturbation (set to 0 after turbulence established)

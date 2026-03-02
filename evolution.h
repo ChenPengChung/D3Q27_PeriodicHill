@@ -167,6 +167,29 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
         f_new[0] ,f_new[1] ,f_new[2] ,f_new[3] ,f_new[4] ,f_new[5] ,f_new[6] ,f_new[7] ,f_new[8] ,f_new[9] ,f_new[10] ,f_new[11] ,f_new[12] ,f_new[13] ,f_new[14] ,f_new[15] ,f_new[16] ,f_new[17] ,f_new[18],
         y_d, x_d, z_d, u, v, w, rho_d, feq_d
     );
+
+    // ===== Correction pass: re-run Step 2+3 for MPI boundary rows =====
+    // After MPI exchange + periodicSW, ghost zone f_new is now correct.
+    // Re-run Step 2+3 for j=3,4,5 (left band) and j=NYD6-6..NYD6-4 (right band)
+    // whose 7-pt stencils extend into ghost zones (j<3 or j>=NYD6-3).
+    dim3 griddimCorr(NX6/NT+1, 1, NZ6);
+    dim3 blockdimCorr(NT, 3, 1);
+    GILBM_Correction_Kernel<<<griddimCorr, blockdimCorr, 0, stream0>>>(
+        f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
+        f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
+        f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
+        f_pc_d, feq_d, omegadt_local_d,
+        dk_dz_d, dk_dy_d, dt_local_d, omega_local_d,
+        bk_precomp_d, Force_d, 3
+    );
+    GILBM_Correction_Kernel<<<griddimCorr, blockdimCorr, 0, stream0>>>(
+        f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
+        f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
+        f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
+        f_pc_d, feq_d, omegadt_local_d,
+        dk_dz_d, dk_dy_d, dt_local_d, omega_local_d,
+        bk_precomp_d, Force_d, NYD6-6
+    );
 }
 
 void Launch_ModifyForcingTerm()

@@ -528,6 +528,170 @@ __device__ void gilbm_compute_point(
 }
 
 // ============================================================================
+// Step 2+3 only: Re-estimation + Collision (extracted for correction kernel)
+// Re-runs after MPI exchange to fix stale ghost zone data at boundary rows.
+// ============================================================================
+__device__ void gilbm_step23_point(
+    int index, int nface,
+    int bi, int bj, int bk,
+    double omega_A, double omegadt_A, double dt_A,
+    double dk_dy_val, double dk_dz_val,
+    bool is_bottom, bool is_top,
+    double *f_new_ptrs[19],
+    double *f_pc,
+    double *feq_d,
+    double *omegadt_local_d,
+    double Force0
+) {
+#if USE_MRT
+    // ========== MRT collision: for B { all 19 q } ==========
+    bool need_bc_arr[19];
+    need_bc_arr[0] = false;
+    for (int q = 1; q < 19; q++) {
+        need_bc_arr[q] = false;
+        if (is_bottom) need_bc_arr[q] = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
+        else if (is_top) need_bc_arr[q] = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
+    }
+    double s_visc = 1.0 / omega_A;
+
+    for (int si = 0; si < 7; si++) {
+        int gi = bi + si;
+        for (int sj = 0; sj < 7; sj++) {
+            int gj = bj + sj;
+            for (int sk = 0; sk < 7; sk++) {
+                int gk = bk + sk;
+                int idx_B = gj * nface + gk * NX6 + gi;
+                int flat  = si * 49 + sj * 7 + sk;
+
+                double f_re_mrt[19], feq_B_arr[19];
+                bool ghost_j = (gj < 3 || gj >= NYD6 - 3);
+
+                double rho_B_g, u_B_g, v_B_g, w_B_g;
+                if (ghost_j)
+                    compute_macroscopic_at(f_new_ptrs, idx_B, rho_B_g, u_B_g, v_B_g, w_B_g);
+
+                for (int q = 0; q < 19; q++) {
+                    f_re_mrt[q] = f_new_ptrs[q][idx_B];
+                    feq_B_arr[q] = ghost_j
+                        ? compute_feq_alpha(q, rho_B_g, u_B_g, v_B_g, w_B_g)
+                        : feq_d[q * GRID_SIZE + idx_B];
+                }
+
+                double omegadt_B = omegadt_local_d[idx_B];
+                double R_AB = omegadt_A / omegadt_B;
+                for (int q = 0; q < 19; q++)
+                    f_re_mrt[q] = feq_B_arr[q] + (f_re_mrt[q] - feq_B_arr[q]) * R_AB;
+
+                gilbm_mrt_collision(f_re_mrt, feq_B_arr, s_visc, dt_A, Force0);
+
+                for (int q = 0; q < 19; q++) {
+                    if (!need_bc_arr[q])
+                        f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index] = f_re_mrt[q];
+                }
+            }
+        }
+    }
+#else
+    // ========== BGK/SRT collision ==========
+    for (int q = 0; q < 19; q++) {
+        bool need_bc = false;
+        if (is_bottom) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
+        else if (is_top) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
+        if (need_bc) continue;
+
+        double force_source_q = GILBM_W[q] * 3.0 * (double)GILBM_e[q][1] * Force0 * dt_A;
+
+        for (int si = 0; si < 7; si++) {
+            int gi = bi + si;
+            for (int sj = 0; sj < 7; sj++) {
+                int gj = bj + sj;
+                for (int sk = 0; sk < 7; sk++) {
+                    int gk = bk + sk;
+                    int idx_B = gj * nface + gk * NX6 + gi;
+                    int flat  = si * 49 + sj * 7 + sk;
+
+                    double f_B = f_new_ptrs[q][idx_B];
+
+                    double feq_B;
+                    if (gj < 3 || gj >= NYD6 - 3) {
+                        double rho_B, u_B, v_B, w_B;
+                        compute_macroscopic_at(f_new_ptrs, idx_B, rho_B, u_B, v_B, w_B);
+                        feq_B = compute_feq_alpha(q, rho_B, u_B, v_B, w_B);
+                    } else {
+                        feq_B = feq_d[q * GRID_SIZE + idx_B];
+                    }
+
+                    double omegadt_B = omegadt_local_d[idx_B];
+                    double R_AB = omegadt_A / omegadt_B;
+
+                    double f_re = feq_B + (f_B - feq_B) * R_AB;
+                    f_re -= (1.0 / omega_A) * (f_re - feq_B);
+                    f_re += force_source_q;
+
+                    f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index] = f_re;
+                }
+            }
+        }
+    }
+#endif
+}
+
+// ============================================================================
+// Correction kernel: re-run Step 2+3 for MPI boundary rows AFTER ghost exchange
+// Fixes stale ghost zone f_new data used by the initial buffer kernel pass.
+// Launch for start=3 (left band, 3 rows) and start=NYD6-6 (right band, 3 rows).
+// ============================================================================
+__global__ void GILBM_Correction_Kernel(
+    double *f0_new, double *f1_new, double *f2_new, double *f3_new, double *f4_new,
+    double *f5_new, double *f6_new, double *f7_new, double *f8_new, double *f9_new,
+    double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
+    double *f15_new, double *f16_new, double *f17_new, double *f18_new,
+    double *f_pc, double *feq_d, double *omegadt_local_d,
+    double *dk_dz_d, double *dk_dy_d,
+    double *dt_local_d, double *omega_local_d,
+    int *bk_precomp_d,
+    double *Force,
+    int start
+) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y + start;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (i <= 2 || i >= NX6 - 3 || k <= 2 || k >= NZ6 - 3) return;
+    if (j < 3 || j >= NYD6 - 3) return;  // safety guard
+
+    double *f_new_ptrs[19] = {
+        f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
+        f7_new, f8_new, f9_new, f10_new, f11_new, f12_new,
+        f13_new, f14_new, f15_new, f16_new, f17_new, f18_new
+    };
+
+    const int nface = NX6 * NZ6;
+    const int index = j * nface + k * NX6 + i;
+    const int idx_jk = j * NZ6 + k;
+
+    const double dt_A      = dt_local_d[idx_jk];
+    const double omega_A   = omega_local_d[idx_jk];
+    const double omegadt_A = omegadt_local_d[index];
+
+    const int bi = i - 3;
+    const int bj = j - 3;
+    const int bk = bk_precomp_d[k];
+
+    bool is_bottom = (k == 3);
+    bool is_top    = (k == NZ6 - 4);
+    double dk_dy_val = dk_dy_d[idx_jk];
+    double dk_dz_val = dk_dz_d[idx_jk];
+
+    gilbm_step23_point(index, nface, bi, bj, bk,
+                       omega_A, omegadt_A, dt_A,
+                       dk_dy_val, dk_dz_val,
+                       is_bottom, is_top,
+                       f_new_ptrs, f_pc, feq_d, omegadt_local_d,
+                       Force[0]);
+}
+
+// ============================================================================
 // Full-grid kernel (no start offset)
 // ============================================================================
 __global__ void GILBM_StreamCollide_Kernel(
