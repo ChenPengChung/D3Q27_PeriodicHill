@@ -30,10 +30,10 @@
 
 #define     LXi        (10.0)
 
-#define     TBSWITCH            (1)
+#define     TBSWITCH          (1)
 
 // Collision operator: 0=BGK/SRT, 1=MRT (Multi-Relaxation-Time)
-#define     USE_MRT             1
+#define     USE_MRT            1
 
 //#define     Re         300
 //#define     U_0        0.1018591
@@ -60,8 +60,13 @@
 //1 : from backup file
 //2 : from merged VTK file (specify RESTART_VTK_FILE below)
 #define     INIT    (2)   //2代表使用初始化資料 
-#define     TBINIT  (1)
-#define     RESTART_VTK_FILE  "result/velocity_merged_191001.vtk"
+// TBINIT: 是否從 statistics/*.bin 讀取上次累積的 Reynolds stress 統計
+// 只在 INIT=1 (binary restart) 時生效 (main.cu: if(TBINIT && TBSWITCH) statistics_readbin_stress())
+// INIT=2 (VTK restart) 不走此路徑，RS 由 FTT-gate 邏輯控制
+// 1 = 讀取 statistics/ 目錄下 35 個 bin 檔 (U,V,W,P,UU,UV,...,WWW) + accu.dat (rey_avg_count)
+// 0 = 不讀取，FTT >= FTT_STAGE2 (50.0) 後從零開始累積
+#define     TBINIT  (0)
+#define     RESTART_VTK_FILE  "result/velocity_merged_310001.vtk"
 // Perturbation injection at startup (trigger 3D turbulent transition)
 // PERTURB_INIT=1: inject random noise on u,v,w to break spanwise symmetry
 // PERTURB_INIT=0: no perturbation (set to 0 after turbulence established)
@@ -82,9 +87,7 @@
 // FTT-gated statistics thresholds (Flow-Through Time = LY/Uref lattice steps)
 #define     FTT_STAGE1      20.0    // Start mean velocity accumulation (u_tavg, v_tavg, w_tavg)
 #define     FTT_STAGE2      50.0    // Start Reynolds stress accumulation (MeanVars + MeanDerivatives)
-
-// Final output format toggle: 0=binary (.bin per rank), 1=merged VTK
-#define     FINAL_STATS_VTK  0
+#define     FTT_STOP       100.0    // Simulation stops when FTT >= this value
 
 //block size of each direction
 #define     NT          32     //block size x-dir threadnum

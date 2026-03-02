@@ -315,6 +315,213 @@ void statistics_readbin_stress() {
 	//statistics_readbin(OMEGA_Z, "OMEGA_Z", myid);
 	CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }
+// ============================================================================
+// GPU-count independent (merged) binary statistics I/O
+// ============================================================================
+// File format: raw double[(NZ6-6) × NY × (NX6-6)] in k→j_global→i order
+// No header — dimensions implied by code's NX, NY, NZ defines.
+// Only interior points stored (no ghost/buffer), same as per-rank version.
+// j-mapping: j_global = myid * stride + (j_local - 3), stride = NY/jp
+//
+// Write: each rank packs stride unique j-points → MPI_Gather → rank 0 writes single file
+// Read:  every rank reads full file → extracts stride+1 j-points (including overlap)
+
+// Single-array merged write (GPU array → single merged .bin file)
+void statistics_writebin_merged(double *arr_d, const char *fname) {
+    CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
+    const size_t nBytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
+    double *arr_h = (double*)malloc(nBytes);
+    CHECK_CUDA( cudaMemcpy(arr_h, arr_d, nBytes, cudaMemcpyDeviceToHost) );
+
+    const int nx = NX6 - 6;       // interior x-points (i=3..NX6-4)
+    const int ny = NY;             // total unique y-points (no overlap)
+    const int nz = NZ6 - 6;       // interior z-points (k=3..NZ6-4)
+    const int stride = NY / jp;    // unique j per rank
+
+    // Pack local data: stride unique j-points (j_local = 3..3+stride-1, skip overlap at NYD6-4)
+    const int local_count = nz * stride * nx;
+    double *send_buf = (double*)malloc(local_count * sizeof(double));
+    int idx = 0;
+    for (int k = 3; k < NZ6 - 3; k++)
+        for (int jl = 3; jl < 3 + stride; jl++)
+            for (int i = 3; i < NX6 - 3; i++)
+                send_buf[idx++] = arr_h[jl * NX6 * NZ6 + k * NX6 + i];
+
+    // Gather to rank 0
+    double *recv_buf = NULL;
+    if (myid == 0) recv_buf = (double*)malloc((size_t)local_count * jp * sizeof(double));
+    MPI_Gather(send_buf, local_count, MPI_DOUBLE,
+               recv_buf, local_count, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    // Rank 0: reorder [rank][k][j_local][i] → [k][j_global][i] and write
+    if (myid == 0) {
+        double *global_buf = (double*)malloc((size_t)nz * ny * nx * sizeof(double));
+        for (int r = 0; r < jp; r++) {
+            int j_offset = r * stride;
+            double *rank_data = recv_buf + (size_t)r * local_count;
+            int ridx = 0;
+            for (int kk = 0; kk < nz; kk++)
+                for (int jl = 0; jl < stride; jl++)
+                    for (int ii = 0; ii < nx; ii++)
+                        global_buf[(size_t)kk * ny * nx + (j_offset + jl) * nx + ii] = rank_data[ridx++];
+        }
+
+        ostringstream oss;
+        oss << "./statistics/" << fname << "/" << fname << "_merged.bin";
+        ofstream file(oss.str().c_str(), ios::binary);
+        file.write(reinterpret_cast<char*>(global_buf), (size_t)nz * ny * nx * sizeof(double));
+        file.close();
+        free(global_buf);
+        free(recv_buf);
+    }
+
+    free(send_buf);
+    free(arr_h);
+}
+
+// Single-array merged read (single merged .bin file → GPU array, any jp)
+void statistics_readbin_merged(double *arr_d, const char *fname) {
+    const int nx = NX6 - 6;
+    const int ny = NY;
+    const int nz = NZ6 - 6;
+    const int stride = NY / jp;
+
+    // Every rank reads the full merged file (small: ~4 MB per statistic)
+    ostringstream oss;
+    oss << "./statistics/" << fname << "/" << fname << "_merged.bin";
+    ifstream file(oss.str().c_str(), ios::binary);
+    if (!file.is_open()) {
+        if (myid == 0) printf("[WARNING] statistics_readbin_merged: %s not found, skipping.\n", oss.str().c_str());
+        return;
+    }
+    double *global_buf = (double*)malloc((size_t)nz * ny * nx * sizeof(double));
+    file.read(reinterpret_cast<char*>(global_buf), (size_t)nz * ny * nx * sizeof(double));
+    file.close();
+
+    // Extract local portion (stride unique + 1 overlap point)
+    const size_t nBytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
+    double *arr_h = (double*)calloc(NX6 * NYD6 * NZ6, sizeof(double));
+    int j_start = myid * stride;  // first global j for this rank
+
+    for (int kk = 0; kk < nz; kk++) {
+        int k = kk + 3;  // physical k index
+        // Fill j_local = 3..3+stride-1 (stride unique points)
+        for (int jl = 0; jl < stride; jl++) {
+            int j_local = jl + 3;
+            int j_global = j_start + jl;
+            for (int ii = 0; ii < nx; ii++) {
+                int i = ii + 3;
+                arr_h[j_local * NX6 * NZ6 + k * NX6 + i] =
+                    global_buf[(size_t)kk * ny * nx + j_global * nx + ii];
+            }
+        }
+        // Fill overlap point: j_local = 3+stride = NYD6-4
+        {
+            int j_local = 3 + stride;  // = NYD6 - 4
+            int j_global = (j_start + stride) % ny;  // wrap for periodic
+            for (int ii = 0; ii < nx; ii++) {
+                int i = ii + 3;
+                arr_h[j_local * NX6 * NZ6 + k * NX6 + i] =
+                    global_buf[(size_t)kk * ny * nx + j_global * nx + ii];
+            }
+        }
+    }
+
+    CHECK_CUDA( cudaMemcpy(arr_d, arr_h, nBytes, cudaMemcpyHostToDevice) );
+    free(arr_h);
+    free(global_buf);
+    CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
+}
+
+// Master function: write all 35 statistics as merged binary
+void statistics_writebin_merged_stress() {
+    if (myid == 0) {
+        ofstream fp_accu("./statistics/accu.dat");
+        fp_accu << rey_avg_count;
+        fp_accu.close();
+    }
+    CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
+    statistics_writebin_merged(U, "U");
+    statistics_writebin_merged(V, "V");
+    statistics_writebin_merged(W, "W");
+    statistics_writebin_merged(P, "P");
+    statistics_writebin_merged(UU, "UU");
+    statistics_writebin_merged(UV, "UV");
+    statistics_writebin_merged(UW, "UW");
+    statistics_writebin_merged(VV, "VV");
+    statistics_writebin_merged(VW, "VW");
+    statistics_writebin_merged(WW, "WW");
+    statistics_writebin_merged(PU, "PU");
+    statistics_writebin_merged(PV, "PV");
+    statistics_writebin_merged(PW, "PW");
+    statistics_writebin_merged(KT, "KT");
+    statistics_writebin_merged(DUDX2, "DUDX2");
+    statistics_writebin_merged(DUDY2, "DUDY2");
+    statistics_writebin_merged(DUDZ2, "DUDZ2");
+    statistics_writebin_merged(DVDX2, "DVDX2");
+    statistics_writebin_merged(DVDY2, "DVDY2");
+    statistics_writebin_merged(DVDZ2, "DVDZ2");
+    statistics_writebin_merged(DWDX2, "DWDX2");
+    statistics_writebin_merged(DWDY2, "DWDY2");
+    statistics_writebin_merged(DWDZ2, "DWDZ2");
+    statistics_writebin_merged(UUU, "UUU");
+    statistics_writebin_merged(UUV, "UUV");
+    statistics_writebin_merged(UUW, "UUW");
+    statistics_writebin_merged(VVU, "VVU");
+    statistics_writebin_merged(VVV, "VVV");
+    statistics_writebin_merged(VVW, "VVW");
+    statistics_writebin_merged(WWU, "WWU");
+    statistics_writebin_merged(WWV, "WWV");
+    statistics_writebin_merged(WWW, "WWW");
+    if (myid == 0) printf("  statistics_writebin_merged_stress: 35 merged .bin files written (rey_avg_count=%d)\n", rey_avg_count);
+}
+
+// Master function: read all 35 statistics from merged binary (any jp)
+void statistics_readbin_merged_stress() {
+    ifstream fp_accu("./statistics/accu.dat");
+    if (!fp_accu.is_open()) {
+        if (myid == 0) printf("[WARNING] statistics_readbin_merged_stress: accu.dat not found, rey_avg_count unchanged.\n");
+        return;
+    }
+    fp_accu >> rey_avg_count;
+    fp_accu.close();
+    if (myid == 0) printf("  statistics_readbin_merged_stress: rey_avg_count=%d loaded from accu.dat\n", rey_avg_count);
+
+    statistics_readbin_merged(U, "U");
+    statistics_readbin_merged(V, "V");
+    statistics_readbin_merged(W, "W");
+    statistics_readbin_merged(P, "P");
+    statistics_readbin_merged(UU, "UU");
+    statistics_readbin_merged(UV, "UV");
+    statistics_readbin_merged(UW, "UW");
+    statistics_readbin_merged(VV, "VV");
+    statistics_readbin_merged(VW, "VW");
+    statistics_readbin_merged(WW, "WW");
+    statistics_readbin_merged(PU, "PU");
+    statistics_readbin_merged(PV, "PV");
+    statistics_readbin_merged(PW, "PW");
+    statistics_readbin_merged(KT, "KT");
+    statistics_readbin_merged(DUDX2, "DUDX2");
+    statistics_readbin_merged(DUDY2, "DUDY2");
+    statistics_readbin_merged(DUDZ2, "DUDZ2");
+    statistics_readbin_merged(DVDX2, "DVDX2");
+    statistics_readbin_merged(DVDY2, "DVDY2");
+    statistics_readbin_merged(DVDZ2, "DVDZ2");
+    statistics_readbin_merged(DWDX2, "DWDX2");
+    statistics_readbin_merged(DWDY2, "DWDY2");
+    statistics_readbin_merged(DWDZ2, "DWDZ2");
+    statistics_readbin_merged(UUU, "UUU");
+    statistics_readbin_merged(UUV, "UUV");
+    statistics_readbin_merged(UUW, "UUW");
+    statistics_readbin_merged(VVU, "VVU");
+    statistics_readbin_merged(VVV, "VVV");
+    statistics_readbin_merged(VVW, "VVW");
+    statistics_readbin_merged(WWU, "WWU");
+    statistics_readbin_merged(WWV, "WWV");
+    statistics_readbin_merged(WWW, "WWW");
+    CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
+}
+
 /*第三.5段:從合併VTK檔案讀取初始場 (INIT=2 restart)*/
 // 從 merged VTK 讀取速度場，設 rho=1，f=feq，用於續跑
 void InitFromMergedVTK(const char* vtk_path) {

@@ -623,7 +623,7 @@ int main(int argc, char *argv[])
     } else if ( INIT == 1 ) {
         printf("Initializing by backup data...\n");
         result_readbin_velocityandf();
-        if( TBINIT && TBSWITCH ) statistics_readbin_stress();
+        if( TBINIT && TBSWITCH ) statistics_readbin_merged_stress();
     } else if ( INIT == 2 ) {
         printf("Initializing from merged VTK: %s\n", RESTART_VTK_FILE);
         InitFromMergedVTK(RESTART_VTK_FILE);
@@ -795,9 +795,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Restore Reynolds stress from binary checkpoint (if available)
+    // Restore Reynolds stress from merged binary checkpoint (if available)
     if (restart_step > 0 && rey_avg_count > 0 && (int)TBSWITCH) {
-        statistics_readbin_stress();
+        statistics_readbin_merged_stress();
         stage2_announced = true;
         if (myid == 0)
             printf("Reynolds stress restored from binary checkpoint (rey_avg_count=%d)\n", rey_avg_count);
@@ -1011,7 +1011,7 @@ int main(int argc, char *argv[])
 
             // Binary checkpoint for Reynolds stress arrays (only when data exists)
             if (rey_avg_count > 0 && (int)TBSWITCH) {
-                statistics_writebin_stress();
+                statistics_writebin_merged_stress();
             }
         }
 
@@ -1076,31 +1076,46 @@ int main(int argc, char *argv[])
                 fclose (checkrho);
             }
         }
+
+        // ===== FTT stopping criterion =====
+        if (FTT_now >= FTT_STOP) {
+            if (myid == 0)
+                printf("\n[FTT-STOP] FTT=%.2f >= FTT_STOP=%.1f at step %d. Ending simulation.\n",
+                       FTT_now, FTT_STOP, step);
+            break;
+        }
     }
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
-    SendDataToCPU( ft );
-    result_writebin_velocityandf();
-
-    // Final comprehensive statistics output
-    if (rey_avg_count > 0 && (int)TBSWITCH) {
+    // ===== Final exit checkpoint: always save state =====
+    {
         double FTT_final = step * dt_global / (double)flow_through_time;
-        double FTT_rs = (double)rey_avg_count * dt_global / (double)flow_through_time;
-        if (myid == 0) {
-            printf("\n========================================================\n");
-            printf("[FINAL OUTPUT] FTT = %.3f (timestep = %d)\n", FTT_final, step);
-            printf("  -> Velocity mean accumulation: %d steps\n", vel_avg_count);
-            printf("  -> Reynolds stress accumulation: %.3f FTTs (%d steps)\n", FTT_rs, rey_avg_count);
-            printf("  -> Writing complete statistics (32 arrays)\n");
-            printf("========================================================\n\n");
-        }
+        SendDataToCPU( ft );
+        result_writebin_velocityandf();
 
-    #if FINAL_STATS_VTK
-        // TODO: fileIO_final_stats_vtk(step);  // merged VTK with all 32 arrays normalized
-        statistics_writebin_stress();  // fallback to binary for now
-    #else
-        statistics_writebin_stress();
-    #endif
+        // Copy GPU tavg → host for final VTK
+        const size_t tavg_bytes_final = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
+        CHECK_CUDA( cudaMemcpy(u_tavg_h, u_tavg_d, tavg_bytes_final, cudaMemcpyDeviceToHost) );
+        CHECK_CUDA( cudaMemcpy(v_tavg_h, v_tavg_d, tavg_bytes_final, cudaMemcpyDeviceToHost) );
+        CHECK_CUDA( cudaMemcpy(w_tavg_h, w_tavg_d, tavg_bytes_final, cudaMemcpyDeviceToHost) );
+        fileIO_velocity_vtk_merged( step );
+
+        // Write Reynolds stress statistics if accumulated (FTT > FTT_STAGE2)
+        if (rey_avg_count > 0 && (int)TBSWITCH) {
+            double FTT_rs = (double)rey_avg_count * dt_global / (double)flow_through_time;
+            if (myid == 0) {
+                printf("\n========================================================\n");
+                printf("[FINAL OUTPUT] FTT = %.3f (timestep = %d)\n", FTT_final, step);
+                printf("  -> Velocity mean accumulation: %d steps\n", vel_avg_count);
+                printf("  -> Reynolds stress accumulation: %.3f FTTs (%d steps)\n", FTT_rs, rey_avg_count);
+                printf("  -> Writing merged statistics (35 arrays)\n");
+                printf("========================================================\n\n");
+            }
+            statistics_writebin_merged_stress();
+        } else if (myid == 0) {
+            printf("\n[FINAL] FTT=%.2f, step=%d. No RS data to write (rey_avg_count=%d).\n",
+                   FTT_final, step, rey_avg_count);
+        }
     }
 
     free(u_tavg_h);
