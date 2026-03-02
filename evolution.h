@@ -136,7 +136,10 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     dim3 griddim(  NX6/NT+1, NYD6, NZ6);
     dim3 blockdim( NT, 1, 1);
 
-    // ===== Kernel A: Step 1 + 1.5 (all interior j=3..NYD6-4) =====
+#if USE_P6
+    // ===== P6 flow: Step1 → sync → MPI → periodicSW → Step23 =====
+
+    // Kernel A: Step 1 + 1.5 (all interior j=3..NYD6-4)
     // Pure Jacobi: reads f_pc (private per point) → writes f_new, feq_d, u/v/w/rho.
     // No pre-copy needed — f_pc is self-contained; f_new is fully overwritten.
     GILBM_Step1_Kernel<<<griddim, blockdim, 0, stream0>>>(
@@ -151,13 +154,11 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     );
     CHECK_CUDA( cudaStreamSynchronize(stream0) );
 
-    // ===== MPI exchange: all 19 f_new directions (y-direction halo) =====
-    // Step 2+3 讀取 ghost zone 所有 q 的 f_new[q][idx_B] 做重估+碰撞
+    // MPI exchange: all 19 f_new directions (y-direction halo)
     ISend_LtRtBdry( f_new, iToLeft,    l_nbr, itag_f4, 0, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
     IRecv_LtRtBdry( f_new, iFromRight, r_nbr, itag_f4, 1, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
     ISend_LtRtBdry( f_new, iToRight,   r_nbr, itag_f3, 2, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
     IRecv_LtRtBdry( f_new, iFromLeft,  l_nbr, itag_f3, 3, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
-
     for( int i = 0;  i < 19; i++ ){
         CHECK_MPI( MPI_Waitall(4, request[i], status[i]) );
     }
@@ -165,17 +166,15 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
         CHECK_MPI( MPI_Waitall(4, request[i], status[i]) );
     }
 
-    // ===== x-direction periodic BC (f_new + u/v/w/rho + feq_d) =====
+    // x-direction periodic BC (f_new + u/v/w/rho + feq_d)
     periodicSW<<<griddimSW, blockdimSW, 0, stream0>>>(
         f_old[0] ,f_old[1] ,f_old[2] ,f_old[3] ,f_old[4] ,f_old[5] ,f_old[6] ,f_old[7] ,f_old[8] ,f_old[9] ,f_old[10] ,f_old[11] ,f_old[12] ,f_old[13] ,f_old[14] ,f_old[15] ,f_old[16] ,f_old[17] ,f_old[18],
         f_new[0] ,f_new[1] ,f_new[2] ,f_new[3] ,f_new[4] ,f_new[5] ,f_new[6] ,f_new[7] ,f_new[8] ,f_new[9] ,f_new[10] ,f_new[11] ,f_new[12] ,f_new[13] ,f_new[14] ,f_new[15] ,f_new[16] ,f_new[17] ,f_new[18],
         y_d, x_d, z_d, u, v, w, rho_d, feq_d
     );
 
-    // ===== Kernel B: Step 2+3 (all interior j=3..NYD6-4) =====
+    // Kernel B: Step 2+3 (all interior j=3..NYD6-4)
     // Ghost zone f_new valid after MPI + periodicSW; feq at ghost computed on-the-fly.
-    // stream0 ordering guarantees periodicSW completes before this kernel starts.
-    // No Correction kernel needed — all ghost zones updated before Step 2+3.
     GILBM_Step23_Full_Kernel<<<griddim, blockdim, 0, stream0>>>(
         f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
         f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
@@ -185,6 +184,96 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
         dt_local_d, omega_local_d,
         bk_precomp_d, Force_d
     );
+
+#else
+    // ===== Old flow (P5 only, no P6 kernel split): pre-copy → Buffer → Full → MPI → periodicSW → Correction =====
+
+    // 1. Double-buffer pre-copy: f_new ← f_old (Step 2+3 reads stencil from f_new)
+    const size_t grid_bytes = NX6 * NYD6 * NZ6 * sizeof(double);
+    for (int q = 0; q < 19; q++)
+        CHECK_CUDA( cudaMemcpy(f_new[q], f_old[q], grid_bytes, cudaMemcpyDeviceToDevice) );
+
+    // 2. Buffer kernel: MPI boundary rows (j=3..6 and j=NYD6-7..NYD6-4)
+    //    Must run BEFORE Full kernel to avoid race condition on overlapping j-rows.
+    dim3 griddim_buf(NX6/NT+1, 1, NZ6);
+    dim3 blockdim_buf(NT, 4, 1);
+    GILBM_StreamCollide_Buffer_Kernel<<<griddim_buf, blockdim_buf, 0, stream0>>>(
+        f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
+        f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
+        f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
+        f_pc_d, feq_d, omegadt_local_d,
+        dk_dz_d, dk_dy_d,
+        dt_local_d, omega_local_d,
+        delta_zeta_d, bk_precomp_d,
+        u, v, w, rho_d, Force_d, rho_modify_d, 3
+    );
+    GILBM_StreamCollide_Buffer_Kernel<<<griddim_buf, blockdim_buf, 0, stream0>>>(
+        f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
+        f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
+        f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
+        f_pc_d, feq_d, omegadt_local_d,
+        dk_dz_d, dk_dy_d,
+        dt_local_d, omega_local_d,
+        delta_zeta_d, bk_precomp_d,
+        u, v, w, rho_d, Force_d, rho_modify_d, NYD6-7
+    );
+
+    // 3. Full kernel: interior rows (j=7..NYD6-8, guarded inside kernel)
+    GILBM_StreamCollide_Kernel<<<griddim, blockdim, 0, stream0>>>(
+        f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
+        f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
+        f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
+        f_pc_d, feq_d, omegadt_local_d,
+        dk_dz_d, dk_dy_d,
+        dt_local_d, omega_local_d,
+        delta_zeta_d, bk_precomp_d,
+        u, v, w, rho_d, Force_d, rho_modify_d
+    );
+    CHECK_CUDA( cudaStreamSynchronize(stream0) );
+
+    // 4. MPI exchange: all 19 f_new directions (y-direction halo)
+    ISend_LtRtBdry( f_new, iToLeft,    l_nbr, itag_f4, 0, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
+    IRecv_LtRtBdry( f_new, iFromRight, r_nbr, itag_f4, 1, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
+    ISend_LtRtBdry( f_new, iToRight,   r_nbr, itag_f3, 2, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
+    IRecv_LtRtBdry( f_new, iFromLeft,  l_nbr, itag_f3, 3, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
+    for( int i = 0;  i < 19; i++ ){
+        CHECK_MPI( MPI_Waitall(4, request[i], status[i]) );
+    }
+    for( int i = 19; i < 23; i++ ){
+        CHECK_MPI( MPI_Waitall(4, request[i], status[i]) );
+    }
+
+    // 5. x-direction periodic BC (f_new + u/v/w/rho + feq_d)
+    periodicSW<<<griddimSW, blockdimSW, 0, stream0>>>(
+        f_old[0] ,f_old[1] ,f_old[2] ,f_old[3] ,f_old[4] ,f_old[5] ,f_old[6] ,f_old[7] ,f_old[8] ,f_old[9] ,f_old[10] ,f_old[11] ,f_old[12] ,f_old[13] ,f_old[14] ,f_old[15] ,f_old[16] ,f_old[17] ,f_old[18],
+        f_new[0] ,f_new[1] ,f_new[2] ,f_new[3] ,f_new[4] ,f_new[5] ,f_new[6] ,f_new[7] ,f_new[8] ,f_new[9] ,f_new[10] ,f_new[11] ,f_new[12] ,f_new[13] ,f_new[14] ,f_new[15] ,f_new[16] ,f_new[17] ,f_new[18],
+        y_d, x_d, z_d, u, v, w, rho_d, feq_d
+    );
+
+    // 6. Correction kernel: re-run Step 2+3 for 6 MPI boundary rows (j=3..5, j=NYD6-6..NYD6-4)
+    //    These rows had stale ghost zone data during the initial Buffer pass.
+    dim3 griddim_corr(NX6/NT+1, 1, NZ6);
+    dim3 blockdim_corr(NT, 3, 1);
+    GILBM_Correction_Kernel<<<griddim_corr, blockdim_corr, 0, stream0>>>(
+        f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
+        f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
+        f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
+        f_pc_d, feq_d, omegadt_local_d,
+        dk_dz_d, dk_dy_d,
+        dt_local_d, omega_local_d,
+        bk_precomp_d, Force_d, 3
+    );
+    GILBM_Correction_Kernel<<<griddim_corr, blockdim_corr, 0, stream0>>>(
+        f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
+        f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
+        f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
+        f_pc_d, feq_d, omegadt_local_d,
+        dk_dz_d, dk_dy_d,
+        dt_local_d, omega_local_d,
+        bk_precomp_d, Force_d, NYD6-6
+    );
+
+#endif
 }
 
 void Launch_ModifyForcingTerm()

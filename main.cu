@@ -610,14 +610,16 @@ int main(int argc, char *argv[])
                 printf("  >>> [NOTE] U*=%.4f >> 1.0 — VTK velocity from old Uref, flow will decelerate to new target\n", Ustar);
         }
         // Anti-windup Force cap (顯示原始狀態後才套用，避免前 NDTFRC 步用過高外力)
+        // 週期性山丘流場因山丘阻力，所需外力遠高於 Poiseuille (典型 ~10-30×)
         {
             double h_eff = (double)LZ - (double)H_HILL;
-            double Force_initial  = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff) * 3.0;
-            if (Force_h[0] > Force_initial) {
+            double Force_Poiseuille = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff);
+            double Force_cap = Force_Poiseuille * 30.0;  // 30× Poiseuille (hill drag >> flat channel)
+            if (Force_h[0] > Force_cap) {
                 if (myid == 0)
-                    printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (max=3x Poiseuille)\n",
-                           Force_h[0], Force_initial);
-                Force_h[0] = Force_initial;
+                    printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (max=30x Poiseuille=%.5E)\n",
+                           Force_h[0], Force_cap, Force_Poiseuille);
+                Force_h[0] = Force_cap;
                 CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
             }
         }
@@ -660,6 +662,31 @@ int main(int argc, char *argv[])
         if (!stage2_announced && FTT_now >= FTT_STAGE2) {
             stage2_announced = true;
             if (myid == 0) printf("\n>>> [FTT=%.2f] STAGE 2: Reynolds stress accumulation STARTED <<<\n\n", FTT_now);
+        }
+
+        // ===== Mid-step mass correction (between even and odd) =====
+        // Ensures odd step uses up-to-date rho_modify computed from even step's density.
+        // Without this, rho_modify is applied 2× per iteration but computed 1× → ρ̄ = 1+ε offset.
+        // With this, each half-step gets its own correction → ρ̄ → 1.0 exactly at steady state.
+        {
+            const int rho_total_mid = (NX6 - 7) * (NYD6 - 7) * (NZ6 - 6);
+            const int rho_threads_mid = 256;
+            const int rho_blocks_mid = (rho_total_mid + rho_threads_mid - 1) / rho_threads_mid;
+
+            ReduceRhoSum_Kernel<<<rho_blocks_mid, rho_threads_mid, rho_threads_mid * sizeof(double)>>>(rho_d, rho_partial_d);
+            CHECK_CUDA( cudaMemcpy(rho_partial_h, rho_partial_d, rho_blocks_mid * sizeof(double), cudaMemcpyDeviceToHost) );
+
+            double rho_LocalSum_mid = 0.0;
+            for (int b = 0; b < rho_blocks_mid; b++) rho_LocalSum_mid += rho_partial_h[b];
+
+            double rho_GlobalSum_mid = 0.0;
+            MPI_Reduce(&rho_LocalSum_mid, &rho_GlobalSum_mid, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+            if (myid == 0) {
+                double rho_global_mid = 1.0 * (NX6 - 7) * (NY6 - 7) * (NZ6 - 6);
+                rho_modify_h[0] = (rho_global_mid - rho_GlobalSum_mid) / ((NX6 - 7) * (NY6 - 7) * (NZ6 - 6));
+            }
+            MPI_Bcast(rho_modify_h, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            cudaMemcpy(rho_modify_d, rho_modify_h, sizeof(double), cudaMemcpyHostToDevice);
         }
 
         // ===== Sub-step 2: odd step (fd → ft) =====
