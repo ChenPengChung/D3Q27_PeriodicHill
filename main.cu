@@ -1105,7 +1105,7 @@ int main(int argc, char *argv[])
                 printf("[FINAL OUTPUT] FTT = %.3f (timestep = %d)\n", FTT_final, step);
                 printf("  -> Velocity mean accumulation: %d steps\n", vel_avg_count);
                 printf("  -> Reynolds stress accumulation: %.3f FTTs (%d steps)\n", FTT_rs, rey_avg_count);
-                printf("  -> Writing merged statistics (35 arrays)\n");
+                printf("  -> Writing merged statistics (32 arrays)\n");
                 printf("========================================================\n\n");
             }
             statistics_writebin_merged_stress();

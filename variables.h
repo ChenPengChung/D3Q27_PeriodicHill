@@ -61,9 +61,9 @@
 //2 : from merged VTK file (specify RESTART_VTK_FILE below)
 #define     INIT    (2)   //2代表使用初始化資料 
 // TBINIT: 是否從 statistics/*.bin 讀取上次累積的 Reynolds stress 統計
-// 只在 INIT=1 (binary restart) 時生效 (main.cu: if(TBINIT && TBSWITCH) statistics_readbin_stress())
+// 只在 INIT=1 (binary restart) 時生效 (main.cu: if(TBINIT && TBSWITCH) statistics_readbin_merged_stress())
 // INIT=2 (VTK restart) 不走此路徑，RS 由 FTT-gate 邏輯控制
-// 1 = 讀取 statistics/ 目錄下 35 個 bin 檔 (U,V,W,P,UU,UV,...,WWW) + accu.dat (rey_avg_count)
+// 1 = 讀取 statistics/ 目錄下 32 個 merged bin 檔 (U,V,W,P,UU,UV,...,WWW) + accu.dat (rey_avg_count)
 // 0 = 不讀取，FTT >= FTT_STAGE2 (50.0) 後從零開始累積
 #define     TBINIT  (0)
 #define     RESTART_VTK_FILE  "result/velocity_merged_310001.vtk"

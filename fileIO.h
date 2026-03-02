@@ -25,11 +25,11 @@ void ExistOrCreateDir(const char* doc) {
 			std::cout << "folder " << path << " not exist, created"<< std::endl;// S_IRWXU = 擁有者可讀寫執行 
 	}
 }
-//創立資料夾 "result" , "statistics" , "statistics/XXX" (XXX 為 35 個統計量子資料夾)
+//創立資料夾 "result" , "statistics" , "statistics/XXX" (XXX 為 32+3 個統計量子資料夾, 3 OMEGA 保留未使用)
 void PreCheckDir() {
     //預先建立資料夾
 	ExistOrCreateDir("result");//程式碼初始狀態使用
-    //湍流統計//35 個統計量子資料夾
+    //湍流統計//35 個子資料夾 (32 active + 3 OMEGA reserved)
 	ExistOrCreateDir("statistics");
     if ( TBSWITCH ) {
 		const int num_files = 35;
