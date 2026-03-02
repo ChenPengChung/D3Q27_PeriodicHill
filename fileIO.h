@@ -433,11 +433,19 @@ void statistics_readbin_merged(double *arr_d, const char *fname) {
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }
 
-// Master function: write all 35 statistics as merged binary
+// Master function: write all 32 statistics as merged binary
+// NOTE: U, V, W, P (1st-order means) are included because they are accumulated
+// in the SAME time window as UU, UV, ... (Stage 2, FTT >= FTT_STAGE2).
+// RS normalization requires: <u'u'> = <uu>/N - (<u>/N)^2
+// If U is not saved, <u> starts from 0 on restart → wrong RS in all subsequent VTK.
+// u_tavg (Stage 1, FTT >= FTT_STAGE1) has a DIFFERENT time window and count.
 void statistics_writebin_merged_stress() {
+    // Enhanced accu.dat: rey_avg_count vel_avg_count step
+    // rey_avg_count: essential for RS normalization
+    // vel_avg_count + step: metadata for cross-checking and FTT calculation
     if (myid == 0) {
         ofstream fp_accu("./statistics/accu.dat");
-        fp_accu << rey_avg_count;
+        fp_accu << rey_avg_count << " " << vel_avg_count << " " << step;
         fp_accu.close();
     }
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
@@ -473,19 +481,31 @@ void statistics_writebin_merged_stress() {
     statistics_writebin_merged(WWU, "WWU");
     statistics_writebin_merged(WWV, "WWV");
     statistics_writebin_merged(WWW, "WWW");
-    if (myid == 0) printf("  statistics_writebin_merged_stress: 35 merged .bin files written (rey_avg_count=%d)\n", rey_avg_count);
+    if (myid == 0) printf("  statistics_writebin_merged_stress: 32 merged .bin files written (rey=%d, vel=%d, step=%d)\n",
+                          rey_avg_count, vel_avg_count, step);
 }
 
-// Master function: read all 35 statistics from merged binary (any jp)
+// Master function: read all 32 statistics from merged binary (any jp)
 void statistics_readbin_merged_stress() {
+    // Enhanced accu.dat format: "rey_avg_count vel_avg_count step"
+    // Backward compatible: old format has only "rey_avg_count"
     ifstream fp_accu("./statistics/accu.dat");
     if (!fp_accu.is_open()) {
         if (myid == 0) printf("[WARNING] statistics_readbin_merged_stress: accu.dat not found, rey_avg_count unchanged.\n");
         return;
     }
+    int bin_vel_count = -1, bin_step = -1;
     fp_accu >> rey_avg_count;
+    fp_accu >> bin_vel_count >> bin_step;  // may fail silently if old format
     fp_accu.close();
-    if (myid == 0) printf("  statistics_readbin_merged_stress: rey_avg_count=%d loaded from accu.dat\n", rey_avg_count);
+    if (myid == 0) {
+        if (bin_vel_count >= 0)
+            printf("  statistics_readbin_merged_stress: rey=%d, vel=%d, step=%d from accu.dat\n",
+                   rey_avg_count, bin_vel_count, bin_step);
+        else
+            printf("  statistics_readbin_merged_stress: rey_avg_count=%d from accu.dat (legacy format)\n",
+                   rey_avg_count);
+    }
 
     statistics_readbin_merged(U, "U");
     statistics_readbin_merged(V, "V");

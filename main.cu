@@ -1008,11 +1008,8 @@ int main(int argc, char *argv[])
             }
 
             fileIO_velocity_vtk_merged( step );
-
-            // Binary checkpoint for Reynolds stress arrays (only when data exists)
-            if (rey_avg_count > 0 && (int)TBSWITCH) {
-                statistics_writebin_merged_stress();
-            }
+            // Note: BIN checkpoint removed from periodic output.
+            // Merged BIN is written ONLY on program stop (final exit block).
         }
 
         // ===== Global Mass Conservation Modify =====
