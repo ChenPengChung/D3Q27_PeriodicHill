@@ -108,10 +108,18 @@ void AllocateMemory() {
     // GILBM 度量項：∂ζ/∂z 和 ∂ζ/∂y（與 z_h 同大小 [NYD6*NZ6]）
     AllocateHostArray(  nBytes, 2,  &dk_dz_h, &dk_dy_h);
     AllocateDeviceArray(nBytes, 2,  &dk_dz_d, &dk_dy_d);
-    // GILBM 預計算 RK2 ζ 方向位移 [19 * NYD6 * NZ6]
+    // GILBM 預計算 RK2 ζ 方向位移 [19 * NYD6 * NZ6] (host-only, kernel uses precomputed weights)
     nBytes = 19 * NYD6 * NZ6 * sizeof(double);
     AllocateHostArray(  nBytes, 1, &delta_zeta_h);
-    AllocateDeviceArray(nBytes, 1, &delta_zeta_d);
+    // Part A: space-varying δη/δξ with dt_local [19 * NYD6 * NZ6] (host-only)
+    AllocateHostArray(  nBytes, 2, &delta_eta_local_h, &delta_xi_local_h);
+    // Part B: precomputed Lagrange weights [19 * 7 * NYD6 * NZ6] (q outermost, c middle)
+    nBytes = 7 * 19 * NYD6 * NZ6 * sizeof(double);
+    AllocateHostArray(  nBytes, 3, &lagrange_eta_h, &lagrange_xi_h, &lagrange_zeta_h);
+    AllocateDeviceArray(nBytes, 3, &lagrange_eta_d, &lagrange_xi_d, &lagrange_zeta_d);
+    // Precomputed stencil base k [NZ6] (int array, wall-clamped, direct k indexing)
+    CHECK_CUDA( cudaMallocHost((void**)&bk_precomp_h, NZ6 * sizeof(int)) );
+    CHECK_CUDA( cudaMalloc(&bk_precomp_d, NZ6 * sizeof(int)) );
     // Phase 4 LTS: local dt, omega fields [NYD6 * NZ6]
     nBytes = NYD6 * NZ6 * sizeof(double);
     AllocateHostArray(  nBytes, 3, &dt_local_h, &omega_local_h, &omegadt_local_h);
@@ -199,7 +207,14 @@ void FreeSource() {
     FreeHostArray(  2,  dk_dz_h, dk_dy_h);
     FreeDeviceArray(2,  dk_dz_d, dk_dy_d);
     FreeHostArray(  1,  delta_zeta_h);
-    FreeDeviceArray(1,  delta_zeta_d);
+    // Part A: space-varying δη/δξ (host-only)
+    FreeHostArray(  2,  delta_eta_local_h, delta_xi_local_h);
+    // Part B: precomputed Lagrange weights
+    FreeHostArray(  3,  lagrange_eta_h, lagrange_xi_h, lagrange_zeta_h);
+    FreeDeviceArray(3,  lagrange_eta_d, lagrange_xi_d, lagrange_zeta_d);
+    // Precomputed stencil base k
+    CHECK_CUDA( cudaFreeHost(bk_precomp_h) );
+    CHECK_CUDA( cudaFree(bk_precomp_d) );
     // Phase 4 LTS
     FreeHostArray(  3,  dt_local_h, omega_local_h, omegadt_local_h);
     FreeDeviceArray(2,  dt_local_d, omega_local_d);

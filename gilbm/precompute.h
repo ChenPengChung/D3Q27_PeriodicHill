@@ -502,12 +502,192 @@ void PrecomputeGILBM_DeltaZeta_Local( //函數是在main.cu中被呼叫的，目
     }
 }
 
+// ============================================================================
+// PrecomputeGILBM_DeltaEta_Local: η-direction displacement with LOCAL dt
+// ============================================================================
+// Replaces the old __constant__[19] approach (dt_global × e_x/dx, scaled by a_local in kernel).
+// New: precompute directly with dt_local(j,k) → [19 × NYD6 × NZ6]
+// Formula: delta_eta_local[q, j, k] = dt_local(j,k) · e_x[q] / dx
+// Eliminates runtime a_local computation in kernel.
+void PrecomputeGILBM_DeltaEta_Local(
+    double *delta_eta_local_h,   // output: [19 * NYD6 * NZ6]
+    const double *dt_local_h,    // input:  [NYD6 * NZ6]
+    double dx_val,
+    int NYD6_local, int NZ6_local
+) {
+    double e_x[19] = {
+        0, 1,-1,0,0,0,0, 1,-1,1,-1, 1,-1,1,-1, 0,0,0,0
+    };
+    int sz = NYD6_local * NZ6_local;
+    for (int q = 0; q < 19; q++) {
+        if (e_x[q] == 0.0) {
+            // Pure zero: q=0,3,4,5,6,15,16,17,18
+            for (int idx = 0; idx < sz; idx++)
+                delta_eta_local_h[q * sz + idx] = 0.0;
+        } else {
+            double e_over_dx = e_x[q] / dx_val;
+            for (int idx = 0; idx < sz; idx++)
+                delta_eta_local_h[q * sz + idx] = dt_local_h[idx] * e_over_dx;
+        }
+    }
+}
+
+// ============================================================================
+// PrecomputeGILBM_DeltaXi_Local: ξ-direction displacement with LOCAL dt
+// ============================================================================
+// Same as DeltaEta_Local but for y-direction.
+// Formula: delta_xi_local[q, j, k] = dt_local(j,k) · e_y[q] / dy
+void PrecomputeGILBM_DeltaXi_Local(
+    double *delta_xi_local_h,    // output: [19 * NYD6 * NZ6]
+    const double *dt_local_h,    // input:  [NYD6 * NZ6]
+    double dy_val,
+    int NYD6_local, int NZ6_local
+) {
+    double e_y[19] = {
+        0, 0,0,1,-1,0,0, 1,1,-1,-1, 0,0,0,0, 1,-1,1,-1
+    };
+    int sz = NYD6_local * NZ6_local;
+    for (int q = 0; q < 19; q++) {
+        if (e_y[q] == 0.0) {
+            for (int idx = 0; idx < sz; idx++)
+                delta_xi_local_h[q * sz + idx] = 0.0;
+        } else {
+            double e_over_dy = e_y[q] / dy_val;
+            for (int idx = 0; idx < sz; idx++)
+                delta_xi_local_h[q * sz + idx] = dt_local_h[idx] * e_over_dy;
+        }
+    }
+}
+
+// ============================================================================
+// Host-side Lagrange 7-point interpolation coefficients
+// ============================================================================
+// Identical logic to the __device__ version in interpolation_gilbm.h,
+// but callable from host code for precomputation.
+static inline void lagrange_7point_coeffs_host(double t, double a[7]) {
+    for (int k = 0; k < 7; k++) {
+        double L = 1.0;
+        for (int j = 0; j < 7; j++) {
+            if (j != k) L *= (t - (double)j) / (double)(k - j);
+        }
+        a[k] = L;
+    }
+}
+
+// ============================================================================
+// PrecomputeGILBM_LagrangeWeights: precompute all Lagrange interpolation weights
+// ============================================================================
+// For each streaming direction q at each spatial point (j,k), the Lagrange
+// parameter t depends only on (q,j,k), NOT on the spatial index i:
+//   η: t_eta = 3 - delta_eta_local[q,j,k]     (bi=i-3 for all executed i)
+//   ξ: t_xi  = 3 - delta_xi_local[q,j,k]      (bj=j-3 for all executed j)
+//   ζ: t_zeta = up_k - bk(k)                   (with stencil base clamping)
+//
+// This eliminates 3 × lagrange_7point_coeffs calls (each 42 divisions) per q
+// from the kernel hot path → replaced by 21 cached memory reads per q.
+//
+// Memory layout: w[q * 7 * NYD6 * NZ6 + c * NYD6 * NZ6 + j * NZ6 + k]
+//   where q ∈ [0,18] direction, c ∈ [0,6] Lagrange basis index (q outermost).
+// Total per array: 7 × 19 × NYD6 × NZ6 × 8 bytes ≈ 5.6 MB.
+void PrecomputeGILBM_LagrangeWeights(
+    double *w_eta_h,                   // output: [7 * 19 * NYD6 * NZ6]
+    double *w_xi_h,                    // output: [7 * 19 * NYD6 * NZ6]
+    double *w_zeta_h,                  // output: [7 * 19 * NYD6 * NZ6]
+    const double *delta_eta_local_h,   // input: [19 * NYD6 * NZ6]
+    const double *delta_xi_local_h,    // input: [19 * NYD6 * NZ6]
+    const double *delta_zeta_h,        // input: [19 * NYD6 * NZ6]
+    int NYD6_local, int NZ6_local
+) {
+    int sz = NYD6_local * NZ6_local;
+    size_t total = (size_t)7 * 19 * sz;
+
+    // Initialize to zero (for q=0 rest direction, BC directions, and ghost zones)
+    memset(w_eta_h,  0, total * sizeof(double));
+    memset(w_xi_h,   0, total * sizeof(double));
+    memset(w_zeta_h, 0, total * sizeof(double));
+
+    for (int q = 1; q < 19; q++) {
+        for (int j = 3; j < NYD6_local - 3; j++) {
+            for (int k = 3; k < NZ6_local - 3; k++) {
+                int idx_jk = j * NZ6_local + k;
+                int q_base = q * 7 * sz;  // base index for this q in [q][c][idx] layout
+
+                // ── η weights ──
+                // t_eta = ci - delta_eta_local, where ci = 3 for all executed i
+                // (bi = i-3 for i ∈ [3, NX6-4], never clamped)
+                double d_eta = delta_eta_local_h[q * sz + idx_jk];
+                double t_eta = 3.0 - d_eta;
+                // Safety clamp (CFL < 1 guarantees this won't trigger)
+                if (t_eta < 0.0) t_eta = 0.0;
+                if (t_eta > 6.0) t_eta = 6.0;
+                double a_eta[7];
+                lagrange_7point_coeffs_host(t_eta, a_eta);
+                for (int c = 0; c < 7; c++)
+                    w_eta_h[q_base + c * sz + idx_jk] = a_eta[c];
+
+                // ── ξ weights ──
+                // t_xi = cj - delta_xi_local, where cj = 3 for all executed j
+                // (bj = j-3 for j ∈ [3, NYD6-4], never clamped)
+                double d_xi = delta_xi_local_h[q * sz + idx_jk];
+                double t_xi = 3.0 - d_xi;
+                if (t_xi < 0.0) t_xi = 0.0;
+                if (t_xi > 6.0) t_xi = 6.0;
+                double a_xi[7];
+                lagrange_7point_coeffs_host(t_xi, a_xi);
+                for (int c = 0; c < 7; c++)
+                    w_xi_h[q_base + c * sz + idx_jk] = a_xi[c];
+
+                // ── ζ weights (with stencil base clamping) ──
+                // Reproduce exact kernel logic: compute_stencil_base + departure clamp
+                double d_zeta = delta_zeta_h[q * sz + idx_jk];
+                double up_k = (double)k - d_zeta;
+                // Departure point clamping (same as kernel L298-299)
+                if (up_k < 3.0)                          up_k = 3.0;
+                if (up_k > (double)(NZ6_local - 4))      up_k = (double)(NZ6_local - 4);
+                // Stencil base clamping (same as compute_stencil_base L67,72-73)
+                int bk = k - 3;
+                if (bk < 3)                    bk = 3;
+                if (bk + 6 > NZ6_local - 4)   bk = NZ6_local - 10;
+                double t_zeta = up_k - (double)bk;
+                double a_zeta[7];
+                lagrange_7point_coeffs_host(t_zeta, a_zeta);
+                for (int c = 0; c < 7; c++)
+                    w_zeta_h[q_base + c * sz + idx_jk] = a_zeta[c];
+            }
+        }
+    }
+}
+
+// ============================================================================
+// PrecomputeGILBM_StencilBaseK: precompute z-direction stencil base with wall clamping
+// ============================================================================
+// bk depends ONLY on k (not on q, j, or i), so a 1D array [NZ6] suffices.
+// Kernel access: bk_precomp_d[k] (direct indexing, no offset).
+// bk_h[0,1,2] and bk_h[NZ6-3..NZ6-1] are ghost/buffer — kernel guard skips them.
+// Reproduces compute_stencil_base() z-clamping logic:
+//   bk = k - 3
+//   if (bk < 3)           bk = 3            (bottom wall: stencil starts at k=3)
+//   if (bk + 6 > NZ6 - 4) bk = NZ6 - 10    (top wall: stencil ends at k=NZ6-4)
+void PrecomputeGILBM_StencilBaseK(
+    int *bk_h,          // output: [NZ6] (indexed directly by k)
+    int NZ6_local
+) {
+    for (int k = 0; k < NZ6_local; k++) {
+        int bk = k - 3;
+        if (bk < 3)                    bk = 3;
+        if (bk + 6 > NZ6_local - 4)   bk = NZ6_local - 10;
+        bk_h[k] = bk;
+    }
+}
+
 #endif
 /*
 在曲線座標下的遷移距離計算分三個方向：
-Delta[alpha][0=η] = dt_global * e_x[alpha] / dx           (uniform x, __constant__[19])
-Delta[alpha][1=ξ] = dt_global * e_y[alpha] / dy           (uniform y, __constant__[19])
-Delta[alpha][2=ζ][idx_jk] = dt_local(j,k) * ẽ^ζ(k_half)  (RK2, device[19*NYD6*NZ6])
-Note: η/ξ 用 dt_global 預計算，kernel 中由 a_local = dt_local/dt_global 縮放至 dt_local
-      ζ 直接用 dt_local 預計算，kernel 中不做縮放
+Delta[alpha][0=η][j,k] = dt_local(j,k) * e_x[alpha] / dx    (uniform x, device[19*NYD6*NZ6])
+Delta[alpha][1=ξ][j,k] = dt_local(j,k) * e_y[alpha] / dy    (uniform y, device[19*NYD6*NZ6])
+Delta[alpha][2=ζ][j,k] = dt_local(j,k) * ẽ^ζ(k_half)        (RK2, device[19*NYD6*NZ6])
+所有位移量均以 dt_local 預計算，kernel 中不做任何位移縮放。
+
+Lagrange 權重以 [19×7×NYD6×NZ6] 預計算 (q outermost, c middle)，kernel 中直接讀取，不做任何 lagrange_7point_coeffs 計算。
+bk 預計算為 int [NZ6]，kernel 中直接讀取，不需 compute_stencil_base()。
 */

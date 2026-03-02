@@ -28,13 +28,9 @@ __constant__ double GILBM_W[19] = {
     1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0
 };
 
-// Runtime parameters (set once via cudaMemcpyToSymbol)
-__constant__ double GILBM_dt;
-
-
-// Precomputed displacement arrays (constant for uniform x and y)
-__constant__ double GILBM_delta_eta[19];
-__constant__ double GILBM_delta_xi[19];
+// REMOVED: __constant__ GILBM_dt, GILBM_delta_eta[19], GILBM_delta_xi[19]
+// Replaced by precomputed Lagrange weights: lagrange_eta_d, lagrange_xi_d, lagrange_zeta_d
+// Kernel no longer computes a_local, departure points, or lagrange_7point_coeffs at runtime.
 
 #if USE_MRT
 // MRT transformation matrix M[19][19] and inverse M⁻¹[19][19]
@@ -169,8 +165,10 @@ __device__ void gilbm_compute_point(
     double *f_pc,
     double *feq_d,
     double *omegadt_local_d,
-    double *dk_dz_d, double *dk_dy_d, double *delta_zeta_d,
+    double *dk_dz_d, double *dk_dy_d,
     double *dt_local_d, double *omega_local_d,
+    double *lagrange_eta_d, double *lagrange_xi_d, double *lagrange_zeta_d,  // 預計算 Lagrange 權重
+    int *bk_precomp_d,  // 預計算 stencil base k [NZ6], 直接用 k 索引
     double *u_out, double *v_out, double *w_out, double *rho_out_arr,
     double *Force, double *rho_modify
 ) {
@@ -183,16 +181,16 @@ __device__ void gilbm_compute_point(
     const double omega_A   = omega_local_d[idx_jk]; // ω_A (Imamura無因次鬆弛時間 ≡ τ/Δt, Eq.1)
     const double omegadt_A = omegadt_local_d[index];  // ω_A × Δt_A = τ_A (教科書鬆弛時間)
 
-    // LTS acceleration factor for eta/xi displacement scaling
-    const double a_local = dt_A / GILBM_dt;//計算該點上的加速因子，此參數為loca的值，此值隨空間變化 
+    // REMOVED: a_local = dt_A / GILBM_dt — no longer needed, Lagrange weights precomputed
 
-    // Stencil base with boundary clamping
-    int bi, bj, bk;
-    compute_stencil_base(i, j, k, bi, bj, bk);
+    // Stencil base: bi/bj never clamped for executed points, bk precomputed with wall clamping
+    const int bi = i - 3;  // i ∈ [3, NX6-4] → bi ∈ [0, NX6-7], no clamping needed
+    const int bj = j - 3;  // j ∈ [3, NYD6-4] → bj ∈ [0, NYD6-7], no clamping needed
+    const int bk = bk_precomp_d[k];  // precomputed: max(3, min(NZ6-10, k-3))
 
     // A's position within stencil
-    const int ci = i - bi;//X
-    const int cj = j - bj;
+    const int ci = i - bi;  // = 3 (always, for executed i)
+    const int cj = j - bj;  // = 3 (always, for executed j)
     const int ck = k - bk;
 
     // ── Wall BC pre-computation ──────────────────────────────────────
@@ -249,7 +247,7 @@ __device__ void gilbm_compute_point(
     //(ci,cj,ck):物理空間計算點的內插系統空間座標
     //f_pc:陣列元素物理命名意義:1.pc=post-collision 
     //2.f_pc[(q * 343 + flat) * GRID_SIZE + index]
-    //        ↑編號(1~18) ↑stencil內位置      ↑物理空間計算點A   ->這就是post-collision 的命名意義
+    //        ↑編號(1~18) ↑stencil內位置      ↑物理空間計算點A   ->這就是post-collision 的命名意義                                                                             
     //在迴圈之外，對於某一個空間點
     double rho_stream = 0.0, mx_stream = 0.0, my_stream = 0.0, mz_stream = 0.0;
 
@@ -257,13 +255,13 @@ __device__ void gilbm_compute_point(
     //在迴圈內部，對於某一個空間點，對於某一個離散度方向
         double f_streamed;
 
-        if (q == 0) {
+        if (q == 0) { 
             // Rest direction: read center value from f_pc (no interpolation)
             int center_flat = ci * 49 + cj * 7 + ck; //當前計算點的內差系統位置轉換為一維座標 
             f_streamed = f_pc[(q * STENCIL_VOL + center_flat) * GRID_SIZE + index];
-        } else {
-            bool need_bc = false;
-            if (is_bottom) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
+        } else {                
+            bool need_bc = false;           
+            if (is_bottom) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);                                                                                                                                      
             else if (is_top) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
             if (need_bc) {
                 f_streamed = ChapmanEnskogBC(q, rho_wall,
@@ -282,31 +280,18 @@ __device__ void gilbm_compute_point(
                         }
                     }
                 }
-                // Departure point  //a_local 為本地local accerleration factor
-                double delta_eta_loc    = a_local * GILBM_delta_eta[q];
-                double delta_xi_loc   = a_local * GILBM_delta_xi[q];
-                double delta_zeta_loc = delta_zeta_d[q * NYD6 * NZ6 + idx_jk];
-
-                double up_i = (double)i - delta_eta_loc;
-                double up_j = (double)j - delta_xi_loc;
-                double up_k = (double)k - delta_zeta_loc;
-                
-                if (up_i < 1.0)               up_i = 1.0;
-                if (up_i > (double)(NX6 - 3)) up_i = (double)(NX6 - 3);
-                if (up_j < 1.0)               up_j = 1.0;
-                if (up_j > (double)(NYD6 - 3))up_j = (double)(NYD6 - 3);
-                if (up_k < 3.0)               up_k = 3.0;               // Buffer=3: 壁面 k=3
-                if (up_k > (double)(NZ6 - 4)) up_k = (double)(NZ6 - 4); // Buffer=3: 頂壁 k=NZ6-4
-
-                // Lagrange weights relative to stencil base
-                double t_i = up_i - (double)bi;
-                double t_j = up_j - (double)bj;
-                double t_k = up_k - (double)bk;
-
-                double Lagrangarray_xi[7], Lagrangarray_eta[7], Lagrangarray_zeta[7];
-                lagrange_7point_coeffs(t_i, Lagrangarray_eta);
-                lagrange_7point_coeffs(t_j, Lagrangarray_xi);
-                lagrange_7point_coeffs(t_k, Lagrangarray_zeta);
+                // ── Read precomputed Lagrange weights (replaces runtime computation) ──
+                // All weights depend only on (q, j, k), NOT on i.
+                // Precomputed in PrecomputeGILBM_LagrangeWeights() on host.
+                // Layout: w[q*7*NYD6*NZ6 + c*NYD6*NZ6 + idx_jk], q outermost, c middle
+                const int q_base = q * 7 * NYD6 * NZ6;
+                const int sz_jk = NYD6 * NZ6;
+                double Lagrangarray_eta[7], Lagrangarray_xi[7], Lagrangarray_zeta[7];
+                for (int c = 0; c < 7; c++) {
+                    Lagrangarray_eta[c]  = lagrange_eta_d[q_base + c * sz_jk + idx_jk];
+                    Lagrangarray_xi[c]   = lagrange_xi_d[q_base + c * sz_jk + idx_jk];
+                    Lagrangarray_zeta[c] = lagrange_zeta_d[q_base + c * sz_jk + idx_jk];
+                }
 
                 // Tensor-product interpolation
                 // Step A: η (i) reduction -> interpolation1order[7][7]
@@ -551,8 +536,10 @@ __global__ void GILBM_StreamCollide_Kernel(
     double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
     double *f15_new, double *f16_new, double *f17_new, double *f18_new,
     double *f_pc, double *feq_d, double *omegadt_local_d,
-    double *dk_dz_d, double *dk_dy_d, double *delta_zeta_d,
+    double *dk_dz_d, double *dk_dy_d,
     double *dt_local_d, double *omega_local_d,
+    double *lagrange_eta_d, double *lagrange_xi_d, double *lagrange_zeta_d,
+    int *bk_precomp_d,
     double *u_out, double *v_out, double *w_out, double *rho_out,
     double *Force, double *rho_modify
 ) {
@@ -573,8 +560,10 @@ __global__ void GILBM_StreamCollide_Kernel(
 
     gilbm_compute_point(i, j, k, f_new_ptrs,
         f_pc, feq_d, omegadt_local_d,
-        dk_dz_d, dk_dy_d, delta_zeta_d,
+        dk_dz_d, dk_dy_d,
         dt_local_d, omega_local_d,
+        lagrange_eta_d, lagrange_xi_d, lagrange_zeta_d,
+        bk_precomp_d,
         u_out, v_out, w_out, rho_out,
         Force, rho_modify);
 }
@@ -588,8 +577,10 @@ __global__ void GILBM_StreamCollide_Buffer_Kernel(
     double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
     double *f15_new, double *f16_new, double *f17_new, double *f18_new,
     double *f_pc, double *feq_d, double *omegadt_local_d,
-    double *dk_dz_d, double *dk_dy_d, double *delta_zeta_d,
+    double *dk_dz_d, double *dk_dy_d,
     double *dt_local_d, double *omega_local_d,
+    double *lagrange_eta_d, double *lagrange_xi_d, double *lagrange_zeta_d,
+    int *bk_precomp_d,
     double *u_out, double *v_out, double *w_out, double *rho_out,
     double *Force, double *rho_modify, int start
 ) {
@@ -608,8 +599,10 @@ __global__ void GILBM_StreamCollide_Buffer_Kernel(
 
     gilbm_compute_point(i, j, k, f_new_ptrs,
         f_pc, feq_d, omegadt_local_d,
-        dk_dz_d, dk_dy_d, delta_zeta_d,
+        dk_dz_d, dk_dy_d,
         dt_local_d, omega_local_d,
+        lagrange_eta_d, lagrange_xi_d, lagrange_zeta_d,
+        bk_precomp_d,
         u_out, v_out, w_out, rho_out,
         Force, rho_modify);
 }
