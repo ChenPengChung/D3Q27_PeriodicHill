@@ -90,6 +90,9 @@ double  *Force_h,   *Force_d;
 
 double *rho_modify_h, *rho_modify_d;
 
+// GPU reduction partial sums for mass conservation (replaces SendDataToCPU every step)
+double *rho_partial_h, *rho_partial_d;
+
 // Time-average accumulation (FTT-gated)
 // u=spanwise, v=streamwise, w=wall-normal; GPU-side accumulation
 double *u_tavg_h = NULL, *v_tavg_h = NULL, *w_tavg_h = NULL;   // host (for VTK output)
@@ -718,49 +721,50 @@ int main(int argc, char *argv[])
             // Merged BIN is written ONLY on program stop (final exit block).
         }
 
-        // ===== Global Mass Conservation Modify =====
+        // ===== Global Mass Conservation Modify (GPU reduction — no SendDataToCPU) =====
         cudaDeviceSynchronize();
         cudaMemcpy(Force_h, Force_d, sizeof(double), cudaMemcpyDeviceToHost);
         {
-            SendDataToCPU( ft );
-            double rho_LocalSum  = 0.0;
+            const int rho_total = (NX6 - 7) * (NYD6 - 7) * (NZ6 - 6);
+            const int rho_threads = 256;
+            const int rho_blocks = (rho_total + rho_threads - 1) / rho_threads;
+
+            ReduceRhoSum_Kernel<<<rho_blocks, rho_threads, rho_threads * sizeof(double)>>>(rho_d, rho_partial_d);
+            CHECK_CUDA( cudaMemcpy(rho_partial_h, rho_partial_d, rho_blocks * sizeof(double), cudaMemcpyDeviceToHost) );
+
+            double rho_LocalSum = 0.0;
+            for (int b = 0; b < rho_blocks; b++) rho_LocalSum += rho_partial_h[b];
+
             double rho_GlobalSum = 0.0;
-            double rho_global;
-            for( int j = 3 ; j < NYD6-4; j++){
-            for( int k = 3 ; k < NZ6-3; k++){
-            for( int i = 3 ; i < NX6-4; i++){
-                int index = j*NX6*NZ6 + k*NX6 + i;
-                rho_LocalSum =  rho_LocalSum + rho_h_p[index];
-            }}}
-            MPI_Reduce((void *)&rho_LocalSum, (void *)&rho_GlobalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-            if ( myid == 0){
-                rho_global = 1.0*(NX6-7)*(NY6-7)*(NZ6-6);
-                rho_modify_h[0] =( rho_global - rho_GlobalSum ) / ((NX6-7)*(NY6-7)*(NZ6-6));
+            MPI_Reduce(&rho_LocalSum, &rho_GlobalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+            if (myid == 0) {
+                double rho_global = 1.0 * (NX6 - 7) * (NY6 - 7) * (NZ6 - 6);
+                rho_modify_h[0] = (rho_global - rho_GlobalSum) / ((NX6 - 7) * (NY6 - 7) * (NZ6 - 6));
             }
             // Broadcast mass correction to ALL ranks (Bug #16 fix: was rank 0 only)
             MPI_Bcast(rho_modify_h, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
             cudaMemcpy(rho_modify_d, rho_modify_h, sizeof(double), cudaMemcpyHostToDevice);
         }
 
-        // ===== Mass Conservation Check + NaN early stop (every 100 steps) =====
-        if ( step % 100 == 1){
-            SendDataToCPU( ft );
-            double rho_LocalSum = 0;
-            double rho_GlobalSum = 0;
-            double rho_initial = 1.0 ;
-            for( int j = 3 ; j < NYD6-4; j++){
-            for( int k = 3 ; k < NZ6-3; k++){
-            for( int i = 3 ; i < NX6-4; i++){
-                int index = j*NX6*NZ6 + k*NX6 + i;
-                rho_LocalSum =  rho_LocalSum + rho_h_p[index] ;
-            }}}
-            double rho_LocalAvg;
-            rho_LocalAvg = rho_LocalSum / ((NX6-7)*(NYD6-7)*(NZ6-6));
-            MPI_Reduce((void *)&rho_LocalAvg, (void *)&rho_GlobalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        // ===== Mass Conservation Check + NaN early stop (every 100 steps, GPU reduction) =====
+        if (step % 100 == 1) {
+            const int rho_total_chk = (NX6 - 7) * (NYD6 - 7) * (NZ6 - 6);
+            const int rho_threads_chk = 256;
+            const int rho_blocks_chk = (rho_total_chk + rho_threads_chk - 1) / rho_threads_chk;
+
+            ReduceRhoSum_Kernel<<<rho_blocks_chk, rho_threads_chk, rho_threads_chk * sizeof(double)>>>(rho_d, rho_partial_d);
+            CHECK_CUDA( cudaMemcpy(rho_partial_h, rho_partial_d, rho_blocks_chk * sizeof(double), cudaMemcpyDeviceToHost) );
+
+            double rho_LocalSum_chk = 0.0;
+            for (int b = 0; b < rho_blocks_chk; b++) rho_LocalSum_chk += rho_partial_h[b];
+            double rho_LocalAvg = rho_LocalSum_chk / ((NX6 - 7) * (NYD6 - 7) * (NZ6 - 6));
+
+            double rho_GlobalSum_chk = 0.0;
+            MPI_Reduce(&rho_LocalAvg, &rho_GlobalSum_chk, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
             int nan_flag = 0;
             if (myid == 0) {
-                double rho_avg_check = rho_GlobalSum / (double)jp;
+                double rho_avg_check = rho_GlobalSum_chk / (double)jp;
                 if (isnan(rho_avg_check) || isinf(rho_avg_check) || fabs(rho_avg_check - 1.0) > 0.01) {
                     printf("[FATAL] Divergence detected at step %d: rho_avg = %.6e, stopping.\n", step, rho_avg_check);
                     nan_flag = 1;
@@ -768,17 +772,16 @@ int main(int argc, char *argv[])
             }
             MPI_Bcast(&nan_flag, 1, MPI_INT, 0, MPI_COMM_WORLD);
             if (nan_flag) {
-                SendDataToCPU( ft );
-                fileIO_velocity_vtk_merged( step );
+                SendDataToCPU(ft);
+                fileIO_velocity_vtk_merged(step);
                 break;
             }
 
-            if( myid ==0 ){
+            if (myid == 0) {
                 double FTT_rho = step * dt_global / (double)flow_through_time;
-                FILE *checkrho;
-                checkrho = fopen("checkrho.dat","a");
-                fprintf(checkrho,"%d\t %.4f\t %lf\t %lf\n",step, FTT_rho, rho_initial, rho_GlobalSum / (double)jp);
-                fclose (checkrho);
+                FILE *checkrho = fopen("checkrho.dat", "a");
+                fprintf(checkrho, "%d\t %.4f\t %lf\t %lf\n", step, FTT_rho, 1.0, rho_GlobalSum_chk / (double)jp);
+                fclose(checkrho);
             }
         }
 

@@ -270,20 +270,8 @@ __device__ void gilbm_compute_point(
                     omega_A, dt_A //權重係數//localtimestep
                 );
             } else {
-                // Load 343 values from f_pc into local stencil
-                double f_stencil[STENCIL_SIZE][STENCIL_SIZE][STENCIL_SIZE];
-                for (int si = 0; si < 7; si++){
-                    for (int sj = 0; sj < 7; sj++){
-                        for (int sk = 0; sk < 7; sk++) {
-                            int interpolation = si * 49 + sj * 7 + sk; //遍歷內插成員系統的每一個點 
-                            f_stencil[si][sj][sk] = f_pc[(q * STENCIL_VOL + interpolation) * GRID_SIZE + index];//拿個桶子紀錄本計算點上相對應的內插成員系統的分佈函數
-                        }
-                    }
-                }
                 // ── Runtime departure point + Lagrange weight computation ──
-                // η/ξ: from __constant__ memory (free), scaled by a_local
-                // ζ: 1 global read from delta_zeta_d (space-varying)
-                // 3× lagrange_7point_coeffs() → register-only (~50 FLOPs each, hidden by memory latency)
+                // Computed BEFORE load to enable fused load+η-reduction
                 double t_eta = (double)ci - a_local * GILBM_delta_eta[q];
                 if (t_eta < 0.0) t_eta = 0.0; if (t_eta > 6.0) t_eta = 6.0;
                 double t_xi  = (double)cj - a_local * GILBM_delta_xi[q];
@@ -298,19 +286,27 @@ __device__ void gilbm_compute_point(
                 lagrange_7point_coeffs(t_xi,   Lagrangarray_xi);
                 lagrange_7point_coeffs(t_zeta, Lagrangarray_zeta);
 
-                // Tensor-product interpolation
-                // Step A: η (i) reduction -> interpolation1order[7][7]
+                // ── Fused load + η-reduction (eliminates f_stencil[7][7][7]) ──
+                // Old: load 343 values → f_stencil[7][7][7] (2744 bytes → register spill)
+                //      then η-reduce from f_stencil → interpolation1order[7][7]
+                // New: for each (sj,sk), load si=0..6 directly from f_pc into Intrpl7
+                //      → interpolation1order[7][7] (392 bytes, fits in registers)
+                // Same 343 global reads, same FMA count, but 7× less local storage.
+                const int q_off = q * STENCIL_VOL;
                 double interpolation1order[7][7];
-                for (int sj = 0; sj < 7; sj++)
-                    for (int sk = 0; sk < 7; sk++)
+                for (int sj = 0; sj < 7; sj++) {
+                    for (int sk = 0; sk < 7; sk++) {
+                        const int jk_flat = sj * 7 + sk;
                         interpolation1order[sj][sk] = Intrpl7(
-                            f_stencil[0][sj][sk], Lagrangarray_eta[0],
-                            f_stencil[1][sj][sk], Lagrangarray_eta[1],
-                            f_stencil[2][sj][sk], Lagrangarray_eta[2],
-                            f_stencil[3][sj][sk], Lagrangarray_eta[3],
-                            f_stencil[4][sj][sk], Lagrangarray_eta[4],
-                            f_stencil[5][sj][sk], Lagrangarray_eta[5],
-                            f_stencil[6][sj][sk], Lagrangarray_eta[6]);
+                            f_pc[(q_off +   0 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[0],
+                            f_pc[(q_off +  49 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[1],
+                            f_pc[(q_off +  98 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[2],
+                            f_pc[(q_off + 147 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[3],
+                            f_pc[(q_off + 196 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[4],
+                            f_pc[(q_off + 245 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[5],
+                            f_pc[(q_off + 294 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[6]);
+                    }
+                }
 
                 // Step B: ξ (j) reduction -> interpolation2order[7]
                 double interpolation2order[7];
@@ -324,7 +320,7 @@ __device__ void gilbm_compute_point(
                         interpolation1order[5][sk], Lagrangarray_xi[5],
                         interpolation1order[6][sk], Lagrangarray_xi[6]);
 
-                // Step C: zeta reduction -> scalar
+                // Step C: ζ reduction -> scalar
                 f_streamed = Intrpl7(
                     interpolation2order[0], Lagrangarray_zeta[0],
                     interpolation2order[1], Lagrangarray_zeta[1],

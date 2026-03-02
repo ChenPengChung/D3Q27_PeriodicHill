@@ -147,6 +147,14 @@ void AllocateMemory() {
         CHECK_CUDA( cudaMemset(w_tavg_d, 0, tavg_bytes) );
     }
 
+    // GPU reduction partial sums for mass conservation (replaces SendDataToCPU every step)
+    {
+        int rho_reduce_total = (NX6 - 7) * (NYD6 - 7) * (NZ6 - 6);
+        int rho_reduce_blocks = (rho_reduce_total + 255) / 256;
+        CHECK_CUDA( cudaMallocHost((void**)&rho_partial_h, rho_reduce_blocks * sizeof(double)) );
+        CHECK_CUDA( cudaMalloc(&rho_partial_d, rho_reduce_blocks * sizeof(double)) );
+    }
+
     nBytes = NZ6 * sizeof(double);
     CHECK_CUDA( cudaMallocHost( (void**)&xi_h, nBytes ) );
     CHECK_CUDA( cudaMalloc( &xi_d, nBytes ) );
@@ -195,6 +203,10 @@ void FreeSource() {
         FreeDeviceArray(9,  DUDX2, DUDY2, DUDZ2, DVDX2, DVDY2, DVDZ2, DWDX2, DWDY2, DWDZ2);
         FreeDeviceArray(9,  UUU, UUV, UUW, VVU, VVV, VVW, WWU, WWV, WWW);
     }
+
+    // GPU reduction partial sums
+    CHECK_CUDA( cudaFreeHost(rho_partial_h) );
+    CHECK_CUDA( cudaFree(rho_partial_d) );
 
     FreeHostArray(  4,  x_h, y_h, z_h, xi_h);
     FreeDeviceArray(4,  x_d, y_d, z_d, xi_d);

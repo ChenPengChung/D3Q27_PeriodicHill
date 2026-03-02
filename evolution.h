@@ -59,6 +59,41 @@ __global__ void periodicSW(
 }
 
 
+// ===== GPU reduction kernel: sum rho_d over interior points =====
+// Maps 1D thread index to interior (i,j,k), writes partial block sums to partial_sums_d.
+// Host sums the partial results (typically 256-512 doubles = 2-4 KB) instead of
+// transferring the entire rho field (1.6 MB per rank) to CPU.
+__global__ void ReduceRhoSum_Kernel(double *rho_d, double *partial_sums_d) {
+    extern __shared__ double sdata[];
+    const int tid = threadIdx.x;
+    const int gid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Interior dimensions: i∈[3,NX6-4), j∈[3,NYD6-4), k∈[3,NZ6-3)
+    const int ni = NX6 - 7;
+    const int nk = NZ6 - 6;
+    const int nj = NYD6 - 7;
+    const int total = ni * nj * nk;
+
+    double val = 0.0;
+    if (gid < total) {
+        int j = gid / (ni * nk) + 3;
+        int rem = gid % (ni * nk);
+        int k = rem / ni + 3;
+        int i = rem % ni + 3;
+        val = rho_d[j * NX6 * NZ6 + k * NX6 + i];
+    }
+
+    sdata[tid] = val;
+    __syncthreads();
+
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] += sdata[tid + s];
+        __syncthreads();
+    }
+
+    if (tid == 0) partial_sums_d[blockIdx.x] = sdata[0];
+}
+
 // ===== Time-average accumulation kernel (GPU-side, FTT-gated in main.cu) =====
 // Accumulates all 3 velocity components: u(spanwise), v(streamwise), w(wall-normal)
 __global__ void AccumulateTavg_Kernel(double *u_tavg, double *v_tavg, double *w_tavg,
@@ -97,7 +132,11 @@ __global__ void AccumulateUbulk(
 void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     int buffer = 3;
 
-    // Option B double-buffer: pre-copy f_old → f_new so kernel starts with last iteration's values
+    // Double-buffer pre-copy: f_old → f_new (full grid)
+    // 確保 f_new 在 kernel 開始前有上一步的完整值，包含：
+    //   1. x 方向週期性邊界 (i=0,1,2 和 i=NX6-3..NX6-1) — 來自上一步 periodicSW
+    //   2. y 方向 MPI halo (j=0,1,2 和 j=NYD6-3..NYD6-1) — 來自上一步 MPI exchange
+    // Step 2+3 的 7×7×7 stencil 在邊界附近需要這些值作為 Gauss-Seidel fallback。
     const size_t grid_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
     for (int q = 0; q < 19; q++)
         CHECK_CUDA( cudaMemcpyAsync(f_new[q], f_old[q], grid_bytes, cudaMemcpyDeviceToDevice, stream0) );
