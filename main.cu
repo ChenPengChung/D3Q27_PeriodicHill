@@ -50,19 +50,9 @@ double  *Xdep_h[3], *Ydep_h[3], *Zdep_h[3],
 // 只需 2 個空間變化的度量項（大小 [NYD6*NZ6]，與 z_h 相同）
 double *dk_dz_h, *dk_dz_d;   // ∂ζ/∂z = 1/(∂z/∂k)
 double *dk_dy_h, *dk_dy_d;   // ∂ζ/∂y = -(∂z/∂j)/(dy·∂z/∂k)
-double *delta_zeta_h;  // GILBM RK2 ζ-direction displacement [19*NYD6*NZ6] (host-only)
+double *delta_zeta_h, *delta_zeta_d;  // GILBM RK2 ζ-direction displacement [19*NYD6*NZ6]
 double delta_xi_h[19];               // GILBM ξ-direction displacement (global dt, for initial CFL check)
 double delta_eta_h[19];              // GILBM η-direction displacement (global dt, for initial CFL check)
-
-// Part A: space-varying δη/δξ with dt_local [19*NYD6*NZ6] (host-only, feeds Lagrange precompute)
-double *delta_eta_local_h;
-double *delta_xi_local_h;
-
-// Part B: precomputed Lagrange interpolation weights [19*7*NYD6*NZ6]
-// Layout: w[q*7*NYD6*NZ6 + c*NYD6*NZ6 + j*NZ6 + k], q outermost, c middle
-double *lagrange_eta_h,  *lagrange_eta_d;
-double *lagrange_xi_h,   *lagrange_xi_d;
-double *lagrange_zeta_h, *lagrange_zeta_d;
 
 // Precomputed stencil base k [NZ6] (int, wall-clamped)
 int *bk_precomp_h, *bk_precomp_d;
@@ -292,10 +282,6 @@ int main(int argc, char *argv[])
     PrecomputeGILBM_DeltaZeta_Local(delta_zeta_h, dk_dz_h, dk_dy_h,
                                      dt_local_h, NYD6, NZ6);
 
-    // Part A: Precompute space-varying δη/δξ with dt_local (replaces __constant__[19] + a_local)
-    PrecomputeGILBM_DeltaEta_Local(delta_eta_local_h, dt_local_h, dx_val, NYD6, NZ6);
-    PrecomputeGILBM_DeltaXi_Local(delta_xi_local_h, dt_local_h, dy_val, NYD6, NZ6);
-
     // Phase 2: CFL validation — departure point safety check (should now PASS)
     bool cfl_ok = ValidateDepartureCFL(delta_zeta_h, dk_dy_h, dk_dz_h, NYD6, NZ6, myid);
     if (!cfl_ok && myid == 0) {
@@ -304,314 +290,27 @@ int main(int argc, char *argv[])
             "  This should not happen — check ComputeGlobalTimeStep logic.\n");
     }
 
-    // Part B: Precompute Lagrange interpolation weights for all 3 directions
-    // Eliminates 3 × lagrange_7point_coeffs (each 42 divisions) per q per grid point from kernel
-    PrecomputeGILBM_LagrangeWeights(lagrange_eta_h, lagrange_xi_h, lagrange_zeta_h,
-                                     delta_eta_local_h, delta_xi_local_h, delta_zeta_h,
-                                     NYD6, NZ6);
-
     // Precompute stencil base k (wall-clamped, depends only on k)
     PrecomputeGILBM_StencilBaseK(bk_precomp_h, NZ6);
-
-    // Part C: Comprehensive diagnostic cross-check (rank 0 only)
-    // Layout: w[q*7*sz + c*sz + idx_jk], q outermost, c middle
-    // Four tests verify precomputed Lagrange weights + bk against multiple criteria:
-    //   Test 1: Self-consistency — recompute from same delta arrays, expect bit-identical
-    //   Test 2: Old-path equivalence — compare with a_local × GILBM_delta[q] path (FP rounding ~1e-16)
-    //   Test 3: Partition of unity — Σ weights = 1.0 (Lagrange property)
-    //   Test 4: bk_precomp consistency — compare with compute_stencil_base logic
-    if (myid == 0) {
-        int sz = NYD6 * NZ6;
-        int test_count = 0, pass_count = 0;
-
-        printf("\n=============================================================\n");
-        printf("  Lagrange Weight Precomputation: Comprehensive Cross-Check\n");
-        printf("  Layout: w[q*7*sz + c*sz + idx_jk] (q outermost, c middle)\n");
-        printf("  Memory: 3 arrays x 19x7x%dx%d x 8 bytes = %.1f MB\n",
-               NYD6, NZ6, 3.0 * 7 * 19 * NYD6 * NZ6 * 8.0 / 1e6);
-        printf("  bk_precomp: %d x 4 bytes = %d bytes\n", NZ6, NZ6 * 4);
-        printf("=============================================================\n");
-
-        // ── Sample printout (quick visual inspection) ──
-        {
-            int q_test = 1, j_mid = NYD6 / 2, k_mid = NZ6 / 2;
-            int idx = j_mid * NZ6 + k_mid;
-            printf("  Sample (q=%d, j=%d, k=%d):\n", q_test, j_mid, k_mid);
-            printf("    eta: ");
-            for (int c = 0; c < 7; c++) printf("%.6f ", lagrange_eta_h[q_test*7*sz + c*sz + idx]);
-            printf("\n    xi:  ");
-            for (int c = 0; c < 7; c++) printf("%.6f ", lagrange_xi_h[q_test*7*sz + c*sz + idx]);
-            printf("\n    zeta:");
-            for (int c = 0; c < 7; c++) printf("%.6f ", lagrange_zeta_h[q_test*7*sz + c*sz + idx]);
-            printf("\n    bk[%d]=%d, bk[3]=%d, bk[%d]=%d\n",
-                   k_mid, bk_precomp_h[k_mid], bk_precomp_h[3], NZ6-4, bk_precomp_h[NZ6-4]);
-        }
-
-        // ── Test 1: Self-consistency ──
-        // Recompute weights from the SAME delta arrays using the SAME host function.
-        // Expected: bit-identical (max|err| = 0.0)
-        {
-            double max_err_eta = 0.0, max_err_xi = 0.0, max_err_zeta = 0.0;
-            for (int q = 1; q < 19; q++) {
-                int q_base = q * 7 * sz;
-                for (int j = 3; j < NYD6 - 3; j++) {
-                    for (int k = 3; k < NZ6 - 3; k++) {
-                        int idx_jk = j * NZ6 + k;
-                        double a_chk[7];
-
-                        // η
-                        double t_eta = 3.0 - delta_eta_local_h[q * sz + idx_jk];
-                        if (t_eta < 0.0) t_eta = 0.0;
-                        if (t_eta > 6.0) t_eta = 6.0;
-                        lagrange_7point_coeffs_host(t_eta, a_chk);
-                        for (int c = 0; c < 7; c++) {
-                            double err = fabs(lagrange_eta_h[q_base + c*sz + idx_jk] - a_chk[c]);
-                            if (err > max_err_eta) max_err_eta = err;
-                        }
-
-                        // ξ
-                        double t_xi = 3.0 - delta_xi_local_h[q * sz + idx_jk];
-                        if (t_xi < 0.0) t_xi = 0.0;
-                        if (t_xi > 6.0) t_xi = 6.0;
-                        lagrange_7point_coeffs_host(t_xi, a_chk);
-                        for (int c = 0; c < 7; c++) {
-                            double err = fabs(lagrange_xi_h[q_base + c*sz + idx_jk] - a_chk[c]);
-                            if (err > max_err_xi) max_err_xi = err;
-                        }
-
-                        // ζ (with stencil base clamping)
-                        double d_zeta = delta_zeta_h[q * sz + idx_jk];
-                        double up_k_val = (double)k - d_zeta;
-                        if (up_k_val < 3.0)              up_k_val = 3.0;
-                        if (up_k_val > (double)(NZ6 - 4)) up_k_val = (double)(NZ6 - 4);
-                        int bk_ref = k - 3;
-                        if (bk_ref < 3)              bk_ref = 3;
-                        if (bk_ref + 6 > NZ6 - 4)   bk_ref = NZ6 - 10;
-                        double t_zeta = up_k_val - (double)bk_ref;
-                        lagrange_7point_coeffs_host(t_zeta, a_chk);
-                        for (int c = 0; c < 7; c++) {
-                            double err = fabs(lagrange_zeta_h[q_base + c*sz + idx_jk] - a_chk[c]);
-                            if (err > max_err_zeta) max_err_zeta = err;
-                        }
-                    }
-                }
-            }
-            bool pass = (max_err_eta == 0.0 && max_err_xi == 0.0 && max_err_zeta == 0.0);
-            printf("  Test 1: Self-consistency (recompute from same delta arrays)\n");
-            printf("    max|err| eta=%.2e  xi=%.2e  zeta=%.2e  %s\n",
-                   max_err_eta, max_err_xi, max_err_zeta, pass ? "[PASS]" : "[FAIL]");
-            test_count++; if (pass) pass_count++;
-        }
-
-        // ── Test 2: Old-path equivalence ──
-        // Compare precomputed weights against the OLD kernel computation path:
-        //   OLD: delta_eta_old = (dt_local/dt_global) × (dt_global × e_x[q]/dx) = a_local × delta_eta_h[q]
-        //   NEW: delta_eta_new = dt_local × (e_x[q]/dx) = delta_eta_local_h[q*sz+idx]
-        // These are mathematically identical but differ by ~1 ULP due to FP associativity.
-        // For ζ: both use same delta_zeta_h → should be bit-identical (not tested here).
-        // Tolerance: 1e-14 (100× machine epsilon, generous margin)
-        {
-            double max_err_eta = 0.0, max_err_xi = 0.0;
-            double max_t_diff_eta = 0.0, max_t_diff_xi = 0.0;
-            for (int q = 1; q < 19; q++) {
-                int q_base = q * 7 * sz;
-                for (int j = 3; j < NYD6 - 3; j++) {
-                    for (int k = 3; k < NZ6 - 3; k++) {
-                        int idx_jk = j * NZ6 + k;
-                        double dt_loc = dt_local_h[idx_jk];
-                        double a_local = dt_loc / dt_global;
-                        double a_old[7];
-
-                        // η: old path
-                        double delta_eta_old = a_local * delta_eta_h[q];
-                        double t_eta_old = 3.0 - delta_eta_old;
-                        double t_eta_new = 3.0 - delta_eta_local_h[q * sz + idx_jk];
-                        double t_diff = fabs(t_eta_old - t_eta_new);
-                        if (t_diff > max_t_diff_eta) max_t_diff_eta = t_diff;
-                        lagrange_7point_coeffs_host(t_eta_old, a_old);
-                        for (int c = 0; c < 7; c++) {
-                            double err = fabs(lagrange_eta_h[q_base + c*sz + idx_jk] - a_old[c]);
-                            if (err > max_err_eta) max_err_eta = err;
-                        }
-
-                        // ξ: old path
-                        double delta_xi_old = a_local * delta_xi_h[q];
-                        double t_xi_old = 3.0 - delta_xi_old;
-                        double t_xi_new = 3.0 - delta_xi_local_h[q * sz + idx_jk];
-                        t_diff = fabs(t_xi_old - t_xi_new);
-                        if (t_diff > max_t_diff_xi) max_t_diff_xi = t_diff;
-                        lagrange_7point_coeffs_host(t_xi_old, a_old);
-                        for (int c = 0; c < 7; c++) {
-                            double err = fabs(lagrange_xi_h[q_base + c*sz + idx_jk] - a_old[c]);
-                            if (err > max_err_xi) max_err_xi = err;
-                        }
-                    }
-                }
-            }
-            bool pass = (max_err_eta < 1e-14 && max_err_xi < 1e-14);
-            printf("  Test 2: Old-path equivalence (a_local x delta_h[q] vs precomputed)\n");
-            printf("    max|t_diff| eta=%.2e  xi=%.2e  (FP associativity)\n",
-                   max_t_diff_eta, max_t_diff_xi);
-            printf("    max|w_err|  eta=%.2e  xi=%.2e  %s\n",
-                   max_err_eta, max_err_xi, pass ? "[PASS]" : "[FAIL]");
-            printf("    (zeta uses same delta_zeta_h in both paths -> bit-identical, not tested)\n");
-            test_count++; if (pass) pass_count++;
-        }
-
-        // ── Test 3: Partition of unity ──
-        // Lagrange interpolation property: Σ_{c=0}^{6} L_c(t) = 1 for any t.
-        // Numerical sum should be 1.0 ± machine epsilon accumulation.
-        // Tolerance: 1e-12 (generous for 7-term sum)
-        {
-            double max_sum_err_eta = 0.0, max_sum_err_xi = 0.0, max_sum_err_zeta = 0.0;
-            for (int q = 1; q < 19; q++) {
-                int q_base = q * 7 * sz;
-                for (int j = 3; j < NYD6 - 3; j++) {
-                    for (int k = 3; k < NZ6 - 3; k++) {
-                        int idx_jk = j * NZ6 + k;
-                        double s_eta = 0.0, s_xi = 0.0, s_zeta = 0.0;
-                        for (int c = 0; c < 7; c++) {
-                            s_eta  += lagrange_eta_h [q_base + c*sz + idx_jk];
-                            s_xi   += lagrange_xi_h  [q_base + c*sz + idx_jk];
-                            s_zeta += lagrange_zeta_h[q_base + c*sz + idx_jk];
-                        }
-                        double e1 = fabs(s_eta  - 1.0); if (e1 > max_sum_err_eta)  max_sum_err_eta  = e1;
-                        double e2 = fabs(s_xi   - 1.0); if (e2 > max_sum_err_xi)   max_sum_err_xi   = e2;
-                        double e3 = fabs(s_zeta - 1.0); if (e3 > max_sum_err_zeta) max_sum_err_zeta = e3;
-                    }
-                }
-            }
-            bool pass = (max_sum_err_eta < 1e-12 && max_sum_err_xi < 1e-12 && max_sum_err_zeta < 1e-12);
-            printf("  Test 3: Partition of unity (sum of 7 weights = 1.0)\n");
-            printf("    max|sum-1| eta=%.2e  xi=%.2e  zeta=%.2e  %s\n",
-                   max_sum_err_eta, max_sum_err_xi, max_sum_err_zeta, pass ? "[PASS]" : "[FAIL]");
-            test_count++; if (pass) pass_count++;
-        }
-
-        // ── Test 4: bk_precomp consistency ──
-        // Verify bk_precomp_h[k] matches compute_stencil_base z-clamping logic
-        {
-            bool pass = true;
-            int fail_k = -1, fail_expected = -1, fail_got = -1;
-            for (int k = 3; k < NZ6 - 3; k++) {
-                int bk_ref = k - 3;
-                if (bk_ref < 3)              bk_ref = 3;
-                if (bk_ref + 6 > NZ6 - 4)   bk_ref = NZ6 - 10;
-                if (bk_precomp_h[k] != bk_ref) {
-                    pass = false;
-                    fail_k = k; fail_expected = bk_ref; fail_got = bk_precomp_h[k];
-                    break;
-                }
-            }
-            printf("  Test 4: bk_precomp consistency (wall clamping)\n");
-            if (pass) {
-                printf("    All k=[3,%d] correct  [PASS]\n", NZ6-4);
-            } else {
-                printf("    MISMATCH at k=%d: expected=%d, got=%d  [FAIL]\n",
-                       fail_k, fail_expected, fail_got);
-            }
-            test_count++; if (pass) pass_count++;
-        }
-
-        // ── Test 5: Displacement statistics + NaN/Inf + clamp count ──
-        {
-            const char *dir_names[3] = {"eta", "xi", "zeta"};
-            const double *delta_arrays[3] = {delta_eta_local_h, delta_xi_local_h, delta_zeta_h};
-            bool pass = true;
-            int total_nan_inf = 0;
-
-            printf("  Test 5: Displacement statistics & data integrity\n");
-            for (int d = 0; d < 3; d++) {
-                double d_min = 1e30, d_max = -1e30;
-                int d_min_q = -1, d_min_j = -1, d_min_k = -1;
-                int d_max_q = -1, d_max_j = -1, d_max_k = -1;
-                int nan_inf_count = 0;
-                int clamp_count = 0;  // departure points that needed clamping
-                double t_min = 1e30, t_max = -1e30;
-
-                for (int q = 1; q < 19; q++) {
-                    for (int j = 3; j < NYD6 - 3; j++) {
-                        for (int k = 3; k < NZ6 - 3; k++) {
-                            int idx_jk = j * NZ6 + k;
-                            double dval = delta_arrays[d][q * sz + idx_jk];
-
-                            // NaN/Inf check
-                            if (dval != dval || dval == 1.0/0.0 || dval == -1.0/0.0) {
-                                nan_inf_count++;
-                                continue;
-                            }
-
-                            // Min/max tracking
-                            if (dval < d_min) { d_min = dval; d_min_q = q; d_min_j = j; d_min_k = k; }
-                            if (dval > d_max) { d_max = dval; d_max_q = q; d_max_j = j; d_max_k = k; }
-
-                            // Lagrange parameter and clamp check
-                            double t_val;
-                            if (d < 2) {
-                                // η/ξ: t = 3 - delta
-                                t_val = 3.0 - dval;
-                                if (t_val < 0.0 || t_val > 6.0) clamp_count++;
-                            } else {
-                                // ζ: t = up_k - bk, with departure + stencil clamping
-                                double up_k_val = (double)k - dval;
-                                bool clamped = false;
-                                if (up_k_val < 3.0 || up_k_val > (double)(NZ6 - 4)) clamped = true;
-                                if (up_k_val < 3.0) up_k_val = 3.0;
-                                if (up_k_val > (double)(NZ6 - 4)) up_k_val = (double)(NZ6 - 4);
-                                int bk_ref = k - 3;
-                                if (bk_ref < 3) bk_ref = 3;
-                                if (bk_ref + 6 > NZ6 - 4) bk_ref = NZ6 - 10;
-                                t_val = up_k_val - (double)bk_ref;
-                                if (clamped) clamp_count++;
-                            }
-                            if (t_val < t_min) t_min = t_val;
-                            if (t_val > t_max) t_max = t_val;
-                        }
-                    }
-                }
-                total_nan_inf += nan_inf_count;
-                bool dir_ok = (nan_inf_count == 0 && clamp_count == 0);
-                if (!dir_ok) pass = false;
-
-                printf("    %4s: delta=[%+.4e, %+.4e]  t=[%.3f, %.3f]  "
-                       "NaN/Inf=%d  clamp=%d  %s\n",
-                       dir_names[d], d_min, d_max, t_min, t_max,
-                       nan_inf_count, clamp_count, dir_ok ? "OK" : "WARN");
-                if (d_min_q >= 0)
-                    printf("          min@(q=%d,j=%d,k=%d)  max@(q=%d,j=%d,k=%d)\n",
-                           d_min_q, d_min_j, d_min_k, d_max_q, d_max_j, d_max_k);
-            }
-            printf("    Overall: NaN/Inf=%d, clamp=%d  %s\n",
-                   total_nan_inf, total_nan_inf, pass ? "[PASS]" : "[FAIL]");
-            test_count++; if (pass) pass_count++;
-        }
-
-        // ── Overall ──
-        printf("  -------------------------------------------------------------\n");
-        printf("  Overall: %d/%d tests passed  %s\n",
-               pass_count, test_count, (pass_count == test_count) ? "[ALL PASS]" : "[SOME FAILED]");
-        printf("=============================================================\n\n");
-    }
 
     // ──── Upload to GPU ────
     // 度量項
     CHECK_CUDA( cudaMemcpy(dk_dz_d,   dk_dz_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaMemcpy(dk_dy_d,   dk_dy_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
-    // Precomputed Lagrange weights → GPU (layout: [q][c][idx_jk])
-    {
-        size_t w_bytes = (size_t)7 * 19 * NYD6 * NZ6 * sizeof(double);
-        CHECK_CUDA( cudaMemcpy(lagrange_eta_d,  lagrange_eta_h,  w_bytes, cudaMemcpyHostToDevice) );
-        CHECK_CUDA( cudaMemcpy(lagrange_xi_d,   lagrange_xi_h,   w_bytes, cudaMemcpyHostToDevice) );
-        CHECK_CUDA( cudaMemcpy(lagrange_zeta_d, lagrange_zeta_h, w_bytes, cudaMemcpyHostToDevice) );
-    }
+    // delta_zeta → GPU (ζ displacements, space-varying, used by kernel Step 1)
+    CHECK_CUDA( cudaMemcpy(delta_zeta_d, delta_zeta_h, 19*NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
+    // __constant__ symbols: dt_global, delta_eta[19], delta_xi[19]
+    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_dt,        &dt_global,   sizeof(double)) );
+    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_eta, delta_eta_h,  19*sizeof(double)) );
+    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_xi,  delta_xi_h,   19*sizeof(double)) );
     // Precomputed stencil base k → GPU
     CHECK_CUDA( cudaMemcpy(bk_precomp_d, bk_precomp_h, NZ6*sizeof(int), cudaMemcpyHostToDevice) );
 
 #if USE_MRT
     // Phase 3.5: MRT transformation matrices → __constant__ memory
     {
-        Matrix;           // MRT_Matrix.h 嬉集 → double M[19][19] = { ... };
-        Inverse_Matrix;   // MRT_Matrix.h 嬉集 → double Mi[19][19] = { ... };
+        Matrix;           // MRT_Matrix.h → double M[19][19] = { ... };
+        Inverse_Matrix;   // MRT_Matrix.h → double Mi[19][19] = { ... };
         CHECK_CUDA( cudaMemcpyToSymbol(GILBM_M,  M,  sizeof(M)) );
         CHECK_CUDA( cudaMemcpyToSymbol(GILBM_Mi, Mi, sizeof(Mi)) );
         if (myid == 0) printf("GILBM-MRT: M[19x19] and Mi[19x19] copied to __constant__ memory (from MRT_Matrix.h).\n");
@@ -622,7 +321,7 @@ int main(int argc, char *argv[])
     CHECK_CUDA( cudaMemcpy(dt_local_d,      dt_local_h,      NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaMemcpy(omega_local_d,   omega_local_h,   NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
 
-    if (myid == 0) printf("GILBM: Lagrange weights + bk_precomp + dk + LTS fields copied to GPU.\n");
+    if (myid == 0) printf("GILBM: delta_zeta + __constant__(dt,eta,xi) + bk_precomp + dk + LTS fields copied to GPU.\n");
 
     if ( INIT == 0 ) {
         printf("Initializing by default function...\n");

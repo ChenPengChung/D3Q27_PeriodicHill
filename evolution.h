@@ -112,13 +112,13 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     dim3 griddimBuf(NX6/NT+1, 1, NZ6);
     dim3 blockdimBuf(NT, 4, 1);
 
-    // ===== GILBM two-pass kernel dispatch (with precomputed Lagrange weights) =====
+    // ===== GILBM two-pass kernel dispatch (runtime Lagrange weights) =====
     GILBM_StreamCollide_Buffer_Kernel<<<griddimBuf, blockdimBuf, 0, stream1>>>(
     f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6], f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12], f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
     f_pc_d, feq_d, omegadt_local_d,
     dk_dz_d, dk_dy_d,
     dt_local_d, omega_local_d,
-    lagrange_eta_d, lagrange_xi_d, lagrange_zeta_d,
+    delta_zeta_d,
     bk_precomp_d,
     u, v, w, rho_d, Force_d, rho_modify_d, 3
     );
@@ -127,7 +127,7 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     f_pc_d, feq_d, omegadt_local_d,
     dk_dz_d, dk_dy_d,
     dt_local_d, omega_local_d,
-    lagrange_eta_d, lagrange_xi_d, lagrange_zeta_d,
+    delta_zeta_d,
     bk_precomp_d,
     u, v, w, rho_d, Force_d, rho_modify_d, NYD6-7
     );
@@ -139,7 +139,7 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     f_pc_d, feq_d, omegadt_local_d,
     dk_dz_d, dk_dy_d,
     dt_local_d, omega_local_d,
-    lagrange_eta_d, lagrange_xi_d, lagrange_zeta_d,
+    delta_zeta_d,
     bk_precomp_d,
     u, v, w, rho_d, Force_d, rho_modify_d
     );
