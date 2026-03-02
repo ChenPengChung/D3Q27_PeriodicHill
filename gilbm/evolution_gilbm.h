@@ -858,8 +858,13 @@ __device__ void gilbm_step1_point(
     }
 
     // ── STEP 1.5: Macroscopic + feq ──
-    rho_stream += rho_modify[0];
-    f_new_ptrs[0][index] += rho_modify[0];
+    // Apply rho_modify ONLY to points counted by ReduceRhoSum (i<NX6-4, j<NYD6-4)
+    // to avoid 9.57% overcorrection at x-periodic overlap (i=NX6-4) and
+    // MPI overlap (j=NYD6-4) which receive correction but aren't counted.
+    if (i < NX6 - 4 && j < NYD6 - 4) {
+        rho_stream += rho_modify[0];
+        f_new_ptrs[0][index] += rho_modify[0];
+    }
     double rho_A = rho_stream;
     double u_A   = mx_stream / rho_A;
     double v_A   = my_stream / rho_A;

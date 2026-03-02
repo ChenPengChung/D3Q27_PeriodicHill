@@ -49,7 +49,7 @@
 //how many time steps to output val of monitor point(NX/2, NY/2, NZ/2)
 #define		NDTMIT	   50
 //how many time steps to modify the forcing term
-#define     NDTFRC     1000 //每一萬步驟-更新外力
+#define     NDTFRC     10000 //每一萬步驟-更新外力
 #define     force_alpha 3 //瑋傑學長的論文:alpha = 3~14 
 //Re=100  , alpha = 10 
 //Re=2800 , alpha = 3 or 14 
@@ -66,7 +66,7 @@
 // 1 = 讀取 statistics/ 目錄下 32 個 merged bin 檔 (U,V,W,P,UU,UV,...,WWW) + accu.dat (rey_avg_count)
 // 0 = 不讀取，FTT >= FTT_STAGE2 (50.0) 後從零開始累積
 #define     TBINIT  (0)
-#define     RESTART_VTK_FILE  "result/velocity_merged_344001.vtk"
+#define     RESTART_VTK_FILE  "result/velocity_merged_381001.vtk"
 // Perturbation injection at startup (trigger 3D turbulent transition)
 // PERTURB_INIT=1: inject random noise on u,v,w to break spanwise symmetry
 // PERTURB_INIT=0: no perturbation (set to 0 after turbulence established)
