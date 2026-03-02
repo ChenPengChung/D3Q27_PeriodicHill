@@ -37,6 +37,11 @@ __constant__ double GILBM_delta_xi[19];   // ξ displacements (precomputed with 
 // Values from MRT_Matrix.h (d'Humières 2002 D3Q19)
 __constant__ double GILBM_M[19][19];
 __constant__ double GILBM_Mi[19][19];
+// Combined MRT operator: C_eff(s_visc) = C0 - s_visc × C1
+// C0 = I - Mi × diag(s_fixed) × M   (all non-viscous relaxation rates)
+// C1 = Mi × diag(mask_visc) × M     (viscous modes 9,11,13,14,15 only)
+__constant__ double GILBM_C0[19][19];
+__constant__ double GILBM_C1[19][19];
 #endif
 
 // Include sub-modules (after __constant__ declarations they depend on)
@@ -638,6 +643,236 @@ __device__ void gilbm_step23_point(
 }
 
 // ============================================================================
+// Step 2+3 combined MRT operator (P5 optimization)
+// Algebraically combines re-estimation (Eq.35) + MRT collision (Eq.3) into
+// a single 19×19 matvec: f*[q] = feq_B[q] + R_AB × Σ C_eff[q][q'] × δ[q'] + force[q]
+// where C_eff = I - M⁻¹SM is precomputed in shared memory per block.
+// Saves ~40% FMAs vs separate m_neq=M×δ + dm=S×m_neq + f*=f̃-Mi×dm.
+// ============================================================================
+#if USE_MRT
+__device__ void gilbm_step23_combined(
+    int index, int nface,
+    int bi, int bj, int bk,
+    double omegadt_A, double dt_A,
+    double dk_dy_val, double dk_dz_val,
+    bool is_bottom, bool is_top,
+    double *f_new_ptrs[19],
+    double *f_pc,
+    double *feq_d,
+    double *omegadt_local_d,
+    double Force0,
+    const double *C_eff   // 19×19 combined operator from shared memory (row-major)
+) {
+    // BC detection
+    bool need_bc_arr[19];
+    need_bc_arr[0] = false;
+    for (int q = 1; q < 19; q++) {
+        need_bc_arr[q] = false;
+        if (is_bottom) need_bc_arr[q] = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
+        else if (is_top) need_bc_arr[q] = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
+    }
+
+    // Precompute body force per direction (constant for all 343 stencil points)
+    double force_q[19];
+    for (int q = 0; q < 19; q++)
+        force_q[q] = GILBM_W[q] * 3.0 * GILBM_e[q][1] * Force0 * dt_A;
+
+    // Triple loop over 7×7×7 stencil points
+    for (int si = 0; si < 7; si++) {
+        int gi = bi + si;
+        for (int sj = 0; sj < 7; sj++) {
+            int gj = bj + sj;
+            for (int sk = 0; sk < 7; sk++) {
+                int gk = bk + sk;
+                int idx_B = gj * nface + gk * NX6 + gi;
+                int flat  = si * 49 + sj * 7 + sk;
+
+                // Load all 19 f_B and feq_B, compute δ = f_B - feq_B
+                double delta[19], feq_B_arr[19];
+                bool ghost_j = (gj < 3 || gj >= NYD6 - 3);
+                double rho_B_g, u_B_g, v_B_g, w_B_g;
+                if (ghost_j)
+                    compute_macroscopic_at(f_new_ptrs, idx_B, rho_B_g, u_B_g, v_B_g, w_B_g);
+
+                for (int q = 0; q < 19; q++) {
+                    double f_B = f_new_ptrs[q][idx_B];
+                    feq_B_arr[q] = ghost_j
+                        ? compute_feq_alpha(q, rho_B_g, u_B_g, v_B_g, w_B_g)
+                        : feq_d[q * GRID_SIZE + idx_B];
+                    delta[q] = f_B - feq_B_arr[q];
+                }
+
+                // R_AB ratio
+                double omegadt_B = omegadt_local_d[idx_B];
+                double R_AB = omegadt_A / omegadt_B;
+
+                // Combined: f*[q] = feq_B[q] + R_AB × (C_eff × δ)[q] + force[q]
+                for (int q = 0; q < 19; q++) {
+                    if (need_bc_arr[q]) continue;
+                    double Cdelta = 0.0;
+                    for (int qp = 0; qp < 19; qp++)
+                        Cdelta += C_eff[q * 19 + qp] * delta[qp];
+                    f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index] =
+                        feq_B_arr[q] + R_AB * Cdelta + force_q[q];
+                }
+            }
+        }
+    }
+}
+#endif
+
+// ============================================================================
+// Step 1 + 1.5 only: Interpolation/Streaming + Macroscopic/feq
+// Extracted from gilbm_compute_point for split-kernel approach (Kernel A).
+// Reads f_pc → writes f_new, feq_d, rho/u/v/w.  Does NOT touch Step 2+3.
+// ============================================================================
+__device__ void gilbm_step1_point(
+    int i, int j, int k,
+    double *f_new_ptrs[19],
+    double *f_pc,
+    double *feq_d,
+    double *dk_dz_d, double *dk_dy_d,
+    double *dt_local_d, double *omega_local_d,
+    double *delta_zeta_d,
+    int *bk_precomp_d,
+    double *u_out, double *v_out, double *w_out, double *rho_out_arr,
+    double *rho_modify
+) {
+    const int nface = NX6 * NZ6;
+    const int index = j * nface + k * NX6 + i;
+    const int idx_jk = j * NZ6 + k;
+
+    const double dt_A    = dt_local_d[idx_jk];
+    const double omega_A = omega_local_d[idx_jk];
+    const double a_local = dt_A / GILBM_dt;
+
+    const int bi = i - 3;
+    const int bj = j - 3;
+    const int bk = bk_precomp_d[k];
+    const int ci = i - bi;
+    const int cj = j - bj;
+    const int ck = k - bk;
+
+    // ── Wall BC pre-computation ──
+    bool is_bottom = (k == 3);
+    bool is_top    = (k == NZ6 - 4);
+    double dk_dy_val = dk_dy_d[idx_jk];
+    double dk_dz_val = dk_dz_d[idx_jk];
+
+    double rho_wall = 0.0, du_dk = 0.0, dv_dk = 0.0, dw_dk = 0.0;
+    if (is_bottom) {
+        int idx3 = j * nface + 4 * NX6 + i;
+        int idx4 = j * nface + 5 * NX6 + i;
+        double rho3, u3, v3, w3, rho4, u4, v4, w4;
+        compute_macroscopic_at(f_new_ptrs, idx3, rho3, u3, v3, w3);
+        compute_macroscopic_at(f_new_ptrs, idx4, rho4, u4, v4, w4);
+        du_dk = u3;  dv_dk = v3;  dw_dk = w3;
+        rho_wall = rho3;
+    } else if (is_top) {
+        int idxm1 = j * nface + (NZ6 - 5) * NX6 + i;
+        int idxm2 = j * nface + (NZ6 - 6) * NX6 + i;
+        double rhom1, um1, vm1, wm1, rhom2, um2, vm2, wm2;
+        compute_macroscopic_at(f_new_ptrs, idxm1, rhom1, um1, vm1, wm1);
+        compute_macroscopic_at(f_new_ptrs, idxm2, rhom2, um2, vm2, wm2);
+        du_dk = -(um1);  dv_dk = -(vm1);  dw_dk = -(wm1);
+        rho_wall = rhom1;
+    }
+
+    // ── STEP 1: Interpolation + Streaming ──
+    double rho_stream = 0.0, mx_stream = 0.0, my_stream = 0.0, mz_stream = 0.0;
+
+    for (int q = 0; q < 19; q++) {
+        double f_streamed;
+
+        if (q == 0) {
+            int center_flat = ci * 49 + cj * 7 + ck;
+            f_streamed = f_pc[(q * STENCIL_VOL + center_flat) * GRID_SIZE + index];
+        } else {
+            bool need_bc = false;
+            if (is_bottom) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
+            else if (is_top) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
+            if (need_bc) {
+                f_streamed = ChapmanEnskogBC(q, rho_wall,
+                    du_dk, dv_dk, dw_dk,
+                    dk_dy_val, dk_dz_val,
+                    omega_A, dt_A);
+            } else {
+                // ── Fused load + η-reduction ──
+                double t_eta = (double)ci - a_local * GILBM_delta_eta[q];
+                if (t_eta < 0.0) t_eta = 0.0; if (t_eta > 6.0) t_eta = 6.0;
+                double t_xi  = (double)cj - a_local * GILBM_delta_xi[q];
+                if (t_xi  < 0.0) t_xi  = 0.0; if (t_xi  > 6.0) t_xi  = 6.0;
+                double delta_zeta = delta_zeta_d[q * NYD6 * NZ6 + idx_jk];
+                double up_k = (double)k - delta_zeta;
+                if (up_k < 3.0)              up_k = 3.0;
+                if (up_k > (double)(NZ6 - 4)) up_k = (double)(NZ6 - 4);
+                double t_zeta = up_k - (double)bk;
+                double Lagrangarray_eta[7], Lagrangarray_xi[7], Lagrangarray_zeta[7];
+                lagrange_7point_coeffs(t_eta,  Lagrangarray_eta);
+                lagrange_7point_coeffs(t_xi,   Lagrangarray_xi);
+                lagrange_7point_coeffs(t_zeta, Lagrangarray_zeta);
+
+                const int q_off = q * STENCIL_VOL;
+                double interpolation1order[7][7];
+                for (int sj = 0; sj < 7; sj++) {
+                    for (int sk = 0; sk < 7; sk++) {
+                        const int jk_flat = sj * 7 + sk;
+                        interpolation1order[sj][sk] = Intrpl7(
+                            f_pc[(q_off +   0 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[0],
+                            f_pc[(q_off +  49 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[1],
+                            f_pc[(q_off +  98 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[2],
+                            f_pc[(q_off + 147 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[3],
+                            f_pc[(q_off + 196 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[4],
+                            f_pc[(q_off + 245 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[5],
+                            f_pc[(q_off + 294 + jk_flat) * GRID_SIZE + index], Lagrangarray_eta[6]);
+                    }
+                }
+
+                double interpolation2order[7];
+                for (int sk = 0; sk < 7; sk++)
+                    interpolation2order[sk] = Intrpl7(
+                        interpolation1order[0][sk], Lagrangarray_xi[0],
+                        interpolation1order[1][sk], Lagrangarray_xi[1],
+                        interpolation1order[2][sk], Lagrangarray_xi[2],
+                        interpolation1order[3][sk], Lagrangarray_xi[3],
+                        interpolation1order[4][sk], Lagrangarray_xi[4],
+                        interpolation1order[5][sk], Lagrangarray_xi[5],
+                        interpolation1order[6][sk], Lagrangarray_xi[6]);
+
+                f_streamed = Intrpl7(
+                    interpolation2order[0], Lagrangarray_zeta[0],
+                    interpolation2order[1], Lagrangarray_zeta[1],
+                    interpolation2order[2], Lagrangarray_zeta[2],
+                    interpolation2order[3], Lagrangarray_zeta[3],
+                    interpolation2order[4], Lagrangarray_zeta[4],
+                    interpolation2order[5], Lagrangarray_zeta[5],
+                    interpolation2order[6], Lagrangarray_zeta[6]);
+            }
+        }
+
+        f_new_ptrs[q][index] = f_streamed;
+        rho_stream += f_streamed;
+        mx_stream  += GILBM_e[q][0] * f_streamed;
+        my_stream  += GILBM_e[q][1] * f_streamed;
+        mz_stream  += GILBM_e[q][2] * f_streamed;
+    }
+
+    // ── STEP 1.5: Macroscopic + feq ──
+    rho_stream += rho_modify[0];
+    f_new_ptrs[0][index] += rho_modify[0];
+    double rho_A = rho_stream;
+    double u_A   = mx_stream / rho_A;
+    double v_A   = my_stream / rho_A;
+    double w_A   = mz_stream / rho_A;
+    for (int q = 0; q < 19; q++)
+        feq_d[q * GRID_SIZE + index] = compute_feq_alpha(q, rho_A, u_A, v_A, w_A);
+    rho_out_arr[index] = rho_A;
+    u_out[index] = u_A;
+    v_out[index] = v_A;
+    w_out[index] = w_A;
+}
+
+// ============================================================================
 // Correction kernel: re-run Step 2+3 for MPI boundary rows AFTER ghost exchange
 // Fixes stale ghost zone f_new data used by the initial buffer kernel pass.
 // Launch for start=3 (left band, 3 rows) and start=NYD6-6 (right band, 3 rows).
@@ -770,6 +1005,128 @@ __global__ void GILBM_StreamCollide_Buffer_Kernel(
         bk_precomp_d,
         u_out, v_out, w_out, rho_out,
         Force, rho_modify);
+}
+
+// ============================================================================
+// Split-kernel Kernel A: Step 1 + 1.5 for all interior j-rows
+// Pure Jacobi: all f_new written before any Step 2+3 reads them.
+// ============================================================================
+__global__ void GILBM_Step1_Kernel(
+    double *f0_new, double *f1_new, double *f2_new, double *f3_new, double *f4_new,
+    double *f5_new, double *f6_new, double *f7_new, double *f8_new, double *f9_new,
+    double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
+    double *f15_new, double *f16_new, double *f17_new, double *f18_new,
+    double *f_pc, double *feq_d,
+    double *dk_dz_d, double *dk_dy_d,
+    double *dt_local_d, double *omega_local_d,
+    double *delta_zeta_d,
+    int *bk_precomp_d,
+    double *u_out, double *v_out, double *w_out, double *rho_out,
+    double *rho_modify
+) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (i <= 2 || i >= NX6 - 3 || j < 3 || j >= NYD6 - 3 || k <= 2 || k >= NZ6 - 3) return;
+
+    double *f_new_ptrs[19] = {
+        f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
+        f7_new, f8_new, f9_new, f10_new, f11_new, f12_new,
+        f13_new, f14_new, f15_new, f16_new, f17_new, f18_new
+    };
+
+    gilbm_step1_point(i, j, k, f_new_ptrs,
+        f_pc, feq_d,
+        dk_dz_d, dk_dy_d,
+        dt_local_d, omega_local_d,
+        delta_zeta_d, bk_precomp_d,
+        u_out, v_out, w_out, rho_out,
+        rho_modify);
+}
+
+// ============================================================================
+// Split-kernel Kernel B: Step 2+3 for all interior j-rows
+// Runs AFTER MPI exchange + periodicSW, so all f_new/feq ghost zones are valid.
+// P5 optimization: builds C_eff = C0 - s_visc × C1 in shared memory per block,
+// then uses combined operator: f* = feq_B + R_AB × C_eff × δ + force
+// ============================================================================
+__global__ void GILBM_Step23_Full_Kernel(
+    double *f0_new, double *f1_new, double *f2_new, double *f3_new, double *f4_new,
+    double *f5_new, double *f6_new, double *f7_new, double *f8_new, double *f9_new,
+    double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
+    double *f15_new, double *f16_new, double *f17_new, double *f18_new,
+    double *f_pc, double *feq_d, double *omegadt_local_d,
+    double *dk_dz_d, double *dk_dy_d,
+    double *dt_local_d, double *omega_local_d,
+    int *bk_precomp_d,
+    double *Force
+) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y;   // blockDim.y = 1 → j = blockIdx.y
+    const int k = blockIdx.z;   // blockDim.z = 1 → k = blockIdx.z
+
+#if USE_MRT
+    // ── Build C_eff in shared memory (ALL threads participate, before any return) ──
+    // C_eff = C0 - s_visc × C1, same for all threads in block (same j,k → same s_visc)
+    __shared__ double C_eff_shared[19 * 19];
+    {
+        double s_visc_val = 0.0;
+        if (j >= 3 && j < NYD6 - 3 && k > 2 && k < NZ6 - 3) {
+            int idx_jk_block = j * NZ6 + k;
+            s_visc_val = 1.0 / omega_local_d[idx_jk_block];
+        }
+        // First 19 threads compute one row each of C_eff (19×19 = 361 entries)
+        if (threadIdx.x < 19) {
+            int q = threadIdx.x;
+            for (int qp = 0; qp < 19; qp++)
+                C_eff_shared[q * 19 + qp] = GILBM_C0[q][qp] - s_visc_val * GILBM_C1[q][qp];
+        }
+    }
+    __syncthreads();
+#endif
+
+    // ── Boundary guard (after syncthreads to avoid deadlock) ──
+    if (i <= 2 || i >= NX6 - 3 || j < 3 || j >= NYD6 - 3 || k <= 2 || k >= NZ6 - 3) return;
+
+    double *f_new_ptrs[19] = {
+        f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
+        f7_new, f8_new, f9_new, f10_new, f11_new, f12_new,
+        f13_new, f14_new, f15_new, f16_new, f17_new, f18_new
+    };
+
+    const int nface = NX6 * NZ6;
+    const int index = j * nface + k * NX6 + i;
+    const int idx_jk = j * NZ6 + k;
+
+    const double dt_A      = dt_local_d[idx_jk];
+    const double omega_A   = omega_local_d[idx_jk];
+    const double omegadt_A = omegadt_local_d[index];
+
+    const int bi = i - 3;
+    const int bj = j - 3;
+    const int bk = bk_precomp_d[k];
+
+    bool is_bottom = (k == 3);
+    bool is_top    = (k == NZ6 - 4);
+    double dk_dy_val = dk_dy_d[idx_jk];
+    double dk_dz_val = dk_dz_d[idx_jk];
+
+#if USE_MRT
+    gilbm_step23_combined(index, nface, bi, bj, bk,
+                          omegadt_A, dt_A,
+                          dk_dy_val, dk_dz_val,
+                          is_bottom, is_top,
+                          f_new_ptrs, f_pc, feq_d, omegadt_local_d,
+                          Force[0], C_eff_shared);
+#else
+    gilbm_step23_point(index, nface, bi, bj, bk,
+                       omega_A, omegadt_A, dt_A,
+                       dk_dy_val, dk_dz_val,
+                       is_bottom, is_top,
+                       f_new_ptrs, f_pc, feq_d, omegadt_local_d,
+                       Force[0]);
+#endif
 }
 
 // ============================================================================

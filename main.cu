@@ -316,7 +316,30 @@ int main(int argc, char *argv[])
         Inverse_Matrix;   // MRT_Matrix.h → double Mi[19][19] = { ... };
         CHECK_CUDA( cudaMemcpyToSymbol(GILBM_M,  M,  sizeof(M)) );
         CHECK_CUDA( cudaMemcpyToSymbol(GILBM_Mi, Mi, sizeof(Mi)) );
-        if (myid == 0) printf("GILBM-MRT: M[19x19] and Mi[19x19] copied to __constant__ memory (from MRT_Matrix.h).\n");
+
+        // Precompute combined MRT operator matrices C0, C1 (P5 optimization)
+        // C_eff(s_visc) = C0 - s_visc × C1
+        // C0 = I - Mi × diag(s_fixed) × M  (non-viscous relaxation baked in)
+        // C1 = Mi × diag(mask_visc) × M    (viscous modes: 9,11,13,14,15)
+        double s_fixed[19] = {0, 1.19, 1.4, 0, 1.2, 0, 1.2, 0, 1.2, 0, 1.4, 0, 1.4, 0, 0, 0, 1.5, 1.5, 1.5};
+        double s_visc_mask[19] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0};
+
+        double C0_h[19][19], C1_h[19][19];
+        for (int ii = 0; ii < 19; ii++) {
+            for (int jj = 0; jj < 19; jj++) {
+                double sum_fixed = 0.0, sum_visc = 0.0;
+                for (int kk = 0; kk < 19; kk++) {
+                    sum_fixed += Mi[ii][kk] * s_fixed[kk] * M[kk][jj];
+                    sum_visc  += Mi[ii][kk] * s_visc_mask[kk] * M[kk][jj];
+                }
+                C0_h[ii][jj] = ((ii == jj) ? 1.0 : 0.0) - sum_fixed;
+                C1_h[ii][jj] = sum_visc;
+            }
+        }
+        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_C0, C0_h, sizeof(C0_h)) );
+        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_C1, C1_h, sizeof(C1_h)) );
+
+        if (myid == 0) printf("GILBM-MRT: M, Mi, C0, C1 copied to __constant__ memory.\n");
     }
 #endif
 

@@ -130,63 +130,29 @@ __global__ void AccumulateUbulk(
 }
 
 void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
-    int buffer = 3;
-
-    // Double-buffer pre-copy: f_old → f_new (full grid)
-    // 確保 f_new 在 kernel 開始前有上一步的完整值，包含：
-    //   1. x 方向週期性邊界 (i=0,1,2 和 i=NX6-3..NX6-1) — 來自上一步 periodicSW
-    //   2. y 方向 MPI halo (j=0,1,2 和 j=NYD6-3..NYD6-1) — 來自上一步 MPI exchange
-    // Step 2+3 的 7×7×7 stencil 在邊界附近需要這些值作為 Gauss-Seidel fallback。
-    const size_t grid_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
-    for (int q = 0; q < 19; q++)
-        CHECK_CUDA( cudaMemcpyAsync(f_new[q], f_old[q], grid_bytes, cudaMemcpyDeviceToDevice, stream0) );
-    CHECK_CUDA( cudaStreamSynchronize(stream0) );
-
     dim3 griddimSW(  1,      NYD6/NT+1, NZ6);
-    dim3 blockdimSW( buffer, NT,        1 );
+    dim3 blockdimSW( 3, NT,        1 );
 
     dim3 griddim(  NX6/NT+1, NYD6, NZ6);
     dim3 blockdim( NT, 1, 1);
 
-    dim3 griddimBuf(NX6/NT+1, 1, NZ6);
-    dim3 blockdimBuf(NT, 4, 1);
-
-    // ===== GILBM two-pass kernel dispatch (runtime Lagrange weights) =====
-    GILBM_StreamCollide_Buffer_Kernel<<<griddimBuf, blockdimBuf, 0, stream1>>>(
-    f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6], f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12], f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
-    f_pc_d, feq_d, omegadt_local_d,
-    dk_dz_d, dk_dy_d,
-    dt_local_d, omega_local_d,
-    delta_zeta_d,
-    bk_precomp_d,
-    u, v, w, rho_d, Force_d, rho_modify_d, 3
+    // ===== Kernel A: Step 1 + 1.5 (all interior j=3..NYD6-4) =====
+    // Pure Jacobi: reads f_pc (private per point) → writes f_new, feq_d, u/v/w/rho.
+    // No pre-copy needed — f_pc is self-contained; f_new is fully overwritten.
+    GILBM_Step1_Kernel<<<griddim, blockdim, 0, stream0>>>(
+        f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
+        f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
+        f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
+        f_pc_d, feq_d,
+        dk_dz_d, dk_dy_d,
+        dt_local_d, omega_local_d,
+        delta_zeta_d, bk_precomp_d,
+        u, v, w, rho_d, rho_modify_d
     );
-    GILBM_StreamCollide_Buffer_Kernel<<<griddimBuf, blockdimBuf, 0, stream1>>>(
-    f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6], f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12], f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
-    f_pc_d, feq_d, omegadt_local_d,
-    dk_dz_d, dk_dy_d,
-    dt_local_d, omega_local_d,
-    delta_zeta_d,
-    bk_precomp_d,
-    u, v, w, rho_d, Force_d, rho_modify_d, NYD6-7
-    );
+    CHECK_CUDA( cudaStreamSynchronize(stream0) );
 
-    // AccumulateUbulk removed from streaming — now computed instantaneously in Launch_ModifyForcingTerm
-
-    GILBM_StreamCollide_Kernel<<<griddim, blockdim, 0, stream0>>>(
-    f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6], f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12], f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
-    f_pc_d, feq_d, omegadt_local_d,
-    dk_dz_d, dk_dy_d,
-    dt_local_d, omega_local_d,
-    delta_zeta_d,
-    bk_precomp_d,
-    u, v, w, rho_d, Force_d, rho_modify_d
-    );
-
-    CHECK_CUDA( cudaStreamSynchronize(stream1) );
-
-    // GILBM: 必須交換全部 19 個 f 方向（不只 y-moving 的 10 個）
-    // 原因: Step 2+3 讀取 ghost zone 所有 q 的 f_new[q][idx_B] 做重估+碰撞
+    // ===== MPI exchange: all 19 f_new directions (y-direction halo) =====
+    // Step 2+3 讀取 ghost zone 所有 q 的 f_new[q][idx_B] 做重估+碰撞
     ISend_LtRtBdry( f_new, iToLeft,    l_nbr, itag_f4, 0, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
     IRecv_LtRtBdry( f_new, iFromRight, r_nbr, itag_f4, 1, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
     ISend_LtRtBdry( f_new, iToRight,   r_nbr, itag_f3, 2, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
@@ -199,35 +165,25 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
         CHECK_MPI( MPI_Waitall(4, request[i], status[i]) );
     }
 
-    CHECK_CUDA( cudaStreamSynchronize(stream0) );
-
+    // ===== x-direction periodic BC (f_new + u/v/w/rho + feq_d) =====
     periodicSW<<<griddimSW, blockdimSW, 0, stream0>>>(
         f_old[0] ,f_old[1] ,f_old[2] ,f_old[3] ,f_old[4] ,f_old[5] ,f_old[6] ,f_old[7] ,f_old[8] ,f_old[9] ,f_old[10] ,f_old[11] ,f_old[12] ,f_old[13] ,f_old[14] ,f_old[15] ,f_old[16] ,f_old[17] ,f_old[18],
         f_new[0] ,f_new[1] ,f_new[2] ,f_new[3] ,f_new[4] ,f_new[5] ,f_new[6] ,f_new[7] ,f_new[8] ,f_new[9] ,f_new[10] ,f_new[11] ,f_new[12] ,f_new[13] ,f_new[14] ,f_new[15] ,f_new[16] ,f_new[17] ,f_new[18],
         y_d, x_d, z_d, u, v, w, rho_d, feq_d
     );
 
-    // ===== Correction pass: re-run Step 2+3 for MPI boundary rows =====
-    // After MPI exchange + periodicSW, ghost zone f_new is now correct.
-    // Re-run Step 2+3 for j=3,4,5 (left band) and j=NYD6-6..NYD6-4 (right band)
-    // whose 7-pt stencils extend into ghost zones (j<3 or j>=NYD6-3).
-    dim3 griddimCorr(NX6/NT+1, 1, NZ6);
-    dim3 blockdimCorr(NT, 3, 1);
-    GILBM_Correction_Kernel<<<griddimCorr, blockdimCorr, 0, stream0>>>(
+    // ===== Kernel B: Step 2+3 (all interior j=3..NYD6-4) =====
+    // Ghost zone f_new valid after MPI + periodicSW; feq at ghost computed on-the-fly.
+    // stream0 ordering guarantees periodicSW completes before this kernel starts.
+    // No Correction kernel needed — all ghost zones updated before Step 2+3.
+    GILBM_Step23_Full_Kernel<<<griddim, blockdim, 0, stream0>>>(
         f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
         f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
         f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
         f_pc_d, feq_d, omegadt_local_d,
-        dk_dz_d, dk_dy_d, dt_local_d, omega_local_d,
-        bk_precomp_d, Force_d, 3
-    );
-    GILBM_Correction_Kernel<<<griddimCorr, blockdimCorr, 0, stream0>>>(
-        f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
-        f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
-        f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
-        f_pc_d, feq_d, omegadt_local_d,
-        dk_dz_d, dk_dy_d, dt_local_d, omega_local_d,
-        bk_precomp_d, Force_d, NYD6-6
+        dk_dz_d, dk_dy_d,
+        dt_local_d, omega_local_d,
+        bk_precomp_d, Force_d
     );
 }
 
