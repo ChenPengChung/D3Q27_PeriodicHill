@@ -16,7 +16,8 @@ void DiagnoseGILBM_Phase1(
     int NYD6_local,
     int NZ6_local,
     int myid_local,
-    double dt_global_val         // dt_global (delta_xi/eta 的預計算時間步長)
+    double dt_global_val,        // dt_global (delta_xi/eta 的預計算時間步長)
+    int init_mode                // INIT: 0=cold start, 1=binary restart, 2=VTK restart
 ) {
     if (myid_local != 0) return;
 
@@ -145,6 +146,12 @@ void DiagnoseGILBM_Phase1(
     // ==================================================================
     // TEST 2: Interpolation spot-check (host-side)
     // ==================================================================
+    double max_err = 0.0;
+    if (init_mode > 0) {
+        printf("\n[Test 2] Interpolation spot-check — SKIP (restart: f != w_alpha)\n");
+        printf("  This test assumes cold-start equilibrium (u=0, f=w_alpha).\n");
+        printf("  Restart flow has non-zero velocity -> test not applicable.\n");
+    } else {
     printf("\n[Test 2] Interpolation spot-check (equilibrium f, u=0, rho=1)\n");
     printf("  At t=0: f_alpha = w_alpha everywhere.\n");
     printf("  Interpolating at any upwind point should return w_alpha exactly.\n\n");
@@ -155,7 +162,6 @@ void DiagnoseGILBM_Phase1(
     printf("  Test point: i=%d, j=%d, k=%d\n", ti, tj, tk);
 
     double dx_val = LX / (double)(NX6 - 7);
-    double max_err = 0.0;
 
     printf("  %5s  %14s  %14s  %10s\n", "alpha", "interpolated", "expected(w_a)", "error");
     for (int alpha = 1; alpha < 19; alpha++) {
@@ -214,10 +220,18 @@ void DiagnoseGILBM_Phase1(
     } else {
         printf("  PASS: Interpolation reproduces constant field exactly.\n");
     }
+    } // end if (init_mode == 0)
 
     // ==================================================================
-    // TEST 3: Chapman-Enskog BC spot-check (bottom wall k=2)
+    // TEST 3: Chapman-Enskog BC spot-check (bottom wall k=3)
     // ==================================================================
+    double sum_f_CE = 0.0, sum_w = 0.0;
+    double bc_rho_wall = 1.0;
+    if (init_mode > 0) {
+        printf("\n[Test 3] Chapman-Enskog BC spot-check — SKIP (restart: u != 0)\n");
+        printf("  This test assumes cold-start equilibrium (u=0, du/dk=0, C_alpha=0).\n");
+        printf("  Restart flow has non-zero velocity gradients -> test not applicable.\n");
+    } else {
     printf("\n[Test 3] Chapman-Enskog BC spot-check (bottom wall, k=3)\n");
     printf("  At t=0: u=0 everywhere -> du/dk=0 -> C_alpha=0\n");
     printf("  Expected: f_CE = w_alpha * rho_wall\n\n");
@@ -253,21 +267,19 @@ void DiagnoseGILBM_Phase1(
     double du_y_dk = (4.0*uy3 - uy4) / 2.0;
     double du_z_dk = (4.0*uz3 - uz4) / 2.0;
 
+    bc_rho_wall = rho3;
     printf("  rho_wall (from k=4) = %.10f\n", rho3);
     printf("  du/dk at wall: (%.6e, %.6e, %.6e)\n", du_x_dk, du_y_dk, du_z_dk);
     printf("  [At t=0 with u=0 init, du/dk should be ~0]\n");
-
-    
 
     printf("\n  C-E BC per direction needing BC at bottom wall:\n");
     printf("  %5s  %6s  %6s  %12s  %12s  %12s  %12s\n",
            "alpha", "e_y", "e_z", "e_tilde_zeta", "C_alpha", "f_CE", "w_alpha");
 
     int bc_count = 0;
-    double sum_f_CE = 0.0;
     for (int alpha = 1; alpha < 19; alpha++) {
         double e_tilde_zeta = e[alpha][1] * bc_dk_dy + e[alpha][2] * bc_dk_dz;
-        if (e_tilde_zeta <= 0.0) continue;  // doesn't ne ed BC at bottom wall
+        if (e_tilde_zeta <= 0.0) continue;  // doesn't need BC at bottom wall
         bc_count++;
 
         // Host-side replica of ChapmanEnskogBC
@@ -277,7 +289,6 @@ void DiagnoseGILBM_Phase1(
         C_alpha += du_y_dk * ((3.0*ey*ey - 1.0)*bc_dk_dy + (3.0*ey*ez)*bc_dk_dz);
         C_alpha += du_z_dk * ((3.0*ez*ey)*bc_dk_dy + (3.0*ez*ez - 1.0)*bc_dk_dz);
         // omegadt_local_h[j*NZ6+k] = omega_local * dt_local (per grid point, not per direction)
-        // 負號與 kernel boundary_conditions.h:92 一致
         C_alpha *= -omegadt_local_h[bc_idx_jk];
 
         double f_CE = W[alpha] * rho3 * (1.0 + C_alpha);
@@ -290,26 +301,31 @@ void DiagnoseGILBM_Phase1(
     printf("\n  Directions needing BC: %d / 18\n", bc_count);
     printf("  Sum(f_CE) across BC directions: %.10f\n", sum_f_CE);
     printf("  Sum(w_alpha) for same directions: ");
-    double sum_w = 0.0;
     for (int alpha = 1; alpha < 19; alpha++) {
         double e_tilde_zeta = e[alpha][1] * bc_dk_dy + e[alpha][2] * bc_dk_dz;
         if (e_tilde_zeta > 0.0) sum_w += W[alpha];
     }
     printf("%.10f\n", sum_w);
     printf("  Difference: %.2e  (should be ~0 at t=0)\n", fabs(sum_f_CE - sum_w * rho3));
+    } // end if (init_mode == 0)
 
     // Summary
     printf("\n=============================================================\n");
-    printf("  Phase 1.5 Acceptance Summary:\n");
+    printf("  Phase 1.5 Acceptance Summary (INIT=%d):\n", init_mode);
     printf("  [0] max|delta_xi error| = %.2e  %s\n", max_xi_err,
            max_xi_err < 1e-15 ? "PASS" : "FAIL");
     printf("  [1] max|delta_zeta| = %.4f cells  %s\n", absmax,
            absmax <= 2.5 ? "OK" : (absmax <= 3.0 ? "WARNING" : "CRITICAL"));
-    printf("  [2] Interpolation error = %.2e  %s\n", max_err,
-           max_err < 1e-12 ? "PASS" : "FAIL");
-    printf("  [3] C-E BC consistency = %.2e  %s\n",
-           fabs(sum_f_CE - sum_w * rho3),
-           fabs(sum_f_CE - sum_w * rho3) < 1e-12 ? "PASS" : "FAIL");
+    if (init_mode > 0) {
+        printf("  [2] Interpolation spot-check   SKIP (restart)\n");
+        printf("  [3] C-E BC spot-check          SKIP (restart)\n");
+    } else {
+        printf("  [2] Interpolation error = %.2e  %s\n", max_err,
+               max_err < 1e-12 ? "PASS" : "FAIL");
+        printf("  [3] C-E BC consistency = %.2e  %s\n",
+               fabs(sum_f_CE - sum_w * bc_rho_wall),
+               fabs(sum_f_CE - sum_w * bc_rho_wall) < 1e-12 ? "PASS" : "FAIL");
+    }
     printf("=============================================================\n\n");
 }
 

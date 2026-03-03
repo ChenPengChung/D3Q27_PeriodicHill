@@ -452,7 +452,7 @@ int main(int argc, char *argv[])
 #endif
 
     // Phase 1.5 acceptance diagnostic: delta_xi, delta_zeta range, interpolation, C-E BC
-    DiagnoseGILBM_Phase1(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, fh_p, NYD6, NZ6, myid, dt_global);
+    DiagnoseGILBM_Phase1(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, fh_p, NYD6, NZ6, myid, dt_global, INIT);
 
     SendDataToGPU();
 

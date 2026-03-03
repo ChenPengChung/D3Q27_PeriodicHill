@@ -38,7 +38,7 @@
 // Kernel split strategy: 1=P6 (Step1 → MPI → Step23), 0=Old (pre-copy → Buffer → Full → MPI → Correction)
 // P5 (combined MRT) is always active when USE_MRT=1; this flag only controls the kernel launch flow.
 // Set to 0 for comparison testing (old monolithic kernel, algebraically identical MRT).
-#define     USE_P6             0
+#define     USE_P6             1
 
 //#define     Re         300
 //#define     U_0        0.1018591
@@ -55,7 +55,7 @@
 #define		NDTMIT	   50
 //how many time steps to modify the forcing term
 #define     NDTFRC     1000 //每一萬步驟-更新外力
-#define     force_alpha 14 //瑋傑學長的論文:alpha = 3~14, 週期山丘需更高 gain 加速收斂
+#define     force_alpha 30 //瑋傑學長的論文:alpha = 3~14, 週期山丘需更高 gain 加速收斂
 //Re=100  , alpha = 10
 //Re=2800 , alpha = 3 or 14
 //After a few transients (∼ 200 ﬂow-throughtime), the velocity is time-averaged. As show
