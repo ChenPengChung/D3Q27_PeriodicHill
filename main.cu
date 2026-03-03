@@ -614,10 +614,10 @@ int main(int argc, char *argv[])
         {
             double h_eff = (double)LZ - (double)H_HILL;
             double Force_Poiseuille = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff);
-            double Force_cap = Force_Poiseuille * 10.0;  // 10× Poiseuille (hill drag >> flat channel)
+            double Force_cap = Force_Poiseuille * 3.0;  // 10× Poiseuille (hill drag >> flat channel)
             if (Force_h[0] > Force_cap) {
                 if (myid == 0)
-                    printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (max=30x Poiseuille=%.5E)\n",
+                    printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (max=3x Poiseuille=%.5E)\n",
                            Force_h[0], Force_cap, Force_Poiseuille);
                 Force_h[0] = Force_cap;
                 CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
