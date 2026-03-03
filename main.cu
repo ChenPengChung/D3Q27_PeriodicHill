@@ -361,6 +361,33 @@ int main(int argc, char *argv[])
         InitFromMergedVTK(RESTART_VTK_FILE);
     }
 
+    // Force sanity guard (applies to all restart paths: INIT=1 binary, INIT=2 VTK)
+    // INIT=2 has additional anti-windup cap later (after restart display); this covers INIT=1
+    if (INIT > 0) {
+        if (isnan(Force_h[0]) || isinf(Force_h[0])) {
+            if (myid == 0) printf("[FORCE-GUARD] Invalid Force=%.5E (NaN/Inf), reset to 0\n", Force_h[0]);
+            Force_h[0] = 0.0;
+            CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+        } else if (Force_h[0] < 0.0) {
+            if (myid == 0) printf("[FORCE-GUARD] Negative Force=%.5E, clamped to 0\n", Force_h[0]);
+            Force_h[0] = 0.0;
+            CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+        }
+        // Anti-windup cap for INIT=1 (binary restart has no cap unlike INIT=2)
+        if (INIT == 1) {
+            double h_eff = (double)LZ - (double)H_HILL;
+            double Force_Poiseuille = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff);
+            double Force_cap = Force_Poiseuille * 100.0;
+            if (Force_h[0] > Force_cap) {
+                if (myid == 0)
+                    printf("[ANTI-WINDUP] Binary restart Force capped: %.5E -> %.5E (100x Poiseuille)\n",
+                           Force_h[0], Force_cap);
+                Force_h[0] = Force_cap;
+                CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+            }
+        }
+    }
+
     // ---- Perturbation injection: break spanwise symmetry to trigger 3D turbulence ----//加入擾動量
     // 使用 additive δfeq 方法: f[q] += feq(ρ, u+δu) - feq(ρ, u)
     // 保留已發展流場的非平衡部分 (viscous stress), 只注入速度擾動
@@ -428,6 +455,66 @@ int main(int argc, char *argv[])
     DiagnoseGILBM_Phase1(delta_xi_h, delta_zeta_h, dk_dz_h, dk_dy_h, fh_p, NYD6, NZ6, myid, dt_global);
 
     SendDataToGPU();
+
+    // === Ub integration self-test (runs every startup, aborts on failure) ===
+    {
+        int ub_test_fail = 0;
+        if (myid == 0) {
+            // Test 1: Σ dx_cell × dz_cell must = LX × (LZ - 1.0) (telescoping sum identity)
+            double A_sum = 0.0;
+            for (int k = 3; k < NZ6-4; k++)
+            for (int i = 3; i < NX6-4; i++)
+                A_sum += (x_h[i+1] - x_h[i]) * (z_h[3*NZ6+k+1] - z_h[3*NZ6+k]);
+            double A_exact = LX * (LZ - 1.0);
+            double area_err = fabs(A_sum - A_exact) / A_exact;
+            printf("[Ub-CHECK] Test 1 — Area:    Sum=%.12f  Exact=%.12f  rel_err=%.2e  %s\n",
+                   A_sum, A_exact, area_err, (area_err < 1e-12) ? "PASS" : "FAIL");
+            if (area_err >= 1e-12) {
+                fprintf(stderr, "[FATAL] Ub area sum mismatch: x_h or z_h boundary values are wrong.\n");
+                ub_test_fail = 1;
+            }
+
+            // Test 2: Uniform v=Uref → Ub must = Uref (integration + normalization check)
+            double Ub_test = 0.0;
+            for (int k = 3; k < NZ6-4; k++)
+            for (int i = 3; i < NX6-4; i++)
+                Ub_test += (double)Uref * (x_h[i+1] - x_h[i]) * (z_h[3*NZ6+k+1] - z_h[3*NZ6+k]);
+            Ub_test /= (double)(LX * (LZ - 1.0));
+            double uniform_err = fabs(Ub_test - (double)Uref) / (double)Uref;
+            printf("[Ub-CHECK] Test 2 — Uniform: Ub=%.15f  Uref=%.15f  rel_err=%.2e  %s\n",
+                   Ub_test, (double)Uref, uniform_err, (uniform_err < 1e-12) ? "PASS" : "FAIL");
+            if (uniform_err >= 1e-12) {
+                fprintf(stderr, "[FATAL] Ub uniform field test failed: integration formula or normalization bug.\n");
+                ub_test_fail = 1;
+            }
+
+            // Test 3: Actual field Ub (sanity: 0 < U* < 2)
+            double Ub_actual = 0.0;
+            for (int k = 3; k < NZ6-4; k++)
+            for (int i = 3; i < NX6-4; i++) {
+                double v00 = v_h_p[3*NX6*NZ6 + k*NX6 + i];
+                double v10 = v_h_p[3*NX6*NZ6 + (k+1)*NX6 + i];
+                double v01 = v_h_p[3*NX6*NZ6 + k*NX6 + (i+1)];
+                double v11 = v_h_p[3*NX6*NZ6 + (k+1)*NX6 + (i+1)];
+                double v_cell = (v00 + v10 + v01 + v11) / 4.0;
+                Ub_actual += v_cell * (x_h[i+1] - x_h[i]) * (z_h[3*NZ6+k+1] - z_h[3*NZ6+k]);
+            }
+            Ub_actual /= (double)(LX * (LZ - 1.0));
+            double Ustar_actual = Ub_actual / (double)Uref;
+            int t3_ok = (Ub_actual >= 0.0 && Ustar_actual < 2.0) || (INIT == 0);  // cold start: Ub=0 is OK
+            printf("[Ub-CHECK] Test 3 — Field:   Ub=%.10f  U*=%.6f  %s\n",
+                   Ub_actual, Ustar_actual, t3_ok ? "PASS" : "WARNING");
+            if (!t3_ok) {
+                fprintf(stderr, "[WARNING] Ub field test: U*=%.4f outside [0,2). VTK data may be corrupted.\n", Ustar_actual);
+                // Warning only — don't abort (flow might just not have developed yet)
+            }
+        }
+        MPI_Bcast(&ub_test_fail, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        if (ub_test_fail) {
+            if (myid == 0) fprintf(stderr, "[FATAL] Ub self-test FAILED. Aborting.\n");
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+    }
 
     // GILBM two-pass initialization: omega_dt, feq, f_pc
     {
@@ -573,12 +660,15 @@ int main(int argc, char *argv[])
         // 同 AccumulateUbulk kernel: Σ v(j=3,k,i) * dx * dz / (LX*(LZ-1))
         double Ub_init = 0.0;
         if (myid == 0) {
-            for (int k = 3; k < NZ6-3; k++) {
+            // Bilinear cell-average: Σ v_cell × dx_cell × dz_cell / A_total
+            for (int k = 3; k < NZ6-4; k++) {
             for (int i = 3; i < NX6-4; i++) {
-                int index = 3 * NX6 * NZ6 + k * NX6 + i;
-                double dx_loc = (x_h[i+1] - x_h[i-1]) / 2.0;
-                double dz_loc = (z_h[3*NZ6 + k+1] - z_h[3*NZ6 + k-1]) / 2.0;
-                Ub_init += v_h_p[index] * dx_loc * dz_loc;
+                double v00 = v_h_p[3*NX6*NZ6 + k*NX6 + i];
+                double v10 = v_h_p[3*NX6*NZ6 + (k+1)*NX6 + i];
+                double v01 = v_h_p[3*NX6*NZ6 + k*NX6 + (i+1)];
+                double v11 = v_h_p[3*NX6*NZ6 + (k+1)*NX6 + (i+1)];
+                double v_cell = (v00 + v10 + v01 + v11) / 4.0;
+                Ub_init += v_cell * (x_h[i+1] - x_h[i]) * (z_h[3*NZ6+k+1] - z_h[3*NZ6+k]);
             }}
             Ub_init /= (double)(LX * (LZ - 1.0));
         }
@@ -610,14 +700,14 @@ int main(int argc, char *argv[])
                 printf("  >>> [NOTE] U*=%.4f >> 1.0 — VTK velocity from old Uref, flow will decelerate to new target\n", Ustar);
         }
         // Anti-windup Force cap (顯示原始狀態後才套用，避免前 NDTFRC 步用過高外力)
-        // 週期性山丘流場因山丘阻力，所需外力遠高於 Poiseuille (典型 ~10-30×)
+        // 週期性山丘流場因山丘阻力，所需外力遠高於 Poiseuille (典型 ~10-100×)
         {
             double h_eff = (double)LZ - (double)H_HILL;
             double Force_Poiseuille = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff);
-            double Force_cap = Force_Poiseuille * 3.0;  // 10× Poiseuille (hill drag >> flat channel)
+            double Force_cap = Force_Poiseuille * 100.0;  // 100× Poiseuille (hill drag >> flat channel)
             if (Force_h[0] > Force_cap) {
                 if (myid == 0)
-                    printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (max=3x Poiseuille=%.5E)\n",
+                    printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (max=100x Poiseuille=%.5E)\n",
                            Force_h[0], Force_cap, Force_Poiseuille);
                 Force_h[0] = Force_cap;
                 CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
@@ -749,13 +839,16 @@ int main(int argc, char *argv[])
             // VTK-step status
             double Ma_max_vtk = ComputeMaMax();
             if (myid == 0) {
+                // Bilinear cell-average: Σ v_cell × dx_cell × dz_cell / A_total
                 double Ub_vtk = 0.0;
-                for (int kk = 3; kk < NZ6-3; kk++)
+                for (int kk = 3; kk < NZ6-4; kk++)
                 for (int ii = 3; ii < NX6-4; ii++) {
-                    int idx = 3*NX6*NZ6 + kk*NX6 + ii;
-                    double dx_loc = (x_h[ii+1] - x_h[ii-1]) / 2.0;
-                    double dz_loc = (z_h[3*NZ6+kk+1] - z_h[3*NZ6+kk-1]) / 2.0;
-                    Ub_vtk += v_h_p[idx] * dx_loc * dz_loc;
+                    double v00 = v_h_p[3*NX6*NZ6 + kk*NX6 + ii];
+                    double v10 = v_h_p[3*NX6*NZ6 + (kk+1)*NX6 + ii];
+                    double v01 = v_h_p[3*NX6*NZ6 + kk*NX6 + (ii+1)];
+                    double v11 = v_h_p[3*NX6*NZ6 + (kk+1)*NX6 + (ii+1)];
+                    double v_cell = (v00 + v10 + v01 + v11) / 4.0;
+                    Ub_vtk += v_cell * (x_h[ii+1] - x_h[ii]) * (z_h[3*NZ6+kk+1] - z_h[3*NZ6+kk]);
                 }
                 Ub_vtk /= (double)(LX * (LZ - 1.0));
                 printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re=%.1f  Ma=%.4f  Ma_max=%.4f  vel=%d  rey=%d\n",

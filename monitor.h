@@ -34,12 +34,13 @@ void Launch_Monitor(){
     if (myid == 0) {
         double *v_slice = (double*)malloc(NX6 * NZ6 * sizeof(double));
         CHECK_CUDA( cudaMemcpy(v_slice, &v[3*NX6*NZ6], NX6*NZ6*sizeof(double), cudaMemcpyDeviceToHost) );
-
-        for (int k = 3; k < NZ6-3; k++) {
+        //輸出入口端瞬時，空間平均速度場
+        // Bilinear cell-average: Σ v_cell × dx_cell × dz_cell / A_total
+        for (int k = 3; k < NZ6-4; k++) {
         for (int i = 3; i < NX6-4; i++) {
-            double dx_loc = (x_h[i+1] - x_h[i-1]) / 2.0;
-            double dz_loc = (z_h[3*NZ6 + k+1] - z_h[3*NZ6 + k-1]) / 2.0;
-            Ub_inst += v_slice[k*NX6 + i] * dx_loc * dz_loc;
+            double v_cell = (v_slice[k*NX6+i] + v_slice[(k+1)*NX6+i]
+                           + v_slice[k*NX6+i+1] + v_slice[(k+1)*NX6+i+1]) / 4.0;
+            Ub_inst += v_cell * (x_h[i+1] - x_h[i]) * (z_h[3*NZ6+k+1] - z_h[3*NZ6+k]);
         }}
         Ub_inst /= (double)(LX * (LZ - 1.0));
         free(v_slice);

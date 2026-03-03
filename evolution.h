@@ -113,20 +113,16 @@ void Launch_AccumulateTavg() {
     AccumulateTavg_Kernel<<<grid, block>>>(u_tavg_d, v_tavg_d, w_tavg_d, u, v, w, N);
 }
 
-__global__ void AccumulateUbulk(
-    double *Ub_avg,     double *v,
-    double *x,          double *z  )
+__global__ void AccumulateUbulk(double *Ub_avg, double *v)
 {
     const int i = blockIdx.x*blockDim.x + threadIdx.x;
     const int j = blockIdx.y*blockDim.y + threadIdx.y + 3;
     const int k = blockIdx.z*blockDim.z + threadIdx.z;
 
-    if( i <= 2 || i >= NX6-3 || k <= 2 || k >= NZ6-3 ) return;  // 包含壁面 k=3,NZ6-4
+    if( i <= 2 || i >= NX6-3 || k <= 2 || k >= NZ6-3 ) return;
 
-    double dx = ( x[i+1] - x[i-1] ) / 2.0;
-    double dz = ( z[j*NZ6+k+1] - z[j*NZ6+k-1] ) / 2.0;  // k=3 時讀 z[k=2](extrap) 和 z[k=4]
-
-    Ub_avg[k*NX6+i] += v[j*NZ6*NX6+k*NX6+i] * dx * dz;
+    // Store pure velocity — area weighting done on host with correct 2D z_h
+    Ub_avg[k*NX6+i] = v[j*NZ6*NX6+k*NX6+i];
 }
 
 void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
@@ -284,17 +280,21 @@ void Launch_ModifyForcingTerm()
 
     dim3 griddim_Ubulk(NX6/NT+1, 1, NZ6);
     dim3 blockdim_Ubulk(NT, 1, 1);
-    AccumulateUbulk<<<griddim_Ubulk, blockdim_Ubulk>>>(Ub_avg_d, v, x_d, z_d);
+    AccumulateUbulk<<<griddim_Ubulk, blockdim_Ubulk>>>(Ub_avg_d, v);
     CHECK_CUDA( cudaDeviceSynchronize() );
 
     CHECK_CUDA( cudaMemcpy(Ub_avg_h, Ub_avg_d, nBytes, cudaMemcpyDeviceToHost) );
 
+    // Bilinear cell-average integration: Σ v_cell × dx_cell × dz_cell / A_total
+    // v_cell = 4-point average; area from host arrays x_h (1D), z_h (2D at j=3)
     double Ub_avg = 0.0;
-    for( int k = 3; k < NZ6-3; k++ ){
+    for( int k = 3; k < NZ6-4; k++ ){
     for( int i = 3; i < NX6-4; i++ ){
-        Ub_avg += Ub_avg_h[k*NX6+i];
+        double v_cell = (Ub_avg_h[k*NX6+i] + Ub_avg_h[(k+1)*NX6+i]
+                       + Ub_avg_h[k*NX6+i+1] + Ub_avg_h[(k+1)*NX6+i+1]) / 4.0;
+        Ub_avg += v_cell * (x_h[i+1] - x_h[i]) * (z_h[3*NZ6+k+1] - z_h[3*NZ6+k]);
     }}
-    Ub_avg /= (double)(LX*(LZ-1.0));  // instantaneous: NO ub_accu_count division
+    Ub_avg /= (double)(LX*(LZ-1.0));
 
     // ★ 只有 rank 0 的 j=3 = 山丘頂入口截面，具有物理意義
     CHECK_MPI( MPI_Bcast(&Ub_avg, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD) );
@@ -304,6 +304,7 @@ void Launch_ModifyForcingTerm()
 
     double beta = max(0.001, force_alpha/(double)Re);
     double Ma_now = Ub_avg / (double)cs;
+    double Ma_max = ComputeMaMax();  // all ranks participate (MPI_Allreduce)
 
     double error = (double)Uref - Ub_avg;
     double gain = beta;
@@ -314,16 +315,15 @@ void Launch_ModifyForcingTerm()
         Force_h[0] = 0.0;
     }
 
-    // Ma 安全檢查
-    if (Ma_now > 0.3) {
+    // Ma 安全檢查 (使用 local Ma_max — LBM 穩定性取決於局部最大 Ma, 非 bulk 平均)
+    if (Ma_max > 0.35) {
+        Force_h[0] *= 0.05;
+        if (myid == 0)
+            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 5%%: %.5E\n", Ma_max, Force_h[0]);
+    } else if (Ma_max > 0.3) {
         Force_h[0] *= 0.5;
         if (myid == 0)
-            printf("[WARNING] Ma=%.4f > 0.3, Force halved to %.5E\n", Ma_now, Force_h[0]);
-    }
-    if (Ma_now > 0.35) {
-        Force_h[0] *= 0.1;
-        if (myid == 0)
-            printf("[CRITICAL] Ma=%.4f > 0.35, Force reduced to %.5E\n", Ma_now, Force_h[0]);
+            printf("[WARNING] Ma_max=%.4f > 0.3, Force halved to %.5E\n", Ma_max, Force_h[0]);
     }
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
@@ -332,7 +332,6 @@ void Launch_ModifyForcingTerm()
     double U_star = Ub_avg / (double)Uref;
     double F_star = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);
     double Re_now = Ub_avg / ((double)Uref / (double)Re);
-    double Ma_max = ComputeMaMax();
 
     const char *status_tag = "";
     if (Ma_max > 0.35)      status_tag = " [WARNING: Ma_max>0.35, reduce Uref]";
