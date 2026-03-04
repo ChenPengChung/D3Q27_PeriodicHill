@@ -162,6 +162,12 @@ void AllocateMemory() {
     CHECK_CUDA( cudaMallocHost( (void**)&rho_modify_h, nBytes ) );
     CHECK_CUDA( cudaMalloc( &rho_modify_d, nBytes ) );
 
+    // Diagnostic counters (Ehrenfest regularization + CE BC f<0 clamp)
+    CHECK_CUDA( cudaMalloc(&ehrenfest_count_d, sizeof(int)) );
+    CHECK_CUDA( cudaMalloc(&ce_clamp_count_d, sizeof(int)) );
+    CHECK_CUDA( cudaMemset(ehrenfest_count_d, 0, sizeof(int)) );
+    CHECK_CUDA( cudaMemset(ce_clamp_count_d, 0, sizeof(int)) );
+
     CHECK_CUDA( cudaStreamCreate( &stream0 ) );
     CHECK_CUDA( cudaStreamCreate( &stream1 ) );
     CHECK_CUDA( cudaStreamCreate( &stream2 ) );
@@ -226,6 +232,8 @@ void FreeSource() {
     CHECK_CUDA( cudaFree( Force_d ) );
     CHECK_CUDA( cudaFreeHost( rho_modify_h ) );
     CHECK_CUDA( cudaFree( rho_modify_d ) );
+    CHECK_CUDA( cudaFree(ehrenfest_count_d) );
+    CHECK_CUDA( cudaFree(ce_clamp_count_d) );
     CHECK_CUDA( cudaStreamDestroy( stream0 ) );
     CHECK_CUDA( cudaStreamDestroy( stream1 ) );
     CHECK_CUDA( cudaStreamDestroy( stream2 ) );

@@ -753,25 +753,72 @@ void InitFromMergedVTK(const char* vtk_path) {
     int jg_end   = jg_start + nyLocal - 1;
     if (jg_end > nyGlobal - 1) jg_end = nyGlobal - 1;
 
-    // Read velocity data (format: VECTORS velocity or SCALARS u_Uref)
-    // Try VECTORS format first (old), fall back to SCALARS
-    double u_val, v_val, w_val;
-    for (int k = 0; k < nzLocal; k++) {
-    for (int jg = 0; jg < nyGlobal; jg++) {
-    for (int i = 0; i < nxLocal; i++) {
-        vtk_in >> u_val >> v_val >> w_val;
-        if (jg >= jg_start && jg <= jg_end) {
-            int j_local = jg - jg_start;
-            int j  = j_local + 3;
-            int kk = k + 3;
-            int ii = i + 3;
-            int index = j * NX6 * NZ6 + kk * NX6 + ii;
-            u_h_p[index]   = u_val;
-            v_h_p[index]   = v_val;
-            w_h_p[index]   = w_val;
-            rho_h_p[index] = 1.0;
+    // Read velocity data — detect format from header line that broke the loop
+    // Writer uses SCALARS format: 3 separate blocks (u, v, w) each with LOOKUP_TABLE
+    // Old format used VECTORS: 3 values per line
+    bool is_scalars = (vtk_line.find("SCALARS") != string::npos);
+
+    // Helper lambda: read one scalar field into the specified host array
+    // Reads nzLocal × nyGlobal × nxLocal values, assigns to local rank's portion
+    auto read_scalar_field = [&](double *field_h) {
+        double val;
+        for (int k = 0; k < nzLocal; k++) {
+        for (int jg = 0; jg < nyGlobal; jg++) {
+        for (int i = 0; i < nxLocal; i++) {
+            vtk_in >> val;
+            if (jg >= jg_start && jg <= jg_end) {
+                int j_local = jg - jg_start;
+                int j  = j_local + 3;
+                int kk = k + 3;
+                int ii = i + 3;
+                int index = j * NX6 * NZ6 + kk * NX6 + ii;
+                field_h[index] = val;
+                rho_h_p[index] = 1.0;
+            }
+        }}}
+    };
+
+    // Helper: skip lines until "LOOKUP_TABLE" is found (consumes SCALARS header + LOOKUP_TABLE)
+    auto skip_to_data = [&]() {
+        while (getline(vtk_in, vtk_line)) {
+            if (vtk_line.find("LOOKUP_TABLE") != string::npos) return;
         }
-    }}}
+    };
+
+    if (is_scalars) {
+        // SCALARS format: "SCALARS u_inst/Uref double 1\nLOOKUP_TABLE default\n<data>"
+        // vtk_line = "SCALARS u_inst/Uref ..." from header loop — skip to LOOKUP_TABLE
+        skip_to_data();
+        read_scalar_field(u_h_p);
+
+        skip_to_data();  // skip blank lines + "SCALARS v_inst/Uref..." + "LOOKUP_TABLE default"
+        read_scalar_field(v_h_p);
+
+        skip_to_data();  // skip blank lines + "SCALARS w_inst/Uref..." + "LOOKUP_TABLE default"
+        read_scalar_field(w_h_p);
+
+        if (myid == 0) printf("  VTK read: SCALARS format (u/v/w as-is, no Uref multiply)\n");
+    } else {
+        // VECTORS format: "VECTORS velocity double\n<u v w per line>"
+        double u_val, v_val, w_val;
+        for (int k = 0; k < nzLocal; k++) {
+        for (int jg = 0; jg < nyGlobal; jg++) {
+        for (int i = 0; i < nxLocal; i++) {
+            vtk_in >> u_val >> v_val >> w_val;
+            if (jg >= jg_start && jg <= jg_end) {
+                int j_local = jg - jg_start;
+                int j  = j_local + 3;
+                int kk = k + 3;
+                int ii = i + 3;
+                int index = j * NX6 * NZ6 + kk * NX6 + ii;
+                u_h_p[index]   = u_val;
+                v_h_p[index]   = v_val;
+                w_h_p[index]   = w_val;
+                rho_h_p[index] = 1.0;
+            }
+        }}}
+        if (myid == 0) printf("  VTK read: VECTORS format (u/v/w as-is)\n");
+    }
     vtk_in.close();
 
     // x-periodic buffer fill

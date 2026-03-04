@@ -104,7 +104,7 @@
 //    Re=100  建議 alpha=10
 //    Re=700  建議 alpha=30（週期山丘需較高 gain 加速收斂）
 //    Re=2800 建議 alpha=3~14
-#define     force_alpha         14
+#define     force_alpha        10 
 
 // ================================================================
 //  十一、重啟設定 (RESTART)
@@ -123,9 +123,9 @@
 //  RESTART_VTK_FILE: VTK 檔案路徑（僅 RESTART_SOURCE=1 時使用）
 #define     INIT                2
 #define     RESTART_SOURCE      1
-#define     RESTART_STEP        999001
-#define     RESTART_BIN_DIR     "checkpoint_999001"
-#define     RESTART_VTK_FILE    "result/Low_Order_field_999001.vtk"
+#define     RESTART_STEP        728001
+#define     RESTART_BIN_DIR     "checkpoint_728001"
+#define     RESTART_VTK_FILE    "result/Low_Order_field_728001.vtk"
 
 // ================================================================
 //  十二、VTK 輸出等級

@@ -108,7 +108,7 @@ __global__ void AccumulateUbulk(double *Ub_avg, double *v)
     Ub_avg[k*NX6+i] = v[j*NZ6*NX6+k*NX6+i];
 }
 
-void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
+void Launch_CollisionStreaming(double *f_old[19], double *f_new[19], int step_num = 0) {
     dim3 griddimSW(  1,      NYD6/NT+1, NZ6);
     dim3 blockdimSW( 3, NT,        1 );
 
@@ -129,7 +129,9 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
         dk_dz_d, dk_dy_d,
         dt_local_d, omega_local_d,
         delta_zeta_d, bk_precomp_d,
-        u, v, w, rho_d, rho_modify_d
+        u, v, w, rho_d, rho_modify_d,
+        ehrenfest_count_d, ce_clamp_count_d,
+        step_num, myid
     );
     CHECK_CUDA( cudaStreamSynchronize(stream0) );
 
@@ -255,7 +257,8 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
 #endif
 }
 
-void Launch_ModifyForcingTerm()
+// Returns 0 = normal, 1 = emergency stop (Ma > 0.40)
+int Launch_ModifyForcingTerm()
 {
     // ====== Instantaneous Ub: zero → accumulate once → read ======
     const size_t nBytes = NX6 * NZ6 * sizeof(double);
@@ -309,14 +312,21 @@ void Launch_ModifyForcingTerm()
     }
 
     // Ma 安全檢查 (使用 local Ma_max — LBM 穩定性取決於局部最大 Ma, 非 bulk 平均)
-    if (Ma_max > 0.35) {
-        Force_h[0] *= 0.05;
+    // 閾值: 0.30→輕煞車, 0.35→重煞車+WARNING, 0.40→不可恢復→停止模擬
+    if (Ma_max > 0.40) {
+        Force_h[0] = 0.0;
         if (myid == 0)
-            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 5%%: %.5E\n", Ma_max, Force_h[0]);
-    } else if (Ma_max > 0.27) {
-        Force_h[0] *= 0.5;
+            printf("[FATAL] Ma_max=%.4f > 0.40 — unrecoverable, stopping simulation and writing checkpoint\n", Ma_max);
+        CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+        return 1;  // signal emergency stop
+    } else if (Ma_max > 0.35) {
+        Force_h[0] *= 0.1;
         if (myid == 0)
-            printf("[WARNING] Ma_max=%.4f > 0.27, Force halved to %.5E\n", Ma_max, Force_h[0]);
+            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 10%%: %.5E\n", Ma_max, Force_h[0]);
+    } else if (Ma_max > 0.30) {
+        Force_h[0] *= 0.8;
+        if (myid == 0)
+            printf("[WARNING] Ma_max=%.4f > 0.30, Force reduced to 80%%: %.5E\n", Ma_max, Force_h[0]);
     }
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
@@ -328,7 +338,8 @@ void Launch_ModifyForcingTerm()
     double Re_now = Ub_ema / ((double)Uref / (double)Re);
 
     const char *status_tag = "";
-    if (Ma_max > 0.35)          status_tag = " [WARNING: Ma_max>0.35, reduce Uref]";
+    if (Ma_max > 0.35)          status_tag = " [CRITICAL: Ma_max>0.35]";
+    else if (Ma_max > 0.30)     status_tag = " [WARNING: Ma_max>0.30]";
     else if (U_star_ema > 1.2)  status_tag = " [OVERSHOOT!]";
     else if (U_star_ema > 1.05) status_tag = " [OVERSHOOT]";
 
@@ -346,6 +357,7 @@ void Launch_ModifyForcingTerm()
 
     CHECK_CUDA( cudaDeviceSynchronize() );
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
+    return 0;  // normal
 }
 
 #endif

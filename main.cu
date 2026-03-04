@@ -92,6 +92,9 @@ double *rho_modify_h, *rho_modify_d;
 // GPU reduction partial sums for mass conservation (replaces SendDataToCPU every step)
 double *rho_partial_h, *rho_partial_d;
 
+// Diagnostic counters: Ehrenfest regularization + CE BC f<0 clamp (device only)
+int *ehrenfest_count_d, *ce_clamp_count_d;
+
 // Statistics accumulation count (single counter, shared by all 35 fields)
 int accu_count = 0;          // Incremented every step when FTT >= FTT_STATS_START
 bool stats_announced = false; // One-time message when accumulation starts
@@ -650,10 +653,10 @@ int main(int argc, char *argv[])
         {
             double h_eff = (double)LZ - (double)H_HILL;
             double Force_Poiseuille = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff);
-            double Force_cap = Force_Poiseuille * 100.0;  // 100× Poiseuille (hill drag >> flat channel)
+            double Force_cap = Force_Poiseuille * 30.0;  // 30× Poiseuille (hill drag >> flat channel)
             if (Force_h[0] > Force_cap) {
                 if (myid == 0)
-                    printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (max=100x Poiseuille=%.5E)\n",
+                    printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (max=30x Poiseuille=%.5E)\n",
                            Force_h[0], Force_cap, Force_Poiseuille);
                 Force_h[0] = Force_cap;
                 CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
@@ -673,8 +676,12 @@ int main(int argc, char *argv[])
     for( step = loop_start ; step < loop_start + loop ; step++, accu_num++ ) {
         double FTT_now = step * dt_global / (double)flow_through_time;
 
+        // Reset diagnostic counters for this iteration (2 sub-steps)
+        CHECK_CUDA( cudaMemset(ehrenfest_count_d, 0, sizeof(int)) );
+        CHECK_CUDA( cudaMemset(ce_clamp_count_d, 0, sizeof(int)) );
+
         // ===== Sub-step 1: even step (ft → fd) =====
-        Launch_CollisionStreaming( ft, fd );
+        Launch_CollisionStreaming( ft, fd, step );
 
         // Statistics accumulation (all 35 fields, FTT >= FTT_STATS_START)
         if (FTT_now >= FTT_STATS_START) {
@@ -720,7 +727,7 @@ int main(int argc, char *argv[])
         accu_num += 1;
         FTT_now = step * dt_global / (double)flow_through_time;
 
-        Launch_CollisionStreaming( fd, ft );
+        Launch_CollisionStreaming( fd, ft, step );
 
         if (FTT_now >= FTT_STATS_START) {
             Launch_TurbulentSum( ft );
@@ -728,6 +735,26 @@ int main(int argc, char *argv[])
         }
 
         CHECK_CUDA( cudaDeviceSynchronize() );
+
+        // ===== Diagnostic counter report (Ehrenfest + CE BC clamp) =====
+        {
+            int ehr_count_h = 0, ce_count_h = 0;
+            CHECK_CUDA( cudaMemcpy(&ehr_count_h, ehrenfest_count_d, sizeof(int), cudaMemcpyDeviceToHost) );
+            CHECK_CUDA( cudaMemcpy(&ce_count_h, ce_clamp_count_d, sizeof(int), cudaMemcpyDeviceToHost) );
+            int ehr_total = 0, ce_total = 0;
+            MPI_Allreduce(&ehr_count_h, &ehr_total, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+            MPI_Allreduce(&ce_count_h, &ce_total, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+            if (myid == 0) {
+                if (ehr_total > 0)
+                    printf("[EHRENFEST] step=%d: %d triggers this iteration\n", step, ehr_total);
+                if (ehr_total > 100)
+                    printf("[EHRENFEST] WARNING: triggered %d times — 可能有其他 bug！\n", ehr_total);
+                if (ce_total > 0)
+                    printf("[CE-CLAMP] step=%d: %d triggers this iteration\n", step, ce_total);
+                if (ce_total > 100)
+                    printf("[CE-CLAMP] WARNING: triggered %d times — 可能有其他 bug！\n", ce_total);
+            }
+        }
 
         // ===== Status display (every 5000 steps) =====
         if ( myid == 0 && step%5000 == 1 ) {
@@ -750,11 +777,23 @@ int main(int argc, char *argv[])
 
         // ===== Force modification (every NDTFRC steps) =====
         if ( (step%(int)NDTFRC == 1) ) {
-            Launch_ModifyForcingTerm();
+            if (Launch_ModifyForcingTerm()) {
+                // Ma > 0.40: emergency stop — write checkpoint and break
+                if (myid == 0) printf("[FATAL] Emergency stop triggered by Launch_ModifyForcingTerm at step %d\n", step);
+                SendDataToCPU(ft);
+                WriteCheckpoint(step);
+                break;
+            }
         }
 
 		if ( step%(int)NDTMIT == 1 ) {
-			Launch_Monitor();
+			if (Launch_Monitor()) {
+                // Ma > 0.40: emergency stop — write checkpoint and break
+                if (myid == 0) printf("[FATAL] Emergency stop triggered by Launch_Monitor at step %d\n", step);
+                SendDataToCPU(ft);
+                WriteCheckpoint(step);
+                break;
+            }
 		}
 
         // ===== VTK output + binary checkpoint (every OUTVTK steps) =====

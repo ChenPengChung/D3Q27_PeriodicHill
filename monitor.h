@@ -1,12 +1,10 @@
 #ifndef MONITOR_FILE
 #define MONITOR_FILE
 
-// 計算全場最大 Ma 數 (所有 rank 參與, MPI_Allreduce MAXLOC)
+// 計算全場最大 Ma 數 (所有 rank 參與, MPI_Allreduce MAX)
 // 從 GPU 拷貝 u,v,w → 掃描內部計算點 → 取全域最大 |V| / cs
-// 同時追蹤最大 Ma 點的位置 (rank, i, j, k) 和速度分量
 double ComputeMaMax(){
     double local_max_sq = 0.0;
-    int loc_i = 0, loc_j = 0, loc_k = 0;
     const int gs = NX6 * NYD6 * NZ6;
     double *u_h = (double*)malloc(gs * sizeof(double));
     double *v_h = (double*)malloc(gs * sizeof(double));
@@ -20,48 +18,19 @@ double ComputeMaMax(){
     for (int i = 3; i < NX6-3; i++) {
         int idx = j*NX6*NZ6 + k*NX6 + i;
         double sq = u_h[idx]*u_h[idx] + v_h[idx]*v_h[idx] + w_h[idx]*w_h[idx];
-        if (sq > local_max_sq) {
-            local_max_sq = sq;
-            loc_i = i; loc_j = j; loc_k = k;
-        }
+        if (sq > local_max_sq) local_max_sq = sq;
     }
 
-    double local_max_mag = sqrt(local_max_sq);
-
-    // MPI_MAXLOC: find global max AND which rank owns it
-    struct { double val; int rank; } local_pair, global_pair;
-    local_pair.val = local_max_mag;
-    local_pair.rank = myid;
-    MPI_Allreduce(&local_pair, &global_pair, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
-
-    double Ma = global_pair.val / (double)cs;
-
-    // When Ma is high, print diagnostic location (from the rank that owns the max)
-    if (Ma > 0.20) {
-        // Broadcast location + velocity from max-owning rank
-        int info[3] = {loc_i, loc_j, loc_k};
-        double vel[3];
-        if (myid == global_pair.rank) {
-            int idx = loc_j*NX6*NZ6 + loc_k*NX6 + loc_i;
-            vel[0] = u_h[idx]; vel[1] = v_h[idx]; vel[2] = w_h[idx];
-        }
-        MPI_Bcast(info, 3, MPI_INT, global_pair.rank, MPI_COMM_WORLD);
-        MPI_Bcast(vel,  3, MPI_DOUBLE, global_pair.rank, MPI_COMM_WORLD);
-
-        int j_global = global_pair.rank * (NYD6 - 7) + info[1];
-        if (myid == 0) {
-            printf("[Ma_diag] Ma=%.4f at rank=%d i=%d j_local=%d(j_global=%d) k=%d  "
-                   "u=%.6f v=%.6f w=%.6f\n",
-                   Ma, global_pair.rank, info[0], info[1], j_global, info[2],
-                   vel[0], vel[1], vel[2]);
-        }
-    }
+    double local_Ma = sqrt(local_max_sq) / (double)cs;
+    double global_Ma;
+    MPI_Allreduce(&local_Ma, &global_Ma, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 
     free(u_h); free(v_h); free(w_h);
-    return Ma;
+    return global_Ma;
 }
 
-void Launch_Monitor(){
+// Returns 0 = normal, 1 = emergency stop (Ma > 0.40)
+int Launch_Monitor(){
     // --- 1. 計算瞬時 Ub (rank 0, j=3 hill-crest section) ---
     double Ub_inst = 0.0;
     if (myid == 0) {
@@ -79,22 +48,28 @@ void Launch_Monitor(){
         free(v_slice);
     }
 
-    // --- 2. 計算全場 Ma_max (all ranks, with location diagnostics) ---
+    // --- 2. 計算全場 Ma_max ---
     double Ma_max = ComputeMaMax();
 
-    // --- 3. Emergency Ma brake (every NDTMIT steps, much faster than NDTFRC) ---
-    // 補救 Launch_ModifyForcingTerm 每 1000 步才檢查的時間差
-    if (Ma_max > 0.35) {
-        Force_h[0] *= 0.05;
+    // --- 3. Emergency Ma brake (every NDTMIT steps, faster than NDTFRC) ---
+    // 閾值: 0.30→輕煞車, 0.35→重煞車, 0.40→不可恢復→停止模擬
+    if (Ma_max > 0.40) {
+        Force_h[0] = 0.0;
         CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
         if (myid == 0)
-            printf("[EMERGENCY] Ma_max=%.4f > 0.35, Force reduced to 5%%: %.5E (monitor brake)\n",
+            printf("[FATAL] Ma_max=%.4f > 0.40 — unrecoverable, stopping simulation (monitor brake)\n", Ma_max);
+        return 1;  // signal emergency stop
+    } else if (Ma_max > 0.35) {
+        Force_h[0] *= 0.1;
+        CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+        if (myid == 0)
+            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 10%%: %.5E (monitor brake)\n",
                    Ma_max, Force_h[0]);
-    } else if (Ma_max > 0.27) {
-        Force_h[0] *= 0.5;
+    } else if (Ma_max > 0.30) {
+        Force_h[0] *= 0.8;
         CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
         if (myid == 0)
-            printf("[WARNING] Ma_max=%.4f > 0.27, Force halved: %.5E (monitor brake)\n",
+            printf("[WARNING] Ma_max=%.4f > 0.30, Force reduced to 80%%: %.5E (monitor brake)\n",
                    Ma_max, Force_h[0]);
     }
 
@@ -110,6 +85,7 @@ void Launch_Monitor(){
     }
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
+    return 0;  // normal
 }
 
 #endif

@@ -736,7 +736,9 @@ __device__ void gilbm_step1_point(
     double *delta_zeta_d,
     int *bk_precomp_d,
     double *u_out, double *v_out, double *w_out, double *rho_out_arr,
-    double *rho_modify
+    double *rho_modify,
+    int *ehrenfest_count = nullptr, int *ce_clamp_count = nullptr,
+    int step_num = 0, int rank_id = 0
 ) {
     const int nface = NX6 * NZ6;
     const int index = j * nface + k * NX6 + i;
@@ -795,7 +797,7 @@ __device__ void gilbm_step1_point(
                 f_streamed = ChapmanEnskogBC(q, rho_wall,
                     du_dk, dv_dk, dw_dk,
                     dk_dy_val, dk_dz_val,
-                    omega_A, dt_A);
+                    omega_A, dt_A, ce_clamp_count);
             } else {
                 // ── Fused load + η-reduction ──
                 double t_eta = (double)ci - a_local * GILBM_delta_eta[q];
@@ -871,20 +873,20 @@ __device__ void gilbm_step1_point(
     double w_A   = mz_stream / rho_A;
 
     // ── Ehrenfest regularization: prevent local |u| > Ma_limit × cs ──
-    // When a point exceeds the LBM compressibility limit, reset f_new to feq
-    // with velocity scaled down to the limit. This prevents exponential blowup
-    // at separation zones (lee side of hill) and VTK-restart transients.
-    // Ma_limit=0.3: |u|_max = 0.3/sqrt(3) = 0.1732 ≈ 2.97×Uref (ample margin)
+    // 正常運行應該 0 次觸發。如果頻繁觸發，說明有其他 bug 需要排查。
     {
         const double Ma_limit = 0.3;
-        const double vel_sq_limit = Ma_limit * Ma_limit / 3.0; // (Ma_limit × cs)²
+        const double vel_sq_limit = Ma_limit * Ma_limit / 3.0;
         double vel_sq = u_A * u_A + v_A * v_A + w_A * w_A;
         if (vel_sq > vel_sq_limit) {
+            double Ma_local = sqrt(vel_sq * 3.0);
+            if (ehrenfest_count) atomicAdd(ehrenfest_count, 1);
+            printf("[EHRENFEST] step=%d rank=%d (i=%d,j=%d,k=%d) Ma=%.4f -> reset to feq\n",
+                   step_num, rank_id, i, j, k, Ma_local);
             double scale = sqrt(vel_sq_limit / vel_sq);
             u_A *= scale;
             v_A *= scale;
             w_A *= scale;
-            // Reset f_new to equilibrium at clamped velocity (preserves rho)
             for (int q = 0; q < 19; q++)
                 f_new_ptrs[q][index] = compute_feq_alpha(q, rho_A, u_A, v_A, w_A);
         }
@@ -1048,7 +1050,9 @@ __global__ void GILBM_Step1_Kernel(
     double *delta_zeta_d,
     int *bk_precomp_d,
     double *u_out, double *v_out, double *w_out, double *rho_out,
-    double *rho_modify
+    double *rho_modify,
+    int *ehrenfest_count, int *ce_clamp_count,
+    int step_num, int rank_id
 ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -1068,7 +1072,9 @@ __global__ void GILBM_Step1_Kernel(
         dt_local_d, omega_local_d,
         delta_zeta_d, bk_precomp_d,
         u_out, v_out, w_out, rho_out,
-        rho_modify);
+        rho_modify,
+        ehrenfest_count, ce_clamp_count,
+        step_num, rank_id);
 }
 
 // ============================================================================
