@@ -20,17 +20,15 @@ double ComputeMaMax(){
         double sq = u_h[idx]*u_h[idx] + v_h[idx]*v_h[idx] + w_h[idx]*w_h[idx];
         if (sq > local_max_sq) local_max_sq = sq;
     }
-
-    double local_Ma = sqrt(local_max_sq) / (double)cs;
-    double global_Ma;
-    MPI_Allreduce(&local_Ma, &global_Ma, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-
     free(u_h); free(v_h); free(w_h);
-    return global_Ma;
+
+    double local_max_mag = sqrt(local_max_sq);
+    double global_max_mag;
+    MPI_Allreduce(&local_max_mag, &global_max_mag, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    return global_max_mag / (double)cs;
 }
 
-// Returns 0 = normal, 1 = emergency stop (Ma > 0.40)
-int Launch_Monitor(){
+void Launch_Monitor(){
     // --- 1. 計算瞬時 Ub (rank 0, j=3 hill-crest section) ---
     double Ub_inst = 0.0;
     if (myid == 0) {
@@ -48,32 +46,10 @@ int Launch_Monitor(){
         free(v_slice);
     }
 
-    // --- 2. 計算全場 Ma_max ---
+    // --- 2. 計算全場 Ma_max (all ranks) ---
     double Ma_max = ComputeMaMax();
 
-    // --- 3. Emergency Ma brake (every NDTMIT steps, faster than NDTFRC) ---
-    // 閾值: 0.30→輕煞車, 0.35→重煞車, 0.40→不可恢復→停止模擬
-    if (Ma_max > 0.40) {
-        Force_h[0] = 0.0;
-        CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
-        if (myid == 0)
-            printf("[FATAL] Ma_max=%.4f > 0.40 — unrecoverable, stopping simulation (monitor brake)\n", Ma_max);
-        return 1;  // signal emergency stop
-    } else if (Ma_max > 0.35) {
-        Force_h[0] *= 0.1;
-        CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
-        if (myid == 0)
-            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 10%%: %.5E (monitor brake)\n",
-                   Ma_max, Force_h[0]);
-    } else if (Ma_max > 0.30) {
-        Force_h[0] *= 0.8;
-        CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
-        if (myid == 0)
-            printf("[WARNING] Ma_max=%.4f > 0.30, Force reduced to 80%%: %.5E (monitor brake)\n",
-                   Ma_max, Force_h[0]);
-    }
-
-    // --- 4. 輸出 Ustar_Force_record.dat ---
+    // --- 3. 輸出 Ustar_Force_record.dat ---
     double FTT = step * dt_global / (double)flow_through_time;
     double F_star = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);
 
@@ -85,7 +61,6 @@ int Launch_Monitor(){
     }
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
-    return 0;  // normal
 }
 
 #endif

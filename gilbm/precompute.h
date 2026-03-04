@@ -367,18 +367,9 @@ void ComputeLocalTimeStep(
             }
 
             double dt_local = cfl_lambda / max_c;
-
-            // MRT stability guard: cap dt_local so that tau_local >= TAU_MIN_SAFE
-            // tau = 0.5 + 3ν/dt → dt_max = 3ν/(TAU_MIN_SAFE - 0.5)
-            // This does NOT change ν or Re — only limits the LTS acceleration factor.
-            if (TAU_MIN_SAFE > 0) {
-                double dt_max = 3.0 * niu_val / (TAU_MIN_SAFE - 0.5);
-                if (dt_local > dt_max) dt_local = dt_max;
-            }
-
             double omega_local = 0.5 + 3.0 * niu_val / dt_local; // ω_local = 3ν/Δt_local + 0.5
-
-            dt_local_h[idx_jk] = dt_local; //一個點存一個最小值，形成local time step
+            
+            dt_local_h[idx_jk] = dt_local; //一個點存一個最小值，形成local time step 
             omega_local_h[idx_jk] = omega_local;
             omegadt_local_h[idx_jk] = omega_local * dt_local; //這才是真正的relaxation time，一般定義
 
@@ -395,12 +386,8 @@ void ComputeLocalTimeStep(
         std::cout << "\n=============================================================\n"
                   << "  Phase 4: Local Time Step Calulating (Imamura 2005 Eq. 28)\n"
                   << "=============================================================\n"
-                  << "  dt_global = " << std::scientific << std::setprecision(6) << dt_global << "\n";
-        if (TAU_MIN_SAFE > 0)
-            std::cout << "  TAU_MIN_SAFE = " << std::fixed << std::setprecision(4) << (double)TAU_MIN_SAFE
-                      << "  → s_visc_max = " << 1.0/(double)TAU_MIN_SAFE
-                      << "  → dt_max = " << std::scientific << std::setprecision(4) << 3.0*niu_val/((double)TAU_MIN_SAFE-0.5) << "\n";
-        std::cout << "  Acceleration factor a(j,k) = dt_local / dt_global:\n"
+                  << "  dt_global = " << std::scientific << std::setprecision(6) << dt_global << "\n"
+                  << "  Acceleration factor a(j,k) = dt_local / dt_global:\n"
                   << std::fixed << std::setprecision(4)
                   << "    min(a)  = " << a_min << "  (near wall, CFL-limited)\n"
                   << "    max(a)  = " << a_max

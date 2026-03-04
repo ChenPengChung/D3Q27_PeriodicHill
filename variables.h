@@ -1,197 +1,125 @@
 #ifndef VARIABLES_FILE
 #define VARIABLES_FILE
 
-// ================================================================
-//  一、數學常數
-// ================================================================
-#define     pi      3.14159265358979323846264338327950
+//stream wise : LX, for lid-driven cavity flow
+#define     pi     3.14159265358979323846264338327950
+#define     LX     (4.5)
+#define     LY     (9.0)
+#define     LZ     (3.036)
+#define     H_HILL (1.0)        // hill height (Re_h reference length)
 
-// ================================================================
-//  二、物理域尺寸（無因次化，以山丘高度 h = 1 為基準）
-// ================================================================
-//  LX = 展向寬度 (spanwise)
-//  LY = 流向長度 (streamwise, hill-to-hill 週期長度 = 9h)
-//  LZ = 法向高度 (wall-normal, 含山丘)
-//  H_HILL = 山丘高度 (Re_h 的參考長度)
-#define     LX      (4.5)
-#define     LY      (9.0)
-#define     LZ      (3.036)
-#define     H_HILL  (1.0)
-
-// ================================================================
-//  三、全域網格數（不含 ghost cells）
-// ================================================================
-//  NX = 展向 (spanwise)     格點數
-//  NY = 流向 (streamwise)   格點數
-//  NZ = 法向 (wall-normal)  格點數
-//  jp = MPI rank 數（沿流向 y 方向分割）
+//global grid numbers of each direction
 #define     NX      32
 #define     NY      128
 #define     NZ      128
+
 #define     jp      8
 
-// ================================================================
-//  四、含 ghost cells 的陣列維度
-// ================================================================
-//  NX6  = NX + 7  (展向：3 層 ghost × 2 側 + 1)
-//  NYD6 = NY/jp + 7 (每個 rank 的流向維度，含 ghost)
-//  NY6  = NY + 7  (全域流向，merged 用)
-//  NZ6  = NZ + 6  (法向：3 層 ghost × 2 側)
-#define     NX6     (NX+7)
-#define     NYD6    (NY/jp+7)
-#define     NY6     (NY+7)
-#define     NZ6     (NZ+6)
+#define     NX6    (NX+7)
+#define     NYD6   (NY/jp+7)
+#define     NY6    (NY+7)
+#define     NZ6    (NZ+6)
 
-// ================================================================
-//  五、網格分佈參數
-// ================================================================
-//  CFL     = 曲線座標系的 CFL 數（控制 dt_global 大小）
-//  minSize = 最小格距 × CFL = dt_global（直角座標的時間步）
-//            法向 z 採用 hyperbolic tangent 分佈，最小格距在壁面附近
-//  Uniform_In_Xdir: 1=展向均勻, 0=非均勻
-//  Uniform_In_Ydir: 1=流向均勻, 0=非均勻
-//  Uniform_In_Zdir: 1=法向均勻, 0=非均勻（tanh 拉伸）
-//  LXi = 曲線座標 ξ 方向的計算域長度
+//coefficient for non-uniform grid
 #define     CFL                 0.5
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
+//1 : Yes,  0 : No
 #define     Uniform_In_Xdir     1
 #define     Uniform_In_Ydir     1
 #define     Uniform_In_Zdir     0
-#define     LXi                 (10.0)
 
-// ================================================================
-//  六、碰撞模型設定
-// ================================================================
-//  USE_MRT: 0=BGK/SRT 碰撞, 1=MRT (Multi-Relaxation-Time) 碰撞
-//  TAU_MIN_SAFE: MRT 穩定性保護，tau_local 的最小允許值
-//    s_visc = 1/tau_local 必須 < 2.0 才能維持 MRT 穩定
-//    0.55 → s_visc_max=1.818 (距極限 2.0 有 9.1% 餘量)
-//    0.60 → s_visc_max=1.667 (距極限 2.0 有 16.7% 餘量)
-//    0.0  → 不設上限（原始行為）
-#define     USE_MRT             1
-#define     TAU_MIN_SAFE        0.55
+#define     LXi        (10.0)
 
-// ================================================================
-//  七、Kernel 分割策略
-// ================================================================
-//  USE_P6: 1=P6 拆分 (Step1 → MPI → Step23)
-//          0=舊版合併 (pre-copy → Buffer → Full → MPI → Correction)
-//  P5 (MRT 合併版) 在 USE_MRT=1 時永遠啟用；此旗標只控制 kernel launch 流程。
-#define     USE_P6              1
+#define     TBSWITCH          (1)
 
-// ================================================================
-//  八、雷諾數與流場控制
-// ================================================================
-//  Re = 基於山丘高度 h 和截面平均速度 Ub 的雷諾數 (Re_h = Ub * h / ν)
-#define     Re                  700
+// Collision operator: 0=BGK/SRT, 1=MRT (Multi-Relaxation-Time)
+#define     USE_MRT            1
 
-// ================================================================
-//  九、時間迴圈與輸出頻率
-// ================================================================
-//  loop    = 最大時間步數（FTT_STOP 到達時也會停止）
-//  NDTMIT  = 每隔幾步輸出監測點數值到 Ustar_Force_record.dat
-//  NDTFRC  = 每隔幾步更新外力（PI controller 呼叫頻率）
-//  OUTVTK  = 每隔幾步輸出 VTK + Bin checkpoint
-#define     loop                500000
-#define     NDTMIT              50
-#define     NDTFRC              1000
-#define     OUTVTK              1000
+// Kernel split strategy: 1=P6 (Step1 → MPI → Step23), 0=Old (pre-copy → Buffer → Full → MPI → Correction)
+// P5 (combined MRT) is always active when USE_MRT=1; this flag only controls the kernel launch flow.
+// Set to 0 for comparison testing (old monolithic kernel, algebraically identical MRT).
+#define     USE_P6             1
 
-// ================================================================
-//  十、PI 外力控制器參數
-// ================================================================
-//  force_alpha = PI controller 的增益係數
-//    Re=100  建議 alpha=10
-//    Re=700  建議 alpha=30（週期山丘需較高 gain 加速收斂）
-//    Re=2800 建議 alpha=3~14
-#define     force_alpha        10 
+//#define     Re         300
+//#define     U_0        0.1018591
 
-// ================================================================
-//  十一、重啟設定 (RESTART)
-// ================================================================
-//  INIT: 重啟模式
-//    0 = 冷啟動（全部歸零，不讀任何檔案）
-//    1 = 續跑 FTT < 20 的場（讀取瞬時量 + f 分佈 + Force）
-//    2 = 續跑 FTT ≥ 20 的場（讀取瞬時 + f + Force + 35 個統計量累積和）
-//
-//  RESTART_SOURCE: 讀取來源
-//    0 = Binary checkpoint（精確續跑，有 f 分佈函數，推薦）
-//    1 = VTK（緊急用途，f 用 feq 近似，統計量無法還原 → accu_count=0）
-//
-//  RESTART_STEP: 續跑的起始時間步（用於計算初始 FTT，也用於找檔案）
-//  RESTART_BIN_DIR: Binary checkpoint 資料夾路徑
-//  RESTART_VTK_FILE: VTK 檔案路徑（僅 RESTART_SOURCE=1 時使用）
-#define     INIT                2
-#define     RESTART_SOURCE      1
-#define     RESTART_STEP        728001
-#define     RESTART_BIN_DIR     "checkpoint_728001"
-#define     RESTART_VTK_FILE    "result/Low_Order_field_728001.vtk"
+//#define     Retau       180
+//#define     Ma          0.1
+//#define     Umax        18.4824
 
-// ================================================================
-//  十二、VTK 輸出等級
-// ================================================================
-//  VTK_OUTPUT_LEVEL: 控制 FTT ≥ 20 時 VTK 包含的欄位數
-//    0 = 基本 (20 欄位): 瞬時(6) + <u/v/w>/Uref(3) + <omega>(3) + RS(6) + k + <p>
-//    1 = 進階 (21 欄位): 基本 + epsilon*h/Uref^3
-//    (未來 LEVEL 1 可擴充: + Tturb(3) + Pdiff(3) = 27 欄位)
-//  注意：不影響 Bin checkpoint（永遠存 35 個累積量），只影響 VTK 後處理輸出。
-#define     VTK_OUTPUT_LEVEL    0
+#define     Re          700
 
-// ================================================================
-//  十三、初始擾動注入
-// ================================================================
-//  PERTURB_INIT: 啟動時是否在 u,v,w 上加隨機噪聲以觸發三維湍流轉捩
-//    1 = 加入擾動（首次冷啟動用）
-//    0 = 不加擾動（湍流已建立後設為 0）
-//  PERTURB_PERCENT: 擾動振幅（Uref 的百分比），通常 1~10%
-#define     PERTURB_INIT        0
-#define     PERTURB_PERCENT     5
+//steps to end simulation
+#define     loop      500000
+//how many time steps to output val of monitor point(NX/2, NY/2, NZ/2)
+#define		NDTMIT	   50
+//how many time steps to modify the forcing term
+#define     NDTFRC     1000 //每一萬步驟-更新外力
+#define     force_alpha 30 //瑋傑學長的論文:alpha = 3~14, 週期山丘需更高 gain 加速收斂
+//Re=100  , alpha = 10
+//Re=2800 , alpha = 3 or 14
+//After a few transients (∼ 200 ﬂow-throughtime), the velocity is time-averaged. As show
+//無因次化時間步 0.67L/U_reference 
+//whether to initial from the backup file
+//0 : from initialization
+//1 : from backup file
+//2 : from merged VTK file (specify RESTART_VTK_FILE below)
+#define     INIT    (2)   //2代表使用初始化資料 
+// TBINIT: 是否從 statistics/*.bin 讀取上次累積的 Reynolds stress 統計
+// 只在 INIT=1 (binary restart) 時生效 (main.cu: if(TBINIT && TBSWITCH) statistics_readbin_merged_stress())
+// INIT=2 (VTK restart) 不走此路徑，RS 由 FTT-gate 邏輯控制
+// 1 = 讀取 statistics/ 目錄下 32 個 merged bin 檔 (U,V,W,P,UU,UV,...,WWW) + accu.dat (rey_avg_count)
+// 0 = 不讀取，FTT >= FTT_STAGE2 (50.0) 後從零開始累積
+#define     TBINIT  (0)
+#define     RESTART_VTK_FILE  "result/velocity_merged_534001.vtk"
+// Perturbation injection at startup (trigger 3D turbulent transition)
+// PERTURB_INIT=1: inject random noise on u,v,w to break spanwise symmetry
+// PERTURB_INIT=0: no perturbation (set to 0 after turbulence established)
+#define     PERTURB_INIT    0       //1.加入擾動量，0.不要加入擾動量
+#define     PERTURB_PERCENT 5       // amplitude (% of Uref), typical 1-10%
+/****************** SECONDARY PARAMETER ******************/
+#define     cs          (1.0/1.732050807568877)
+#define     dt          minSize //因為直角坐標系中，c=1
+#define     Uref        0.0583  //不可以任意提高，否則變向雷諾數降低
+//[Senior Data] : Re700:0.0583 , Re14002800:0.0776 , Re5600:0.0464 , Re10595:0.0878 <=0.17320508075 //<= 0.17320508075
+#define     niu         Uref/Re
+// Flow-through time: T_FT = L / Uref (lattice time units)
+// 論文 Fig.5 x軸: T*Uref/L, 其中 L = LY = 9h (hill-to-hill streamwise periodic length)
+// 一個 FTT = LY/Uref 個 lattice time steps
+// 第 n 步的 FTT 數 = n * dt_global / (LY / Uref) = n * dt_global * Uref / LY
+// 注意: 曲線坐標系用 dt_global (runtime), 非 dt=minSize (直角坐標 compile-time)
+#define     flow_through_time  (LY / Uref)
+// FTT-gated statistics thresholds (Flow-Through Time = LY/Uref lattice steps)
+#define     FTT_STAGE1      20.0    // Start mean velocity accumulation (u_tavg, v_tavg, w_tavg)
+#define     FTT_STAGE2      50.0    // Start Reynolds stress accumulation (MeanVars + MeanDerivatives)
+#define     FTT_STOP       100.0    // Simulation stops when FTT >= this value
 
-// ================================================================
-//  十四、衍生物理參數（由上方參數自動計算，勿手動修改）
-// ================================================================
-//  cs   = 聲速 = 1/√3（LBM 理論值）
-//  dt   = minSize（直角座標系的時間步，曲線座標系另有 dt_global）
-//  Uref = 目標截面平均速度 Ub（bulk velocity）
-//         控制 Re = Uref × h / ν，不可任意提高否則等效降低雷諾數
-//         Re700:0.0583  Re1400:0.0776  Re5600:0.0464  Re10595:0.0878
-//         上限: Uref ≤ cs = 0.1732（Ma < 0.3 壓縮性限制）
-//  niu  = 運動黏性係數 = Uref / Re
-#define     cs                  (1.0/1.732050807568877)
-#define     dt                  minSize
-#define     Uref                0.0583
-#define     niu                 (Uref/Re)
-
-// ================================================================
-//  十五、Flow-Through Time (FTT) 定義
-// ================================================================
-//  flow_through_time = LY / Uref（一個 FTT 對應的 lattice 時間步數）
-//  第 n 步的 FTT = n × dt_global × Uref / LY
-//  注意：曲線座標系使用 dt_global（runtime），非 dt=minSize（compile-time）
-#define     flow_through_time   (LY / Uref)
-
-// ================================================================
-//  十六、FTT 統計閾值（兩階段設計）
-// ================================================================
-//  Stage 0: FTT < FTT_STATS_START
-//    → 只跑瞬時場，不做任何統計累積
-//  Stage 1: FTT ≥ FTT_STATS_START
-//    → 所有 35 個統計量同時開始累積，共用單一 accu_count
-//    → 確保 Reynolds stress 的 fluctuation 計算中 N 完全一致
-//  FTT_STOP: 模擬在 FTT 到達此值時自動停止
-#define     FTT_STATS_START     20.0
-#define     FTT_STOP            100.0
-
-// ================================================================
-//  十七、CUDA Block Size
-// ================================================================
-//  NT = 展向 (x) 方向的 thread 數量
-#define     NT                  32
-
+//block size of each direction
+#define     NT          32     //block size x-dir threadnum
 #endif
-// ================================================================
-//  附錄：曲線座標系的 relaxation time 關係
-// ================================================================
-//  直角座標系：tau1 = 3×niu/dt + 0.5           （本程式碼未使用）
-//  曲線座標系：omega_global = 3×niu/dt_global + 0.5
-//  Local time step：omega_local(j,k) = 3×niu/dt_local(j,k) + 0.5
+/*
+直角坐標系：tau1 = 3*niu/dt + 0.5 ; dt = minSize  //tau1在本程式碼沒有使用到因此不需要定義
+曲線座標系：omega_global = 3*niu/dt_global + 0.5 ;
+曲線座標系(local time step) : omega_local(j,k) = 3*niu/dt_local(j,k) + 0.5 ;
+*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

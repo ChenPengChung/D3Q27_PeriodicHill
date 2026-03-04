@@ -94,7 +94,24 @@ __global__ void ReduceRhoSum_Kernel(double *rho_d, double *partial_sums_d) {
     if (tid == 0) partial_sums_d[blockIdx.x] = sdata[0];
 }
 
-// AccumulateTavg removed — velocity sums now handled by MeanVars (shared accu_count)
+// ===== Time-average accumulation kernel (GPU-side, FTT-gated in main.cu) =====
+// Accumulates all 3 velocity components: u(spanwise), v(streamwise), w(wall-normal)
+__global__ void AccumulateTavg_Kernel(double *u_tavg, double *v_tavg, double *w_tavg,
+                                      const double *u_src, const double *v_src, const double *w_src, int N) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < N) {
+        u_tavg[idx] += u_src[idx];
+        v_tavg[idx] += v_src[idx];
+        w_tavg[idx] += w_src[idx];
+    }
+}
+
+void Launch_AccumulateTavg() {
+    const int N = NX6 * NYD6 * NZ6;
+    const int block = 256;
+    const int grid = (N + block - 1) / block;
+    AccumulateTavg_Kernel<<<grid, block>>>(u_tavg_d, v_tavg_d, w_tavg_d, u, v, w, N);
+}
 
 __global__ void AccumulateUbulk(double *Ub_avg, double *v)
 {
@@ -108,7 +125,7 @@ __global__ void AccumulateUbulk(double *Ub_avg, double *v)
     Ub_avg[k*NX6+i] = v[j*NZ6*NX6+k*NX6+i];
 }
 
-void Launch_CollisionStreaming(double *f_old[19], double *f_new[19], int step_num = 0) {
+void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     dim3 griddimSW(  1,      NYD6/NT+1, NZ6);
     dim3 blockdimSW( 3, NT,        1 );
 
@@ -129,9 +146,7 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19], int step_nu
         dk_dz_d, dk_dy_d,
         dt_local_d, omega_local_d,
         delta_zeta_d, bk_precomp_d,
-        u, v, w, rho_d, rho_modify_d,
-        ehrenfest_count_d, ce_clamp_count_d,
-        step_num, myid
+        u, v, w, rho_d, rho_modify_d
     );
     CHECK_CUDA( cudaStreamSynchronize(stream0) );
 
@@ -257,8 +272,7 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19], int step_nu
 #endif
 }
 
-// Returns 0 = normal, 1 = emergency stop (Ma > 0.40)
-int Launch_ModifyForcingTerm()
+void Launch_ModifyForcingTerm()
 {
     // ====== Instantaneous Ub: zero → accumulate once → read ======
     const size_t nBytes = NX6 * NZ6 * sizeof(double);
@@ -312,21 +326,14 @@ int Launch_ModifyForcingTerm()
     }
 
     // Ma 安全檢查 (使用 local Ma_max — LBM 穩定性取決於局部最大 Ma, 非 bulk 平均)
-    // 閾值: 0.30→輕煞車, 0.35→重煞車+WARNING, 0.40→不可恢復→停止模擬
-    if (Ma_max > 0.40) {
-        Force_h[0] = 0.0;
+    if (Ma_max > 0.35) {
+        Force_h[0] *= 0.05;
         if (myid == 0)
-            printf("[FATAL] Ma_max=%.4f > 0.40 — unrecoverable, stopping simulation and writing checkpoint\n", Ma_max);
-        CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
-        return 1;  // signal emergency stop
-    } else if (Ma_max > 0.35) {
-        Force_h[0] *= 0.1;
+            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 5%%: %.5E\n", Ma_max, Force_h[0]);
+    } else if (Ma_max > 0.3) {
+        Force_h[0] *= 0.5;
         if (myid == 0)
-            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 10%%: %.5E\n", Ma_max, Force_h[0]);
-    } else if (Ma_max > 0.30) {
-        Force_h[0] *= 0.8;
-        if (myid == 0)
-            printf("[WARNING] Ma_max=%.4f > 0.30, Force reduced to 80%%: %.5E\n", Ma_max, Force_h[0]);
+            printf("[WARNING] Ma_max=%.4f > 0.3, Force halved to %.5E\n", Ma_max, Force_h[0]);
     }
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
@@ -338,8 +345,7 @@ int Launch_ModifyForcingTerm()
     double Re_now = Ub_ema / ((double)Uref / (double)Re);
 
     const char *status_tag = "";
-    if (Ma_max > 0.35)          status_tag = " [CRITICAL: Ma_max>0.35]";
-    else if (Ma_max > 0.30)     status_tag = " [WARNING: Ma_max>0.30]";
+    if (Ma_max > 0.35)          status_tag = " [WARNING: Ma_max>0.35, reduce Uref]";
     else if (U_star_ema > 1.2)  status_tag = " [OVERSHOOT!]";
     else if (U_star_ema > 1.05) status_tag = " [OVERSHOOT]";
 
@@ -357,7 +363,6 @@ int Launch_ModifyForcingTerm()
 
     CHECK_CUDA( cudaDeviceSynchronize() );
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
-    return 0;  // normal
 }
 
 #endif

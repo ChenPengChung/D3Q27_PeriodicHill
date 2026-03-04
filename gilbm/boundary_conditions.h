@@ -57,14 +57,12 @@ __device__ __forceinline__ bool NeedsBoundaryCondition(
 }
 
 // Chapman-Enskog BC: compute f_alpha at no-slip wall
-// clamp_count: optional device counter — atomicAdd when f<0 safety clamp triggers (pass nullptr to skip)
 __device__ double ChapmanEnskogBC(
     int alpha,
     double rho_wall,
     double du_dk, double dv_dk, double dw_dk,  // velocity gradients at wall
     double dk_dy_val, double dk_dz_val,
-    double omega_local, double localtimestep,
-    int *clamp_count = nullptr
+    double omega_local, double localtimestep
 ) {
     double ex = GILBM_e[alpha][0];
     double ey = GILBM_e[alpha][1];
@@ -92,18 +90,11 @@ __device__ double ChapmanEnskogBC(
     );
 
     
-    C_alpha *= -(omega_local ) * localtimestep; //根據Imamura公式
+    C_alpha *= -(omega_local ) * localtimestep; //根據Imamura公式 
     // equilibrium distribution function = GILBM_W[alpha] * rho_wall
     // f_alpha = f_eq * (1 + C_alpha)   (Imamura Eq. A.9)
     double f_eq_atwall = GILBM_W[alpha] * rho_wall;
-    double f_ce = f_eq_atwall * (1.0 + C_alpha);
-    // Safety guard: if CE correction makes f negative, fall back to equilibrium
-    // This prevents unphysical distributions at high-gradient wall regions
-    if (f_ce < 0.0) {
-        f_ce = f_eq_atwall;
-        if (clamp_count) atomicAdd(clamp_count, 1);
-    }
-    return f_ce;
+    return f_eq_atwall * (1.0 + C_alpha) ;  //計算壁面上的插值後分佈函數
 }
 
 #endif
