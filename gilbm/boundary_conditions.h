@@ -90,11 +90,15 @@ __device__ double ChapmanEnskogBC(
     );
 
     
-    C_alpha *= -(omega_local ) * localtimestep; //根據Imamura公式 
+    C_alpha *= -(omega_local ) * localtimestep; //根據Imamura公式
     // equilibrium distribution function = GILBM_W[alpha] * rho_wall
     // f_alpha = f_eq * (1 + C_alpha)   (Imamura Eq. A.9)
     double f_eq_atwall = GILBM_W[alpha] * rho_wall;
-    return f_eq_atwall * (1.0 + C_alpha) ;  //計算壁面上的插值後分佈函數
+    double f_ce = f_eq_atwall * (1.0 + C_alpha);
+    // Safety guard: if CE correction makes f negative, fall back to equilibrium
+    // This prevents unphysical distributions at high-gradient wall regions
+    if (f_ce < 0.0) f_ce = f_eq_atwall;
+    return f_ce;
 }
 
 #endif

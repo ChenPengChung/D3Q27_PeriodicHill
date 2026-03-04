@@ -869,6 +869,27 @@ __device__ void gilbm_step1_point(
     double u_A   = mx_stream / rho_A;
     double v_A   = my_stream / rho_A;
     double w_A   = mz_stream / rho_A;
+
+    // ── Ehrenfest regularization: prevent local |u| > Ma_limit × cs ──
+    // When a point exceeds the LBM compressibility limit, reset f_new to feq
+    // with velocity scaled down to the limit. This prevents exponential blowup
+    // at separation zones (lee side of hill) and VTK-restart transients.
+    // Ma_limit=0.3: |u|_max = 0.3/sqrt(3) = 0.1732 ≈ 2.97×Uref (ample margin)
+    {
+        const double Ma_limit = 0.3;
+        const double vel_sq_limit = Ma_limit * Ma_limit / 3.0; // (Ma_limit × cs)²
+        double vel_sq = u_A * u_A + v_A * v_A + w_A * w_A;
+        if (vel_sq > vel_sq_limit) {
+            double scale = sqrt(vel_sq_limit / vel_sq);
+            u_A *= scale;
+            v_A *= scale;
+            w_A *= scale;
+            // Reset f_new to equilibrium at clamped velocity (preserves rho)
+            for (int q = 0; q < 19; q++)
+                f_new_ptrs[q][index] = compute_feq_alpha(q, rho_A, u_A, v_A, w_A);
+        }
+    }
+
     for (int q = 0; q < 19; q++)
         feq_d[q * GRID_SIZE + index] = compute_feq_alpha(q, rho_A, u_A, v_A, w_A);
     rho_out_arr[index] = rho_A;
