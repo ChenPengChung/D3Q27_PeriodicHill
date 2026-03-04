@@ -16,19 +16,18 @@ double  *rho_h_p,  *u_h_p,  *v_h_p,  *w_h_p;
 double  *ft[19], *fd[19];
 double  *rho_d,  *u,  *v,  *w;
 
-/* double  *KT,    *DISS,
-        *DUDX2, *DUDY2, *DUDZ2,
+// 35 GPU statistics arrays (all accumulated from FTT >= FTT_STATS_START, shared accu_count)
+// 一階矩 (6): velocity + vorticity sums
+double  *U,  *V,  *W,  *P;
+double  *OMEGA_U_SUM, *OMEGA_V_SUM, *OMEGA_W_SUM;
+// 二階矩 (6) + 壓力相關 (3)
+double  *UU, *UV, *UW, *VV, *VW, *WW, *PU, *PV, *PW;
+// 速度梯度平方 (9, dissipation rate)
+double  *DUDX2, *DUDY2, *DUDZ2,
         *DVDX2, *DVDY2, *DVDZ2,
-        *DWDX2, *DWDY2, *DWDZ2; */
-double  *U,  *V,  *W,  *P, 
-        *UU, *UV, *UW, *VV, *VW, *WW, *PU, *PV, *PW, *PP,
-        *KT,
-        *DUDX2, *DUDY2, *DUDZ2, 
-        *DVDX2, *DVDY2, *DVDZ2, 
-        *DWDX2, *DWDY2, *DWDZ2,
-        *UUU, *UUV, *UUW,
-        *VVU, *VVV, *VVW,
-        *WWU, *WWV, *WWW;
+        *DWDX2, *DWDY2, *DWDZ2;
+// 三階矩 (10, 完全對稱張量)
+double  *UUU, *UUV, *UUW, *VVU, *UVW, *WWU, *VVV, *VVW, *WWV, *WWW;
 
 /************************** Other Variables **************************/
 double  *x_h, *y_h, *z_h, *xi_h,
@@ -93,14 +92,9 @@ double *rho_modify_h, *rho_modify_d;
 // GPU reduction partial sums for mass conservation (replaces SendDataToCPU every step)
 double *rho_partial_h, *rho_partial_d;
 
-// Time-average accumulation (FTT-gated)
-// u=spanwise, v=streamwise, w=wall-normal; GPU-side accumulation
-double *u_tavg_h = NULL, *v_tavg_h = NULL, *w_tavg_h = NULL;   // host (for VTK output)
-double *u_tavg_d = NULL, *v_tavg_d = NULL, *w_tavg_d = NULL;   // device (accumulated on GPU)
-int vel_avg_count = 0;      // Stage 1: mean velocity accumulation count (FTT >= FTT_STAGE1)
-int rey_avg_count = 0;      // Stage 2: Reynolds stress accumulation count (FTT >= FTT_STAGE2)
-bool stage1_announced = false;
-bool stage2_announced = false;
+// Statistics accumulation count (single counter, shared by all 35 fields)
+int accu_count = 0;          // Incremented every step when FTT >= FTT_STATS_START
+bool stats_announced = false; // One-time message when accumulation starts
 
 int nProcs, myid;
 
@@ -179,16 +173,6 @@ int main(int argc, char *argv[])
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
     AllocateMemory();
-
-    // Allocate time-average accumulation arrays early (before possible VTK restart read)
-    {
-        size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
-        u_tavg_h = (double*)calloc(nTotal, sizeof(double));
-        v_tavg_h = (double*)calloc(nTotal, sizeof(double));
-        w_tavg_h = (double*)calloc(nTotal, sizeof(double));
-        vel_avg_count = 0;
-        rey_avg_count = 0;
-    }
 
     //pre-check whether the directories exit or not
     PreCheckDir();
@@ -352,13 +336,15 @@ int main(int argc, char *argv[])
     if ( INIT == 0 ) {
         printf("Initializing by default function...\n");
         InitialUsingDftFunc();
-    } else if ( INIT == 1 ) {
-        printf("Initializing by backup data...\n");
-        result_readbin_velocityandf();
-        if( TBINIT && TBSWITCH ) statistics_readbin_merged_stress();
-    } else if ( INIT == 2 ) {
-        printf("Initializing from merged VTK: %s\n", RESTART_VTK_FILE);
-        InitFromMergedVTK(RESTART_VTK_FILE);
+    } else {
+        restart_step = RESTART_STEP;
+        if ( RESTART_SOURCE == 0 ) {
+            if (myid == 0) printf("Initializing from binary checkpoint: %s (INIT=%d)\n", RESTART_BIN_DIR, INIT);
+            ReadCheckpoint(RESTART_BIN_DIR, INIT);
+        } else {
+            if (myid == 0) printf("Initializing from merged VTK: %s\n", RESTART_VTK_FILE);
+            InitFromMergedVTK(RESTART_VTK_FILE);
+        }
     }
 
     // Force sanity guard (applies to all restart paths: INIT=1 binary, INIT=2 VTK)
@@ -588,68 +574,28 @@ int main(int argc, char *argv[])
     } 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
-    // Restore time-average from VTK restart (if available)
-    if (restart_step > 0 && vel_avg_count > 0) {
-        // tavg_h arrays contain averaged values from VTK; multiply by count to get cumulative sums
-        const size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
-        for (size_t idx = 0; idx < nTotal; idx++) {
-            u_tavg_h[idx] *= (double)vel_avg_count;
-            v_tavg_h[idx] *= (double)vel_avg_count;
-            w_tavg_h[idx] *= (double)vel_avg_count;
-        }
-        // Copy accumulated sums to GPU
-        const size_t tavg_bytes = nTotal * sizeof(double);
-        CHECK_CUDA( cudaMemcpy(u_tavg_d, u_tavg_h, tavg_bytes, cudaMemcpyHostToDevice) );
-        CHECK_CUDA( cudaMemcpy(v_tavg_d, v_tavg_h, tavg_bytes, cudaMemcpyHostToDevice) );
-        CHECK_CUDA( cudaMemcpy(w_tavg_d, w_tavg_h, tavg_bytes, cudaMemcpyHostToDevice) );
-        if (myid == 0)
-            printf("Velocity time-average restored from VTK: vel_avg_count=%d, copied to GPU (%.1f MB each).\n",
-                   vel_avg_count, tavg_bytes / 1.0e6);
-        stage1_announced = true;
-    } else {
-        if (myid == 0) {
-            size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
-            printf("Time-average arrays allocated (%.1f MB each), starting fresh.\n",
-                   nTotal * sizeof(double) / 1.0e6);
-        }
-    }
-
-    // Restore Reynolds stress from merged binary checkpoint (if available)
-    if (restart_step > 0 && rey_avg_count > 0 && (int)TBSWITCH) {
-        statistics_readbin_merged_stress();
-        stage2_announced = true;
-        if (myid == 0)
-            printf("Reynolds stress restored from binary checkpoint (rey_avg_count=%d)\n", rey_avg_count);
-    }
-
-    // FTT-gate check: discard old statistics if restart FTT is below threshold
-    // 防止從舊版 VTK (無 FTT gating) 繼承的污染數據在 FTT < threshold 時持續輸出
+    // FTT-gate safety check: discard statistics if restart FTT < FTT_STATS_START
+    // (ReadCheckpoint/InitFromMergedVTK already set accu_count; this catches stale data)
     if (restart_step > 0) {
         double FTT_restart = (double)restart_step * dt_global / (double)flow_through_time;
-        const size_t nTotal_gate = (size_t)NX6 * NYD6 * NZ6;
-        const size_t tavg_bytes_gate = nTotal_gate * sizeof(double);
-
-        if (FTT_restart < FTT_STAGE1 && vel_avg_count > 0) {
+        if (accu_count > 0 && FTT_restart < FTT_STATS_START) {
             if (myid == 0)
-                printf("[FTT-GATE] FTT_restart=%.2f < FTT_STAGE1=%.1f: discarding old velocity averages (vel_avg_count=%d -> 0)\n",
-                       FTT_restart, FTT_STAGE1, vel_avg_count);
-            vel_avg_count = 0;
-            stage1_announced = false;
-            memset(u_tavg_h, 0, tavg_bytes_gate);
-            memset(v_tavg_h, 0, tavg_bytes_gate);
-            memset(w_tavg_h, 0, tavg_bytes_gate);
-            CHECK_CUDA( cudaMemset(u_tavg_d, 0, tavg_bytes_gate) );
-            CHECK_CUDA( cudaMemset(v_tavg_d, 0, tavg_bytes_gate) );
-            CHECK_CUDA( cudaMemset(w_tavg_d, 0, tavg_bytes_gate) );
+                printf("[FTT-GATE] WARNING: FTT=%.2f < %.0f but accu_count=%d. Discarding stale statistics.\n",
+                       FTT_restart, FTT_STATS_START, accu_count);
+            accu_count = 0;
+            stats_announced = false;
+            const size_t stats_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
+            double *stat_ptrs[] = {U,V,W,P,OMEGA_U_SUM,OMEGA_V_SUM,OMEGA_W_SUM,
+                                   UU,UV,UW,VV,VW,WW,PU,PV,PW,
+                                   DUDX2,DUDY2,DUDZ2,DVDX2,DVDY2,DVDZ2,DWDX2,DWDY2,DWDZ2,
+                                   UUU,UUV,UUW,VVU,UVW,WWU,VVV,VVW,WWV,WWW};
+            for (int s = 0; s < 35; s++)
+                CHECK_CUDA( cudaMemset(stat_ptrs[s], 0, stats_bytes) );
         }
-        if (FTT_restart < FTT_STAGE2 && rey_avg_count > 0) {
-            if (myid == 0)
-                printf("[FTT-GATE] FTT_restart=%.2f < FTT_STAGE2=%.1f: discarding old RS data (rey_avg_count=%d -> 0)\n",
-                       FTT_restart, FTT_STAGE2, rey_avg_count);
-            rey_avg_count = 0;
-            stage2_announced = false;
-            // TBSWITCH arrays already cudaMemset'd to 0 in AllocateMemory; readbin was skipped or data is stale
-        }
+        if (accu_count > 0) stats_announced = true;
+        if (myid == 0)
+            printf("  Restart state: accu_count=%d, stats_announced=%s\n",
+                   accu_count, stats_announced ? "true" : "false");
     }
 
     CHECK_CUDA( cudaEventRecord(start,0) );
@@ -723,35 +669,25 @@ int main(int argc, char *argv[])
 
 
 
-    //從此開始進入迴圈 (FTT-gated two-stage time averaging)
+    //從此開始進入迴圈 (FTT-gated statistics, FTT >= FTT_STATS_START)
     for( step = loop_start ; step < loop_start + loop ; step++, accu_num++ ) {
         double FTT_now = step * dt_global / (double)flow_through_time;
 
         // ===== Sub-step 1: even step (ft → fd) =====
         Launch_CollisionStreaming( ft, fd );
 
-        // Stage 2: MeanVars + MeanDerivatives (FTT >= FTT_STAGE2)
-        if (FTT_now >= FTT_STAGE2 && (int)TBSWITCH) {
+        // Statistics accumulation (all 35 fields, FTT >= FTT_STATS_START)
+        if (FTT_now >= FTT_STATS_START) {
             Launch_TurbulentSum( fd );
-            rey_avg_count++;
+            accu_count++;
         }
 
         CHECK_CUDA( cudaDeviceSynchronize() );
 
-        // Stage 1: velocity mean (FTT >= FTT_STAGE1)
-        if (FTT_now >= FTT_STAGE1 && step > 0) {
-            Launch_AccumulateTavg();
-            vel_avg_count++;
-        }
-
-        // Stage transition messages
-        if (!stage1_announced && FTT_now >= FTT_STAGE1) {
-            stage1_announced = true;
-            if (myid == 0) printf("\n>>> [FTT=%.2f] STAGE 1: Mean velocity accumulation STARTED <<<\n\n", FTT_now);
-        }
-        if (!stage2_announced && FTT_now >= FTT_STAGE2) {
-            stage2_announced = true;
-            if (myid == 0) printf("\n>>> [FTT=%.2f] STAGE 2: Reynolds stress accumulation STARTED <<<\n\n", FTT_now);
+        // Stage transition message
+        if (!stats_announced && FTT_now >= FTT_STATS_START) {
+            stats_announced = true;
+            if (myid == 0) printf("\n>>> [FTT=%.2f] Statistics accumulation STARTED (all 35 fields) <<<\n\n", FTT_now);
         }
 
         // ===== Mid-step mass correction (between even and odd) =====
@@ -786,17 +722,12 @@ int main(int argc, char *argv[])
 
         Launch_CollisionStreaming( fd, ft );
 
-        if (FTT_now >= FTT_STAGE2 && (int)TBSWITCH) {
+        if (FTT_now >= FTT_STATS_START) {
             Launch_TurbulentSum( ft );
-            rey_avg_count++;
+            accu_count++;
         }
 
         CHECK_CUDA( cudaDeviceSynchronize() );
-
-        if (FTT_now >= FTT_STAGE1) {
-            Launch_AccumulateTavg();
-            vel_avg_count++;
-        }
 
         // ===== Status display (every 5000 steps) =====
         if ( myid == 0 && step%5000 == 1 ) {
@@ -809,10 +740,9 @@ int main(int argc, char *argv[])
 			printf("| Step = %d    FTT = %.2f \n", step, FTT_now);
             printf("|%s running with %4dx%4dx%4d grids            \n", argv[0], (int)NX6, (int)NY6, (int)NZ6 );
             printf("| Running %6f mins                                           \n", (cudatime1/60/1000) );
-            printf("| Stage: %s | %s\n",
-                   (FTT_now >= FTT_STAGE1) ? "VelAvg ON" : "VelAvg OFF",
-                   (FTT_now >= FTT_STAGE2) ? "RS ON" : "RS OFF");
-            printf("| vel_avg_count=%d  rey_avg_count=%d\n", vel_avg_count, rey_avg_count);
+            printf("| Stage: %s\n",
+                   (FTT_now >= FTT_STATS_START) ? "Stats ON" : "Stats OFF");
+            printf("| accu_count=%d\n", accu_count);
             printf("+----------------------------------------------------------------+\n");
 
             cudaEventRecord(start1,0);
@@ -827,19 +757,13 @@ int main(int argc, char *argv[])
 			Launch_Monitor();
 		}
 
-        // ===== VTK output + binary checkpoint (every 1000 steps) =====
-        if ( step % 1000 == 1 ) {
+        // ===== VTK output + binary checkpoint (every OUTVTK steps) =====
+        if ( step % OUTVTK == 1 ) {
             SendDataToCPU( ft );
-            // Copy GPU tavg → host for VTK output
-            const size_t tavg_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
-            CHECK_CUDA( cudaMemcpy(u_tavg_h, u_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
-            CHECK_CUDA( cudaMemcpy(v_tavg_h, v_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
-            CHECK_CUDA( cudaMemcpy(w_tavg_h, w_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
 
             // VTK-step status
             double Ma_max_vtk = ComputeMaMax();
             if (myid == 0) {
-                // Bilinear cell-average: Σ v_cell × dx_cell × dz_cell / A_total
                 double Ub_vtk = 0.0;
                 for (int kk = 3; kk < NZ6-4; kk++)
                 for (int ii = 3; ii < NX6-4; ii++) {
@@ -851,17 +775,16 @@ int main(int argc, char *argv[])
                     Ub_vtk += v_cell * (x_h[ii+1] - x_h[ii]) * (z_h[3*NZ6+kk+1] - z_h[3*NZ6+kk]);
                 }
                 Ub_vtk /= (double)(LX * (LZ - 1.0));
-                printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re=%.1f  Ma=%.4f  Ma_max=%.4f  vel=%d  rey=%d\n",
+                printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re=%.1f  Ma=%.4f  Ma_max=%.4f  accu=%d\n",
                        step, FTT_now,
                        Ub_vtk, Ub_vtk / (double)Uref, Force_h[0],
                        Force_h[0] * (double)LY / ((double)Uref * (double)Uref),
                        Ub_vtk / ((double)Uref / (double)Re),
-                       Ub_vtk / (double)cs, Ma_max_vtk, vel_avg_count, rey_avg_count);
+                       Ub_vtk / (double)cs, Ma_max_vtk, accu_count);
             }
 
             fileIO_velocity_vtk_merged( step );
-            // Note: BIN checkpoint removed from periodic output.
-            // Merged BIN is written ONLY on program stop (final exit block).
+            WriteCheckpoint( step );
         }
 
         // ===== Global Mass Conservation Modify (GPU reduction — no SendDataToCPU) =====
@@ -942,36 +865,28 @@ int main(int argc, char *argv[])
     {
         double FTT_final = step * dt_global / (double)flow_through_time;
         SendDataToCPU( ft );
-        result_writebin_velocityandf();
 
-        // Copy GPU tavg → host for final VTK
-        const size_t tavg_bytes_final = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
-        CHECK_CUDA( cudaMemcpy(u_tavg_h, u_tavg_d, tavg_bytes_final, cudaMemcpyDeviceToHost) );
-        CHECK_CUDA( cudaMemcpy(v_tavg_h, v_tavg_d, tavg_bytes_final, cudaMemcpyDeviceToHost) );
-        CHECK_CUDA( cudaMemcpy(w_tavg_h, w_tavg_d, tavg_bytes_final, cudaMemcpyDeviceToHost) );
         fileIO_velocity_vtk_merged( step );
+        WriteCheckpoint( step );
+        result_writebin_velocityandf();   // Legacy per-rank backup
 
-        // Write Reynolds stress statistics if accumulated (FTT > FTT_STAGE2)
-        if (rey_avg_count > 0 && (int)TBSWITCH) {
-            double FTT_rs = (double)rey_avg_count * dt_global / (double)flow_through_time;
-            if (myid == 0) {
-                printf("\n========================================================\n");
-                printf("[FINAL OUTPUT] FTT = %.3f (timestep = %d)\n", FTT_final, step);
-                printf("  -> Velocity mean accumulation: %d steps\n", vel_avg_count);
-                printf("  -> Reynolds stress accumulation: %.3f FTTs (%d steps)\n", FTT_rs, rey_avg_count);
-                printf("  -> Writing merged statistics (32 arrays)\n");
-                printf("========================================================\n\n");
-            }
+        // Also write merged statistics to statistics/ directory (backward compat)
+        if (accu_count > 0) {
             statistics_writebin_merged_stress();
-        } else if (myid == 0) {
-            printf("\n[FINAL] FTT=%.2f, step=%d. No RS data to write (rey_avg_count=%d).\n",
-                   FTT_final, step, rey_avg_count);
+        }
+
+        if (myid == 0) {
+            printf("\n========================================================\n");
+            printf("[FINAL OUTPUT] FTT = %.3f (timestep = %d)\n", FTT_final, step);
+            printf("  -> accu_count = %d\n", accu_count);
+            if (accu_count > 0) {
+                double FTT_stats = (double)accu_count * dt_global / (double)flow_through_time;
+                printf("  -> Statistics accumulation: %.3f FTTs (%d steps)\n", FTT_stats, accu_count);
+            }
+            printf("========================================================\n\n");
         }
     }
 
-    free(u_tavg_h);
-    free(v_tavg_h);
-    free(w_tavg_h);
     FreeSource();
     MPI_Finalize();
 

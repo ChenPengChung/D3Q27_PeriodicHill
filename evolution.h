@@ -94,24 +94,7 @@ __global__ void ReduceRhoSum_Kernel(double *rho_d, double *partial_sums_d) {
     if (tid == 0) partial_sums_d[blockIdx.x] = sdata[0];
 }
 
-// ===== Time-average accumulation kernel (GPU-side, FTT-gated in main.cu) =====
-// Accumulates all 3 velocity components: u(spanwise), v(streamwise), w(wall-normal)
-__global__ void AccumulateTavg_Kernel(double *u_tavg, double *v_tavg, double *w_tavg,
-                                      const double *u_src, const double *v_src, const double *w_src, int N) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < N) {
-        u_tavg[idx] += u_src[idx];
-        v_tavg[idx] += v_src[idx];
-        w_tavg[idx] += w_src[idx];
-    }
-}
-
-void Launch_AccumulateTavg() {
-    const int N = NX6 * NYD6 * NZ6;
-    const int block = 256;
-    const int grid = (N + block - 1) / block;
-    AccumulateTavg_Kernel<<<grid, block>>>(u_tavg_d, v_tavg_d, w_tavg_d, u, v, w, N);
-}
+// AccumulateTavg removed — velocity sums now handled by MeanVars (shared accu_count)
 
 __global__ void AccumulateUbulk(double *Ub_avg, double *v)
 {
@@ -330,10 +313,10 @@ void Launch_ModifyForcingTerm()
         Force_h[0] *= 0.05;
         if (myid == 0)
             printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 5%%: %.5E\n", Ma_max, Force_h[0]);
-    } else if (Ma_max > 0.3) {
+    } else if (Ma_max > 0.27) {
         Force_h[0] *= 0.5;
         if (myid == 0)
-            printf("[WARNING] Ma_max=%.4f > 0.3, Force halved to %.5E\n", Ma_max, Force_h[0]);
+            printf("[WARNING] Ma_max=%.4f > 0.27, Force halved to %.5E\n", Ma_max, Force_h[0]);
     }
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
