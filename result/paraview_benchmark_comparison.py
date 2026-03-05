@@ -112,6 +112,7 @@ def parse_vtk(filepath):
     # Header
     dims = None
     npts = 0
+    npts_from_dims = 0
     points = []
     scalars = {}
     current_scalar = None
@@ -123,34 +124,41 @@ def parse_vtk(filepath):
 
         if line.startswith("DIMENSIONS"):
             dims = tuple(int(v) for v in line.split()[1:4])  # (nx, ny, nz)
+            npts_from_dims = dims[0] * dims[1] * dims[2]
+
+        elif line.startswith("POINT_DATA"):
+            npts = int(line.split()[1])
 
         elif line.startswith("POINTS"):
             npts = int(line.split()[1])
             section = "points"
             idx += 1
-            count = 0
-            while count < npts and idx < len(lines):
+            raw = []
+            while len(raw) < npts * 3 and idx < len(lines):
                 vals = lines[idx].strip().split()
-                for vi in range(0, len(vals), 3):
-                    if count < npts:
-                        points.append([float(vals[vi]), float(vals[vi+1]), float(vals[vi+2])])
-                        count += 1
+                if not vals or vals[0].startswith(("SCALARS", "VECTORS", "POINT_DATA")):
+                    break
+                raw.extend(float(v) for v in vals)
                 idx += 1
+            raw = raw[:npts * 3]
+            points = list(zip(raw[0::3], raw[1::3], raw[2::3]))
             continue
 
         elif line.startswith("VECTORS"):
             # Skip vector data block (3 components per point)
             idx += 1
-            count = 0
-            while count < npts and idx < len(lines):
+            remaining = npts * 3
+            while remaining > 0 and idx < len(lines):
                 vals = lines[idx].strip().split()
-                if not vals or vals[0].startswith("SCALARS") or vals[0].startswith("VECTORS"):
+                if not vals or vals[0].startswith(("SCALARS", "VECTORS", "POINT_DATA")):
                     break
-                count += len(vals) // 3
+                remaining -= len(vals)
                 idx += 1
             continue
 
         elif line.startswith("SCALARS"):
+            if npts == 0 and npts_from_dims > 0:
+                npts = npts_from_dims  # fallback from DIMENSIONS
             parts = line.split()
             current_scalar = parts[1]
             scalars[current_scalar] = []
@@ -177,13 +185,84 @@ def parse_vtk(filepath):
 
     return dims, points, scalars
 
+def check_vtk_completeness(filepath):
+    """Pre-parse scan: verify VTK file has all required sections.
+    Returns (ok, diagnostics_str). If not ok, diagnostics_str explains what's missing."""
+    markers = {
+        "DIMENSIONS": False,
+        "POINTS":     False,
+        "POINT_DATA": False,
+        "U_mean":     False,
+        "W_mean":     False,
+        "V_mean":     False,
+    }
+    total_lines = 0
+    grid_npts = 0
+
+    with open(filepath, "r") as f:
+        for line in f:
+            total_lines += 1
+            stripped = line.strip()
+            if stripped.startswith("DIMENSIONS"):
+                markers["DIMENSIONS"] = True
+                parts = stripped.split()
+                if len(parts) >= 4:
+                    grid_npts = int(parts[1]) * int(parts[2]) * int(parts[3])
+            elif stripped.startswith("POINTS"):
+                markers["POINTS"] = True
+            elif stripped.startswith("POINT_DATA"):
+                markers["POINT_DATA"] = True
+            elif stripped.startswith("SCALARS U_mean"):
+                markers["U_mean"] = True
+            elif stripped.startswith("SCALARS W_mean"):
+                markers["W_mean"] = True
+            elif stripped.startswith("SCALARS V_mean"):
+                markers["V_mean"] = True
+
+    # Expected line count estimate:
+    #   header ~5 + POINTS section (npts lines) + POINT_DATA + per scalar (2 header + npts data)
+    #   Plus VECTORS blocks. Conservative lower bound: header + POINTS + 3 scalars
+    expected_min = 5 + grid_npts + 3 * (grid_npts + 2)  # ~4 * npts
+
+    missing = [k for k, v in markers.items() if not v]
+    diag_lines = []
+    diag_lines.append(f"  檔案: {os.path.basename(filepath)}")
+    diag_lines.append(f"  總行數: {total_lines:,}")
+    if grid_npts > 0:
+        diag_lines.append(f"  網格點數: {grid_npts:,}")
+        diag_lines.append(f"  預估最少行數: ~{expected_min:,}")
+        pct = total_lines / expected_min * 100
+        diag_lines.append(f"  完成度: ~{pct:.1f}%")
+
+    ok = len(missing) == 0
+    if not ok:
+        diag_lines.append(f"  缺少區段: {', '.join(missing)}")
+        if grid_npts > 0 and total_lines < expected_min:
+            diag_lines.append(f"  → 檔案傳輸未完成 (行數不足)，請等待同步完成後重試")
+        elif not markers["U_mean"]:
+            if markers["POINTS"] and not markers["POINT_DATA"]:
+                diag_lines.append(f"  → 檔案在 POINTS 區段後被截斷")
+            elif markers["POINT_DATA"] and not markers["U_mean"]:
+                diag_lines.append(f"  → 檔案在 POINT_DATA 後被截斷，缺少時間平均場")
+            else:
+                diag_lines.append(f"  → 此 VTK 不含時間平均資料 (U_mean)，可能尚未開始統計")
+
+    return ok, "\n".join(diag_lines)
+
+# ── 先檢查檔案完整性 ──
+vtk_ok, vtk_diag = check_vtk_completeness(vtk_path)
+if not vtk_ok:
+    print(f"\n[ERROR] VTK 檔案輸出不完全！")
+    print(vtk_diag)
+    sys.exit(1)
+
 dims, points, scalars = parse_vtk(vtk_path)
 nx, ny, nz = dims
 print(f"[INFO] Grid: {nx} × {ny} × {nz} = {nx*ny*nz} points")
 print(f"[INFO] Available scalars: {list(scalars.keys())}")
 
 if "U_mean" not in scalars:
-    sys.exit("[ERROR] U_mean field not found in VTK. Need time-averaged data.")
+    sys.exit("[ERROR] U_mean field not found after parsing. File may be corrupted.")
 
 # Reshape to 3D arrays: VTK order is (i fastest, j, k slowest)
 # points[k*ny*nx + j*nx + i] = (x, y, z)

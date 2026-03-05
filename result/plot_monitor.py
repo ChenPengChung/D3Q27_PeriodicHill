@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Dual-axis time-history plot of Ma_max and U_bulk vs FTT."""
 
+import os
 import numpy as np
 import matplotlib as mpl
 mpl.use("Agg")
@@ -31,7 +32,8 @@ mpl.rcParams.update({
 })
 
 # ── load data ──────────────────────────────────────────────
-data = np.loadtxt("../Ustar_Force_record.dat")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+data = np.loadtxt(os.path.join(SCRIPT_DIR, "..", "Ustar_Force_record.dat"))
 ftt    = data[:, 0]
 u_star = data[:, 1]   # U_bulk / U_ref
 ma_max = data[:, 3]
@@ -76,6 +78,9 @@ ax_ma.legend(lns, labs, loc="upper right", frameon=True,
              edgecolor="0.7", fancybox=False)
 
 fig.tight_layout()
-fig.savefig("monitor_MaMa_Ubulk.png")
-fig.savefig("monitor_MaMa_Ubulk.pdf")
-print("Saved: monitor_MaMa_Ubulk.png / .pdf")
+out_png = os.path.join(SCRIPT_DIR, "monitor_MaMa_Ubulk.png")
+out_pdf = os.path.join(SCRIPT_DIR, "monitor_MaMa_Ubulk.pdf")
+fig.savefig(out_png)
+fig.savefig(out_pdf)
+print(f"Saved: {out_png}")
+print(f"Saved: {out_pdf}")
