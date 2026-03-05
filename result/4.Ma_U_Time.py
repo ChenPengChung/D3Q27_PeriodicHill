@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Dual-axis time-history plot of Ma_max and U_bulk vs FTT."""
 
-import os
+import os, sys
 import numpy as np
 import matplotlib as mpl
-mpl.use("Agg")
+if not os.environ.get('DISPLAY') and sys.platform != 'win32':
+    mpl.use('Agg')
 import matplotlib.pyplot as plt
 
 # ── style ──────────────────────────────────────────────────
@@ -79,8 +80,5 @@ ax_ma.legend(lns, labs, loc="upper right", frameon=True,
 
 fig.tight_layout()
 out_png = os.path.join(SCRIPT_DIR, "monitor_MaMa_Ubulk.png")
-out_pdf = os.path.join(SCRIPT_DIR, "monitor_MaMa_Ubulk.pdf")
 fig.savefig(out_png)
-fig.savefig(out_pdf)
 print(f"Saved: {out_png}")
-print(f"Saved: {out_pdf}")

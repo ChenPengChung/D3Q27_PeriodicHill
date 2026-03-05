@@ -31,10 +31,11 @@ Benchmark 資料來源:
 import os, sys, glob
 import numpy as np
 
-# ── attempt to use Agg backend (no GUI needed) ────────────────
+# ── auto-detect backend (Agg for headless, TkAgg for GUI) ─────
 try:
     import matplotlib as mpl
-    mpl.use("Agg")
+    if not os.environ.get('DISPLAY') and sys.platform != 'win32':
+        mpl.use('Agg')
     import matplotlib.pyplot as plt
     HAS_MPL = True
 except ImportError:
@@ -467,7 +468,5 @@ ax.set_aspect("equal", adjustable="box")
 
 fig.tight_layout()
 out_png = os.path.join(SCRIPT_DIR, "benchmark_Umean_Re700.png")
-out_pdf = os.path.join(SCRIPT_DIR, "benchmark_Umean_Re700.pdf")
 fig.savefig(out_png, bbox_inches="tight")
-fig.savefig(out_pdf, bbox_inches="tight")
-print(f"\n[OK] Saved: {os.path.basename(out_png)}, {os.path.basename(out_pdf)}")
+print(f"\n[OK] Saved: {os.path.basename(out_png)}")
