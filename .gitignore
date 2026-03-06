@@ -16,6 +16,7 @@ result/*.pvtu
 result/*.pvtp
 backup/
 statistics/
+checkpoint/
 
 # 排除資料檔案
 *.dat
