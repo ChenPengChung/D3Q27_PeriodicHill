@@ -84,7 +84,8 @@
 #define     loop        500000  // 最大時間步數
 #define     NDTMIT      50      // 每 N 步輸出 monitor 資料
 #define     NDTFRC      100     // 每 N 步更新外力項
-#define     NDTBIN      1000    // 每 N 步輸出 checkpoint + VTK
+#define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
+#define     NDTVTK      1000    // 每 N 步輸出 VTK
 
 // 外力控制器增益 (PI controller)
 // Re=100: alpha=10, Re=2800: alpha=3~14

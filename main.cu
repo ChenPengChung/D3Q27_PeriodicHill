@@ -826,10 +826,9 @@ int main(int argc, char *argv[])
 			Launch_Monitor();
 		}
 
-        // ===== VTK output + binary checkpoint (every 1000 steps) =====
-        if ( step % 1000 == 1 ) {
+        // ===== VTK output (every NDTVTK steps) + binary checkpoint (every NDTBIN steps) =====
+        if ( step % NDTVTK == 1 ) {
             SendDataToCPU( ft );
-            // Copy GPU tavg → host for VTK output
             const size_t tavg_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
             CHECK_CUDA( cudaMemcpy(u_tavg_h, u_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
             CHECK_CUDA( cudaMemcpy(v_tavg_h, v_tavg_d, tavg_bytes, cudaMemcpyDeviceToHost) );
@@ -860,7 +859,7 @@ int main(int argc, char *argv[])
 
             fileIO_velocity_vtk_merged( step );
 
-            // Binary checkpoint: f0~f18 + tavg + RS (保留 f^neq + 全部統計量，穩定重啟)
+            // Binary checkpoint (every NDTBIN steps, piggyback on VTK's SendDataToCPU)
             if (step % NDTBIN == 1) {
                 SaveBinaryCheckpoint( step );
             }
