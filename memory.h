@@ -77,9 +77,6 @@ void AllocateMemory() {
         CHECK_CUDA(cudaMemset(PU, 0, nBytes)); CHECK_CUDA(cudaMemset(PV, 0, nBytes));
         CHECK_CUDA(cudaMemset(PW, 0, nBytes)); CHECK_CUDA(cudaMemset(PP, 0, nBytes));
 
-        AllocateDeviceArray(nBytes, 1,  &KT);
-        CHECK_CUDA(cudaMemset(KT, 0, nBytes));
-
         AllocateDeviceArray(nBytes, 9,  &DUDX2, &DUDY2, &DUDZ2, &DVDX2, &DVDY2, &DVDZ2, &DWDX2, &DWDY2, &DWDZ2);
         CHECK_CUDA(cudaMemset(DUDX2, 0, nBytes)); CHECK_CUDA(cudaMemset(DUDY2, 0, nBytes));
         CHECK_CUDA(cudaMemset(DUDZ2, 0, nBytes)); CHECK_CUDA(cudaMemset(DVDX2, 0, nBytes));
@@ -87,9 +84,10 @@ void AllocateMemory() {
         CHECK_CUDA(cudaMemset(DWDX2, 0, nBytes)); CHECK_CUDA(cudaMemset(DWDY2, 0, nBytes));
         CHECK_CUDA(cudaMemset(DWDZ2, 0, nBytes));
 
-    	AllocateDeviceArray(nBytes, 9,  &UUU,   &UUV,   &UUW,   &VVU,   &VVV,   &VVW,   &WWU,   &WWV,   &WWW);
+    	AllocateDeviceArray(nBytes, 10, &UUU,   &UUV,   &UUW,   &UVW,   &VVU,   &VVV,   &VVW,   &WWU,   &WWV,   &WWW);
         CHECK_CUDA(cudaMemset(UUU, 0, nBytes)); CHECK_CUDA(cudaMemset(UUV, 0, nBytes));
-        CHECK_CUDA(cudaMemset(UUW, 0, nBytes)); CHECK_CUDA(cudaMemset(VVU, 0, nBytes));
+        CHECK_CUDA(cudaMemset(UUW, 0, nBytes)); CHECK_CUDA(cudaMemset(UVW, 0, nBytes));
+        CHECK_CUDA(cudaMemset(VVU, 0, nBytes));
         CHECK_CUDA(cudaMemset(VVV, 0, nBytes)); CHECK_CUDA(cudaMemset(VVW, 0, nBytes));
         CHECK_CUDA(cudaMemset(WWU, 0, nBytes)); CHECK_CUDA(cudaMemset(WWV, 0, nBytes));
         CHECK_CUDA(cudaMemset(WWW, 0, nBytes));
@@ -145,6 +143,13 @@ void AllocateMemory() {
         CHECK_CUDA( cudaMemset(u_tavg_d, 0, tavg_bytes) );
         CHECK_CUDA( cudaMemset(v_tavg_d, 0, tavg_bytes) );
         CHECK_CUDA( cudaMemset(w_tavg_d, 0, tavg_bytes) );
+        // Vorticity mean accumulation (same Stage 1 window)
+        CHECK_CUDA( cudaMalloc(&ox_tavg_d, tavg_bytes) );
+        CHECK_CUDA( cudaMalloc(&oy_tavg_d, tavg_bytes) );
+        CHECK_CUDA( cudaMalloc(&oz_tavg_d, tavg_bytes) );
+        CHECK_CUDA( cudaMemset(ox_tavg_d, 0, tavg_bytes) );
+        CHECK_CUDA( cudaMemset(oy_tavg_d, 0, tavg_bytes) );
+        CHECK_CUDA( cudaMemset(oz_tavg_d, 0, tavg_bytes) );
     }
 
     // GPU reduction partial sums for mass conservation (replaces SendDataToCPU every step)
@@ -199,9 +204,8 @@ void FreeSource() {
     if( TBSWITCH ) {
         FreeDeviceArray(4,  U,  V,  W,  P);
         FreeDeviceArray(10, UU, UV, UW, VV, VW, WW, PU, PV, PW, PP);
-        FreeDeviceArray(1,  KT);
         FreeDeviceArray(9,  DUDX2, DUDY2, DUDZ2, DVDX2, DVDY2, DVDZ2, DWDX2, DWDY2, DWDZ2);
-        FreeDeviceArray(9,  UUU, UUV, UUW, VVU, VVV, VVW, WWU, WWV, WWW);
+        FreeDeviceArray(10, UUU, UUV, UUW, UVW, VVU, VVV, VVW, WWU, WWV, WWW);
     }
 
     // GPU reduction partial sums
@@ -223,8 +227,9 @@ void FreeSource() {
     FreeDeviceArray(2,  dt_local_d, omega_local_d);
     // GILBM two-pass arrays
     FreeDeviceArray(3,  f_pc_d, feq_d, omegadt_local_d);
-    // Time-average accumulation (GPU)
+    // Time-average accumulation (GPU) + vorticity mean
     FreeDeviceArray(3,  u_tavg_d, v_tavg_d, w_tavg_d);
+    FreeDeviceArray(3,  ox_tavg_d, oy_tavg_d, oz_tavg_d);
 
     for( int i = 0; i < 3; i++ ){
         FreeHostArray(  3,  Xdep_h[i], Ydep_h[i], Zdep_h[i]);

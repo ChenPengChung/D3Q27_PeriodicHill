@@ -245,8 +245,8 @@ __device__ bool NeedsBoundaryCondition(int alpha, double dk_dy, double dk_dz, bo
 
 // Chapman-Enskog BC (Imamura Eq. A.9, 6 項張量展開, c=1 約定)
 // f = w_α · ρ_wall · (1 + C_α)
-// C_α = -ω·Δt × Σ [3·c_iα·c_iβ - δ_αβ] · (du_α/dk)·(dk/dx_β)
-// 注意: c=1 時係數為 3 (= 1/c_s^4 = 1/(1/3)^2 = 9 → ×c² = 9×(1/3) = 3)
+// C_α = -ω·Δt × Σ [3·e_iα·e_iβ - δ_αβ] · (du_α/dk)·(dk/dx_β)
+// 係數 3 來自 Eq. A.9 的 3/c²: 3·c_i·c_i/c² = 3·(ce)(ce)/c² = 3·e·e
 // 輸入: du_dk, dv_dk, dw_dk (二階單邊差分), dk_dy, dk_dz, omega=omega_A, localtimestep=dt_A
 __device__ double ChapmanEnskogBC(int alpha, double rho_wall,
     double du_dk, double dv_dk, double dw_dk,
@@ -343,10 +343,12 @@ for step = 0..loop:
 | **Step 3: 碰撞 (Eq.3)** | ✅ | BGK with 1/omega_A → f_pc |
 | **Kernel 包裝函數** | ✅ | Full/Buffer/Init_FPC/Init_Feq/Init_OmegaDt |
 
-### 模擬狀態
+### 模擬狀態（2026-03-06 更新）
 - 所有診斷測試通過 (Phase 0, 1.5, 2, 3, 4)
 - 已可完整運行，VTK 輸出正常
-- Force driving 已啟用，Ub_avg 從 0 開始增長
+- Force driving 已啟用，88b9ba7 穩定運行至 FTT 24.8+ (step 728001)
+- CE BC 張量係數已確認為 3（Imamura Eq. A.9 推導，係數 9 會導致發散）
+- **待查**：係數 3 下仍有發散案例，需排除 VTK restart / force controller / 其他因素
 
 ### MPI 同步修正（已完成）
 
@@ -370,9 +372,14 @@ for step = 0..loop:
 
 ### 已完成的驗證 (Audit)
 - **feq 審計**: 確認 `compute_feq_alpha` 在曲線坐標 GILBM 中不需 Jacobian 修正
-- **CE BC 張量**: c=1 約定下係數為 `3.0` (非 `9.0`)
-- **CE BC 前置因子修正**: 原版 `-omega_local*dt` 等同 `-τ*Δt`，偏大 35%；
-  已修正為 `-3*(omega_local-0.5)*dt = -3*(τ-0.5)*Δt = -9ν`（與網格無關的物理常數）
+- **CE BC 張量係數 = 3**（已由 Imamura Appendix A 確認，見下方推導）
+  - Eq. (A.9): `3·U_{i,α}·U_{i,β}/c²`，壁面 U=c·e → `3c²ee/c² = 3ee`
+  - 注意：分母是 `c²`（streaming speed），不是 `c_s²`（sound speed）
+  - 若誤用 `3/c_s² = 9/c²` → 係數 9 → 壁面修正量 3× 過大 → 發散
+- **CE BC 前置因子 = -ω·Δt = -τ·Δt**（Imamura Eq. A.9 原式，一階 CE 展開）
+  - ω = τ/Δt（Imamura Eq. 1），所以 ω·Δt = τ（LBM 無因次鬆弛參數）
+  - 代碼: `-(omega_local) * localtimestep`（omega_local = τ_local）
+  - 之前誤改為 `-(omega_local-0.5)*dt` 已撤回（Bug Fix #18 REVERTED）
 - **位移公式**: δη/δξ 以 dt_global 預計算，kernel 中乘 a_local 縮放至 dt_local
 - **Departure point clamp**: CFL < 1 保證 |位移| < 1 格，clamp 為安全網不會觸發
 
@@ -386,20 +393,26 @@ R_AB = (ω_A·Δt_A) / (ω_B·Δt_B) = omegadt_A / omegadt_B
 ```
 uniform grid 時 R_AB = 1 → f̃ = f（退化為標準 LBM）
 
-### 壁面 BC (Chapman-Enskog, Eq. A.9, c=1)
+### 壁面 BC (Chapman-Enskog, Imamura Eq. A.9, c=1)
 ```
 f_α = w_α · ρ_wall · (1 + C_α)
-C_α = -3·(τ - 0.5)·Δt × { 6 項 tensor 展開 }
-    = -3*(omega_local - 0.5)*dt × Σ_α,β [3·c_iα·c_iβ - δ_αβ] · (du_α/dk)·(dk/dx_β)
+C_α = -ω·Δt × Σ_α,β [3·e_iα·e_iβ - δ_αβ] · (du_α/dk)·(dk/dx_β)
 ```
-- **前置因子已修正**: 原版誤用 `-τ·Δt`，正確應為 `-3(τ-0.5)·Δt = -9ν`（物理常數）
-  - omega_local 在代碼中 = τ（0.5 + 3ν/dt），不是 1/τ
-  - 舊版比正確值偏大 τ/[3(τ-0.5)] = 1.35 倍（壁面 τ=0.664 時）
-  - τ=0.5 時正確公式給 C=0（無黏極限），舊版錯誤給出 C≠0
-- 係數 3 = 1/c_s^2 (c=1 時 c_s²=1/3 → 1/c_s^2=3)；c≠1 時為 9·c_iα·c_iβ - 3·δ_αβ
+- **前置因子**: `-ω·Δt = -τ·Δt`（Imamura Eq. A.9 原式，一階 CE 展開）
+  - omega_local 在代碼中 = τ（= 0.5 + 3ν/dt），即 Imamura 的 ω
+  - 代碼: `C_alpha *= -(omega_local) * localtimestep`
+- **張量係數 = 3**（來自 Imamura Eq. A.9 的 `3/c²`，NOT `3/c_s²`）
+  - 推導: $3 c_{i,α} c_{i,β}/c^2 = 3(c·e_α)(c·e_β)/c^2 = 3 e_α e_β$（c² 抵消）
+  - 若誤用 `3/c_s² = 9/c²` → 係數 9 → **錯誤！已驗證會導致發散**
+  - 紙上驗證: Imamura p.648 Eq.11 明確 `c_s ≡ c/√3`，c ≠ c_s
 - `du/dk|wall = u[k±1]` (一階差分, u[wall]=0; 二階版本 `(4·u[k±1] - u[k±2])/2` 已註解保留)
 - `rho_wall = rho[k=4]` (零法向壓力梯度近似, 壁面 k=3)
 - dk/dx = 0 → 只有 β=y,z 存活 → 3α × 2β = 6 項
+
+### 壁面 BC 穩定性分析（2026-03-06）
+- 係數 9（錯誤）→ FTT 26.15 發散（Ma: 0.18→12022 僅 1750 步）
+- 係數 3（正確）→ 88b9ba7 穩定運行至 FTT 24.8+
+- **但係數 3 仍有發散案例**：需進一步調查原因（可能與 VTK restart、force controller 或其他因素有關）
 
 ### 位移公式
 ```

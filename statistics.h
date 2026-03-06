@@ -123,8 +123,8 @@ __global__ void MeanVars(
           double *U,        double *V,        double *W,        double *P,
           double *UU,       double *UV,       double *UW,       double *VV,       double *VW,       double *WW,
           double *PU,       double *PV,       double *PW,       double *PP,
-          double *KT,
           double *UUU,      double *UUV,      double *UUW,
+          double *UVW_acc,
           double *VVU,      double *VVV,      double *VVW,
           double *WWU,      double *WWV,      double *WWW,
     const double *u,  const double *v,  const double *w,  const double *rho  )
@@ -159,11 +159,10 @@ __global__ void MeanVars(
     PV[index] += p1 * v1;
     PW[index] += p1 * w1;
 
-    KT[index] += 0.5*(u1*u1 + v1*v1 + w1*w1);
-
     UUU[index] += u1 * u1 * u1;
     UUV[index] += u1 * u1 * v1;
     UUW[index] += u1 * u1 * w1;
+    UVW_acc[index] += u1 * v1 * w1;
     VVU[index] += v1 * v1 * u1;
     VVV[index] += v1 * v1 * v1;
     VVW[index] += v1 * v1 * w1;
@@ -244,8 +243,8 @@ void Launch_TurbulentSum(double *f_new[19]) {
 
     MeanVars<<<griddimTB, blockdimTB, 0, tbsum_stream[0]>>>(
         U,   V,   W,   P,
-        UU,  UV,  UW,  VV,  VW,  WW,  PU,  PV,  PW,  PP,  KT,
-        UUU, UUV, UUW, VVU, VVV, VVW, WWU, WWV, WWW,
+        UU,  UV,  UW,  VV,  VW,  WW,  PU,  PV,  PW,  PP,
+        UUU, UUV, UUW, UVW, VVU, VVV, VVW, WWU, WWV, WWW,
         u, v, w, rho_d
     );
     CHECK_CUDA( cudaGetLastError() );

@@ -32,14 +32,13 @@ void PreCheckDir() {
     //湍流統計//35 個子資料夾 (32 active + 3 OMEGA reserved)
 	ExistOrCreateDir("statistics");
     if ( TBSWITCH ) {
-		const int num_files = 35;
+		const int num_files = 36;
 		std::string name[num_files] = {
         "U","V","W","P",//4
         "UU","UV","UW","VV","VW","WW",//6
-        "PU","PV","PW",//3
-        "KT",//1
+        "PU","PV","PW","PP",//4
         "DUDX2","DUDY2","DUDZ2","DVDX2","DVDY2","DVDZ2","DWDX2","DWDY2","DWDZ2", //9
-        "UUU","UUV","UUW","VVU","VVV","VVW","WWU","WWV","WWW",//9
+        "UUU","UUV","UUW","UVW","VVU","VVV","VVW","WWU","WWV","WWW",//10
         "OMEGA_X","OMEGA_Y","OMEGA_Z"};//3
 		for( int i = 0; i < num_files; i++ ) {
 			std::string fname = "./statistics/" + name[i];
@@ -64,6 +63,19 @@ void result_writebin(double* arr_h, const char *fname, const int myid){
     }
 
     // 寫入資料
+    file.write(reinterpret_cast<char*>(arr_h), sizeof(double) * NX6 * NZ6 * NYD6);
+    file.close();
+}
+// 寫入指定資料夾版本 (for binary checkpoint)
+void result_writebin_to(double* arr_h, const char *folder, const char *fname, const int myid){
+    ostringstream oss;
+    oss << "./" << folder << "/" << fname << "_" << myid << ".bin";
+    string path = oss.str();
+    ofstream file(path.c_str(), ios::binary);
+    if (!file) {
+        cout << "Checkpoint write error: " << path << endl;
+        CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
+    }
     file.write(reinterpret_cast<char*>(arr_h), sizeof(double) * NX6 * NZ6 * NYD6);
     file.close();
 }
@@ -178,6 +190,239 @@ void result_readbin_velocityandf()
     result_readbin(fh_p[17], result, "f17", myid);
     result_readbin(fh_p[18], result, "f18", myid);
 }
+
+//=============================================================================
+// Binary Checkpoint I/O — 保留完整 f 分佈函數 (含 f^neq)
+//=============================================================================
+
+// 週期性二進制 checkpoint (新格式, single accu_count):
+//   永遠寫: f00~f18 + rho + meta.dat (20 files + metadata)
+//   FTT >= 20 (accu_count > 0): + 33 統計量累加器
+//   合計: 19(f) + 1(rho) + 33(stats) = 53 .bin + meta.dat
+void SaveBinaryCheckpoint(int ckpt_step) {
+    // 1. 建立資料夾 ./checkpoint/step_XXXXXX/
+    ostringstream dir_oss;
+    dir_oss << "checkpoint/step_" << ckpt_step;
+    string dir_name = dir_oss.str();
+    if (myid == 0) {
+        ExistOrCreateDir("checkpoint");
+        ExistOrCreateDir(dir_name.c_str());
+    }
+    CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
+
+    // 2. 寫入 f00~f18 (分佈函數，含 f^neq)
+    for (int q = 0; q < 19; q++) {
+        char fname[8];
+        sprintf(fname, "f%02d", q);
+        result_writebin_to(fh_p[q], dir_name.c_str(), fname, myid);
+    }
+
+    // 3. 寫入 rho (瞬時密度)
+    result_writebin_to(rho_h_p, dir_name.c_str(), "rho", myid);
+
+    // 4. 寫入 32 統計量累加器 (FTT >= 20, accu_count > 0)
+    if (accu_count > 0 && (int)TBSWITCH) {
+        const size_t rs_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
+        double *rs_tmp = (double*)malloc(rs_bytes);
+
+        #define SAVE_STAT(gpu_ptr, name) \
+            CHECK_CUDA(cudaMemcpy(rs_tmp, gpu_ptr, rs_bytes, cudaMemcpyDeviceToHost)); \
+            result_writebin_to(rs_tmp, dir_name.c_str(), name, myid)
+
+        // 一階矩 (3)
+        SAVE_STAT(U, "sum_u");     SAVE_STAT(V, "sum_v");     SAVE_STAT(W, "sum_w");
+        // 二階矩 (6)
+        SAVE_STAT(UU, "sum_uu");   SAVE_STAT(UV, "sum_uv");   SAVE_STAT(UW, "sum_uw");
+        SAVE_STAT(VV, "sum_vv");   SAVE_STAT(VW, "sum_vw");   SAVE_STAT(WW, "sum_ww");
+        // 三階矩 (10)
+        SAVE_STAT(UUU, "sum_uuu"); SAVE_STAT(UUV, "sum_uuv"); SAVE_STAT(UUW, "sum_uuw");
+        SAVE_STAT(VVU, "sum_uvv"); SAVE_STAT(UVW, "sum_uvw"); SAVE_STAT(WWU, "sum_uww");
+        SAVE_STAT(VVV, "sum_vvv"); SAVE_STAT(VVW, "sum_vvw"); SAVE_STAT(WWV, "sum_vww");
+        SAVE_STAT(WWW, "sum_www");
+        // 壓力 (5)
+        SAVE_STAT(P, "sum_P");     SAVE_STAT(PP, "sum_PP");
+        SAVE_STAT(PU, "sum_Pu");   SAVE_STAT(PV, "sum_Pv");   SAVE_STAT(PW, "sum_Pw");
+        // 梯度平方 (9)
+        SAVE_STAT(DUDX2, "sum_dudx2"); SAVE_STAT(DUDY2, "sum_dudy2"); SAVE_STAT(DUDZ2, "sum_dudz2");
+        SAVE_STAT(DVDX2, "sum_dvdx2"); SAVE_STAT(DVDY2, "sum_dvdy2"); SAVE_STAT(DVDZ2, "sum_dvdz2");
+        SAVE_STAT(DWDX2, "sum_dwdx2"); SAVE_STAT(DWDY2, "sum_dwdy2"); SAVE_STAT(DWDZ2, "sum_dwdz2");
+
+        #undef SAVE_STAT
+        free(rs_tmp);
+    }
+
+    // 5. meta.dat (rank 0 only)
+    if (myid == 0) {
+        double FTT_ckpt = (double)ckpt_step * dt_global / (double)flow_through_time;
+        ostringstream meta_path;
+        meta_path << "./" << dir_name << "/metadata.dat";
+        ofstream meta(meta_path.str().c_str());
+        meta << "step=" << ckpt_step << "\n";
+        meta << fixed << setprecision(15);
+        meta << "FTT=" << FTT_ckpt << "\n";
+        meta << "accu_count=" << accu_count << "\n";
+        meta << "Force=" << Force_h[0] << "\n";
+        meta << "dt_global=" << dt_global << "\n";
+        meta.close();
+        printf("[CHECKPOINT] Saved: %s/ (FTT=%.2f, accu=%d, %d files)\n",
+               dir_name.c_str(), FTT_ckpt, accu_count,
+               20 + ((accu_count > 0 && (int)TBSWITCH) ? 33 : 0));
+    }
+}
+
+// 從 binary checkpoint 讀取 (新格式):
+//   永遠讀: f00~f18 + rho + meta.dat
+//   accu_count > 0: + 33 統計量累加器
+//   u,v,w 宏觀量從 f0~f18 即時計算 (D3Q19 moments)
+void LoadBinaryCheckpoint(const char* checkpoint_dir) {
+    PreCheckDir();
+
+    // D3Q19 速度向量 (for computing macroscopic from f)
+    const int e_loc[19][3] = {
+        {0,0,0},{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
+        {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
+        {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
+        {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
+    };
+
+    // 1. 讀取 metadata
+    {
+        ostringstream meta_path;
+        meta_path << "./" << checkpoint_dir << "/metadata.dat";
+        ifstream meta(meta_path.str().c_str());
+        if (!meta.is_open()) {
+            if (myid == 0) cout << "ERROR: Cannot open " << meta_path.str() << endl;
+            CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
+        }
+        string line;
+        while (getline(meta, line)) {
+            if (line.find("step=") == 0)
+                sscanf(line.c_str() + 5, "%d", &restart_step);
+            else if (line.find("Force=") == 0)
+                sscanf(line.c_str() + 6, "%lf", &Force_h[0]);
+            else if (line.find("accu_count=") == 0)
+                sscanf(line.c_str() + 11, "%d", &accu_count);
+            // Backward compat: old format had vel_avg_count/rey_avg_count
+            else if (line.find("vel_avg_count=") == 0) {
+                int old_val = 0;
+                sscanf(line.c_str() + 14, "%d", &old_val);
+                if (accu_count == 0) accu_count = old_val;  // use vel as fallback
+            }
+            else if (line.find("rey_avg_count=") == 0) {
+                int old_val = 0;
+                sscanf(line.c_str() + 14, "%d", &old_val);
+                if (old_val > 0 && accu_count == 0) accu_count = old_val;
+            }
+        }
+        meta.close();
+    }
+    CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+
+    // 2. 讀取 f00~f18 (含完整 f^neq!)
+    for (int q = 0; q < 19; q++) {
+        char fname[8];
+        sprintf(fname, "f%02d", q);
+        // Try new format first (f00), fall back to old format (f0)
+        ostringstream probe;
+        probe << "./" << checkpoint_dir << "/" << fname << "_" << myid << ".bin";
+        ifstream test_file(probe.str().c_str(), ios::binary);
+        if (test_file.is_open()) {
+            test_file.close();
+            result_readbin(fh_p[q], checkpoint_dir, fname, myid);
+        } else {
+            // Old format: f0, f1, ..., f18
+            ostringstream old_fname;
+            old_fname << "f" << q;
+            result_readbin(fh_p[q], checkpoint_dir, old_fname.str().c_str(), myid);
+        }
+    }
+
+    // 3. 讀取 rho
+    result_readbin(rho_h_p, checkpoint_dir, "rho", myid);
+
+    // 4. 從 f0~f18 計算 u, v, w (不再從檔案讀取)
+    {
+        const size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
+        for (size_t idx = 0; idx < nTotal; idx++) {
+            double rho_loc = rho_h_p[idx];
+            double mx = 0.0, my = 0.0, mz = 0.0;
+            for (int q = 0; q < 19; q++) {
+                double fq = fh_p[q][idx];
+                mx += e_loc[q][0] * fq;
+                my += e_loc[q][1] * fq;
+                mz += e_loc[q][2] * fq;
+            }
+            if (rho_loc > 1e-15) {
+                u_h_p[idx] = mx / rho_loc;
+                v_h_p[idx] = my / rho_loc;
+                w_h_p[idx] = mz / rho_loc;
+            } else {
+                u_h_p[idx] = 0.0;
+                v_h_p[idx] = 0.0;
+                w_h_p[idx] = 0.0;
+            }
+        }
+        if (myid == 0) printf("[CHECKPOINT] u,v,w computed from f00~f18 (D3Q19 moments)\n");
+    }
+
+    // 5. 讀取 32 統計量累加器 (if accu_count > 0)
+    if (accu_count > 0 && (int)TBSWITCH) {
+        const size_t rs_bytes = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
+        double *rs_tmp = (double*)malloc(rs_bytes);
+
+        #define LOAD_STAT(gpu_ptr, name, old_name) { \
+            ostringstream _probe; \
+            _probe << "./" << checkpoint_dir << "/" << name << "_" << myid << ".bin"; \
+            ifstream _test(_probe.str().c_str(), ios::binary); \
+            if (_test.is_open()) { _test.close(); \
+                result_readbin(rs_tmp, checkpoint_dir, name, myid); \
+            } else { \
+                result_readbin(rs_tmp, checkpoint_dir, old_name, myid); \
+            } \
+            CHECK_CUDA(cudaMemcpy(gpu_ptr, rs_tmp, rs_bytes, cudaMemcpyHostToDevice)); \
+        }
+
+        // 一階矩 (3)
+        LOAD_STAT(U, "sum_u", "RS_U");   LOAD_STAT(V, "sum_v", "RS_V");   LOAD_STAT(W, "sum_w", "RS_W");
+        // 二階矩 (6)
+        LOAD_STAT(UU, "sum_uu", "RS_UU"); LOAD_STAT(UV, "sum_uv", "RS_UV"); LOAD_STAT(UW, "sum_uw", "RS_UW");
+        LOAD_STAT(VV, "sum_vv", "RS_VV"); LOAD_STAT(VW, "sum_vw", "RS_VW"); LOAD_STAT(WW, "sum_ww", "RS_WW");
+        // 三階矩 (10)
+        LOAD_STAT(UUU, "sum_uuu", "RS_UUU"); LOAD_STAT(UUV, "sum_uuv", "RS_UUV"); LOAD_STAT(UUW, "sum_uuw", "RS_UUW");
+        LOAD_STAT(VVU, "sum_uvv", "RS_VVU"); LOAD_STAT(UVW, "sum_uvw", "RS_UVW"); LOAD_STAT(WWU, "sum_uww", "RS_WWU");
+        LOAD_STAT(VVV, "sum_vvv", "RS_VVV"); LOAD_STAT(VVW, "sum_vvw", "RS_VVW"); LOAD_STAT(WWV, "sum_vww", "RS_WWV");
+        LOAD_STAT(WWW, "sum_www", "RS_WWW");
+        // 壓力 (5)
+        LOAD_STAT(P, "sum_P", "RS_P");   LOAD_STAT(PP, "sum_PP", "RS_PP");
+        LOAD_STAT(PU, "sum_Pu", "RS_PU"); LOAD_STAT(PV, "sum_Pv", "RS_PV"); LOAD_STAT(PW, "sum_Pw", "RS_PW");
+        // 梯度平方 (9)
+        LOAD_STAT(DUDX2, "sum_dudx2", "RS_DUDX2"); LOAD_STAT(DUDY2, "sum_dudy2", "RS_DUDY2"); LOAD_STAT(DUDZ2, "sum_dudz2", "RS_DUDZ2");
+        LOAD_STAT(DVDX2, "sum_dvdx2", "RS_DVDX2"); LOAD_STAT(DVDY2, "sum_dvdy2", "RS_DVDY2"); LOAD_STAT(DVDZ2, "sum_dvdz2", "RS_DVDZ2");
+        LOAD_STAT(DWDX2, "sum_dwdx2", "RS_DWDX2"); LOAD_STAT(DWDY2, "sum_dwdy2", "RS_DWDY2"); LOAD_STAT(DWDZ2, "sum_dwdz2", "RS_DWDZ2");
+
+        #undef LOAD_STAT
+        free(rs_tmp);
+
+        // Copy sum_u/v/w → u_tavg_d (VTK backward compat: AccumulateTavg uses u_tavg)
+        if (u_tavg_h != NULL) {
+            CHECK_CUDA( cudaMemcpy(u_tavg_h, U, rs_bytes, cudaMemcpyDeviceToHost) );
+            CHECK_CUDA( cudaMemcpy(v_tavg_h, V, rs_bytes, cudaMemcpyDeviceToHost) );
+            CHECK_CUDA( cudaMemcpy(w_tavg_h, W, rs_bytes, cudaMemcpyDeviceToHost) );
+            CHECK_CUDA( cudaMemcpy(u_tavg_d, U, rs_bytes, cudaMemcpyDeviceToDevice) );
+            CHECK_CUDA( cudaMemcpy(v_tavg_d, V, rs_bytes, cudaMemcpyDeviceToDevice) );
+            CHECK_CUDA( cudaMemcpy(w_tavg_d, W, rs_bytes, cudaMemcpyDeviceToDevice) );
+        }
+
+        if (myid == 0)
+            printf("[CHECKPOINT] Statistics loaded: 33 arrays from %s/ (accu_count=%d)\n",
+                   checkpoint_dir, accu_count);
+    }
+
+    if (myid == 0)
+        printf("[CHECKPOINT] Loaded: %s/ → step=%d, Force=%.6e, accu=%d\n",
+               checkpoint_dir, restart_step, Force_h[0], accu_count);
+}
+
 /*第三段:輸出湍統計量*/
 //1.statistics系列輔助函數1.(寫主機端資料入bin)
 void statistics_writebin(double *arr_d, const char *fname, const int myid){
@@ -231,7 +476,7 @@ void statistics_readbin(double * arr_d, const char *fname, const int myid){
 void statistics_writebin_stress(){
     if( myid == 0 ) {
         ofstream fp_accu("./statistics/accu.dat");
-        fp_accu << rey_avg_count;
+        fp_accu << accu_count;
         fp_accu.close();
     }
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
@@ -248,7 +493,7 @@ void statistics_writebin_stress(){
 	statistics_writebin(PU, "PU", myid);
 	statistics_writebin(PV, "PV", myid);
 	statistics_writebin(PW, "PW", myid);
-	statistics_writebin(KT, "KT", myid);//10.
+	statistics_writebin(PP, "PP", myid);//5
 	statistics_writebin(DUDX2, "DUDX2", myid);
 	statistics_writebin(DUDY2, "DUDY2", myid);
 	statistics_writebin(DUDZ2, "DUDZ2", myid);
@@ -261,6 +506,7 @@ void statistics_writebin_stress(){
 	statistics_writebin(UUU, "UUU", myid);
 	statistics_writebin(UUV, "UUV", myid);
 	statistics_writebin(UUW, "UUW", myid);
+	statistics_writebin(UVW, "UVW", myid);
 	statistics_writebin(VVU, "VVU", myid);
 	statistics_writebin(VVV, "VVV", myid);
 	statistics_writebin(VVW, "VVW", myid);
@@ -274,9 +520,9 @@ void statistics_writebin_stress(){
 //4.statistics系列主函數2.
 void statistics_readbin_stress() {
     ifstream fp_accu("./statistics/accu.dat");
-    fp_accu >> rey_avg_count;
+    fp_accu >> accu_count;
     fp_accu.close();
-    if (myid == 0) printf("  statistics_readbin_stress: rey_avg_count=%d loaded from accu.dat\n", rey_avg_count);
+    if (myid == 0) printf("  statistics_readbin_stress: accu_count=%d loaded from accu.dat\n", accu_count);
 
     statistics_readbin(U, "U", myid);
 	statistics_readbin(V, "V", myid);
@@ -291,7 +537,7 @@ void statistics_readbin_stress() {
 	statistics_readbin(PU, "PU", myid);
 	statistics_readbin(PV, "PV", myid);
 	statistics_readbin(PW, "PW", myid);
-	statistics_readbin(KT, "KT", myid);
+	statistics_readbin(PP, "PP", myid);
 	statistics_readbin(DUDX2, "DUDX2", myid);
 	statistics_readbin(DUDY2, "DUDY2", myid);
 	statistics_readbin(DUDZ2, "DUDZ2", myid);
@@ -304,6 +550,7 @@ void statistics_readbin_stress() {
 	statistics_readbin(UUU, "UUU", myid);
 	statistics_readbin(UUV, "UUV", myid);
 	statistics_readbin(UUW, "UUW", myid);
+	statistics_readbin(UVW, "UVW", myid);
 	statistics_readbin(VVU, "VVU", myid);
 	statistics_readbin(VVV, "VVV", myid);
 	statistics_readbin(VVW, "VVW", myid);
@@ -433,36 +680,34 @@ void statistics_readbin_merged(double *arr_d, const char *fname) {
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }
 
-// Master function: write all 32 statistics as merged binary
-// NOTE: U, V, W, P (1st-order means) are included because they are accumulated
-// in the SAME time window as UU, UV, ... (Stage 2, FTT >= FTT_STAGE2).
-// RS normalization requires: <u'u'> = <uu>/N - (<u>/N)^2
-// If U is not saved, <u> starts from 0 on restart → wrong RS in all subsequent VTK.
-// u_tavg (Stage 1, FTT >= FTT_STAGE1) has a DIFFERENT time window and count.
+// Master function: write all 33 statistics as merged binary (32 user-spec + UVW)
+// All statistics share single accu_count (FTT >= FTT_STATS_START)
 void statistics_writebin_merged_stress() {
-    // Enhanced accu.dat: rey_avg_count vel_avg_count step
-    // rey_avg_count: essential for RS normalization
-    // vel_avg_count + step: metadata for cross-checking and FTT calculation
     if (myid == 0) {
         ofstream fp_accu("./statistics/accu.dat");
-        fp_accu << rey_avg_count << " " << vel_avg_count << " " << step;
+        fp_accu << accu_count << " " << step;
         fp_accu.close();
     }
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
+    // 一階矩 (3)
     statistics_writebin_merged(U, "U");
     statistics_writebin_merged(V, "V");
     statistics_writebin_merged(W, "W");
+    // 壓力 (2: P, PP)
     statistics_writebin_merged(P, "P");
+    statistics_writebin_merged(PP, "PP");
+    // 二階矩 (6)
     statistics_writebin_merged(UU, "UU");
     statistics_writebin_merged(UV, "UV");
     statistics_writebin_merged(UW, "UW");
     statistics_writebin_merged(VV, "VV");
     statistics_writebin_merged(VW, "VW");
     statistics_writebin_merged(WW, "WW");
+    // 壓力交叉項 (3)
     statistics_writebin_merged(PU, "PU");
     statistics_writebin_merged(PV, "PV");
     statistics_writebin_merged(PW, "PW");
-    statistics_writebin_merged(KT, "KT");
+    // 梯度平方 (9)
     statistics_writebin_merged(DUDX2, "DUDX2");
     statistics_writebin_merged(DUDY2, "DUDY2");
     statistics_writebin_merged(DUDZ2, "DUDZ2");
@@ -472,45 +717,41 @@ void statistics_writebin_merged_stress() {
     statistics_writebin_merged(DWDX2, "DWDX2");
     statistics_writebin_merged(DWDY2, "DWDY2");
     statistics_writebin_merged(DWDZ2, "DWDZ2");
+    // 三階矩 (10, includes UVW)
     statistics_writebin_merged(UUU, "UUU");
     statistics_writebin_merged(UUV, "UUV");
     statistics_writebin_merged(UUW, "UUW");
+    statistics_writebin_merged(UVW, "UVW");
     statistics_writebin_merged(VVU, "VVU");
     statistics_writebin_merged(VVV, "VVV");
     statistics_writebin_merged(VVW, "VVW");
     statistics_writebin_merged(WWU, "WWU");
     statistics_writebin_merged(WWV, "WWV");
     statistics_writebin_merged(WWW, "WWW");
-    if (myid == 0) printf("  statistics_writebin_merged_stress: 32 merged .bin files written (rey=%d, vel=%d, step=%d)\n",
-                          rey_avg_count, vel_avg_count, step);
+    if (myid == 0) printf("  statistics_writebin_merged_stress: 33 merged .bin files written (accu=%d, step=%d)\n",
+                          accu_count, step);
 }
 
-// Master function: read all 32 statistics from merged binary (any jp)
+// Master function: read all 33 statistics from merged binary (any jp)
 void statistics_readbin_merged_stress() {
-    // Enhanced accu.dat format: "rey_avg_count vel_avg_count step"
-    // Backward compatible: old format has only "rey_avg_count"
+    // accu.dat format: "accu_count step" (backward compat: old "rey_avg_count [vel step]")
     ifstream fp_accu("./statistics/accu.dat");
     if (!fp_accu.is_open()) {
-        if (myid == 0) printf("[WARNING] statistics_readbin_merged_stress: accu.dat not found, rey_avg_count unchanged.\n");
+        if (myid == 0) printf("[WARNING] statistics_readbin_merged_stress: accu.dat not found, accu_count unchanged.\n");
         return;
     }
-    int bin_vel_count = -1, bin_step = -1;
-    fp_accu >> rey_avg_count;
-    fp_accu >> bin_vel_count >> bin_step;  // may fail silently if old format
+    int bin_step = -1;
+    fp_accu >> accu_count;
+    fp_accu >> bin_step;  // may fail silently if old format
     fp_accu.close();
-    if (myid == 0) {
-        if (bin_vel_count >= 0)
-            printf("  statistics_readbin_merged_stress: rey=%d, vel=%d, step=%d from accu.dat\n",
-                   rey_avg_count, bin_vel_count, bin_step);
-        else
-            printf("  statistics_readbin_merged_stress: rey_avg_count=%d from accu.dat (legacy format)\n",
-                   rey_avg_count);
-    }
+    if (myid == 0)
+        printf("  statistics_readbin_merged_stress: accu=%d, step=%d from accu.dat\n", accu_count, bin_step);
 
     statistics_readbin_merged(U, "U");
     statistics_readbin_merged(V, "V");
     statistics_readbin_merged(W, "W");
     statistics_readbin_merged(P, "P");
+    statistics_readbin_merged(PP, "PP");
     statistics_readbin_merged(UU, "UU");
     statistics_readbin_merged(UV, "UV");
     statistics_readbin_merged(UW, "UW");
@@ -520,7 +761,6 @@ void statistics_readbin_merged_stress() {
     statistics_readbin_merged(PU, "PU");
     statistics_readbin_merged(PV, "PV");
     statistics_readbin_merged(PW, "PW");
-    statistics_readbin_merged(KT, "KT");
     statistics_readbin_merged(DUDX2, "DUDX2");
     statistics_readbin_merged(DUDY2, "DUDY2");
     statistics_readbin_merged(DUDZ2, "DUDZ2");
@@ -533,6 +773,7 @@ void statistics_readbin_merged_stress() {
     statistics_readbin_merged(UUU, "UUU");
     statistics_readbin_merged(UUV, "UUV");
     statistics_readbin_merged(UUW, "UUW");
+    statistics_readbin_merged(UVW, "UVW");
     statistics_readbin_merged(VVU, "VVU");
     statistics_readbin_merged(VVV, "VVV");
     statistics_readbin_merged(VVW, "VVW");
@@ -579,11 +820,10 @@ void InitFromMergedVTK(const char* vtk_path) {
         CHECK_MPI( MPI_Abort(MPI_COMM_WORLD, 1) );
     }
 
-    // 解析 header，讀取 step, Force, vel_avg_count, rey_avg_count 值
+    // 解析 header，讀取 step, Force, accu_count 值
     double force_from_vtk = -1.0;
     int step_from_vtk = -1;
-    int vel_avg_count_from_vtk = 0;
-    int rey_avg_count_from_vtk = 0;
+    int accu_count_from_vtk = 0;
     string vtk_line;
     while (getline(vtk_in, vtk_line)) {
         size_t spos = vtk_line.find("step=");
@@ -594,19 +834,24 @@ void InitFromMergedVTK(const char* vtk_path) {
         if (fpos != string::npos) {
             sscanf(vtk_line.c_str() + fpos + 6, "%lf", &force_from_vtk);
         }
-        // New format: vel_avg_count=XXX rey_avg_count=YYY
-        size_t vpos = vtk_line.find("vel_avg_count=");
-        if (vpos != string::npos) {
-            sscanf(vtk_line.c_str() + vpos + 14, "%d", &vel_avg_count_from_vtk);
+        // New format: accu_count=XXX
+        size_t apos = vtk_line.find("accu_count=");
+        if (apos != string::npos) {
+            sscanf(vtk_line.c_str() + apos + 11, "%d", &accu_count_from_vtk);
         }
-        size_t rpos = vtk_line.find("rey_avg_count=");
-        if (rpos != string::npos) {
-            sscanf(vtk_line.c_str() + rpos + 14, "%d", &rey_avg_count_from_vtk);
+        // Backward compat: old "vel_avg_count=XXX" → treat as accu_count
+        if (accu_count_from_vtk == 0) {
+            size_t vpos = vtk_line.find("vel_avg_count=");
+            if (vpos != string::npos) {
+                sscanf(vtk_line.c_str() + vpos + 14, "%d", &accu_count_from_vtk);
+            }
         }
-        // Backward compat: old "tavg_count=" → treat as vel_avg_count
-        size_t tpos = vtk_line.find("tavg_count=");
-        if (tpos != string::npos && vel_avg_count_from_vtk == 0) {
-            sscanf(vtk_line.c_str() + tpos + 11, "%d", &vel_avg_count_from_vtk);
+        // Backward compat: old "tavg_count=" → treat as accu_count
+        if (accu_count_from_vtk == 0) {
+            size_t tpos = vtk_line.find("tavg_count=");
+            if (tpos != string::npos) {
+                sscanf(vtk_line.c_str() + tpos + 11, "%d", &accu_count_from_vtk);
+            }
         }
         if (vtk_line.find("VECTORS") != string::npos) break;
     }
@@ -641,8 +886,8 @@ void InitFromMergedVTK(const char* vtk_path) {
     // ========== 讀取時間平均場 ==========
     // New format: U_mean (÷Uref), W_mean (÷Uref), V_mean (÷Uref)
     // Old format: v_time_avg, w_time_avg (lattice units, no Uref normalization)
-    // VTK 中存的是已除以 count 的平均值; main.cu 稍後會乘回 vel_avg_count 得到累加和
-    if (vel_avg_count_from_vtk > 0 && v_tavg_h != NULL && w_tavg_h != NULL && u_tavg_h != NULL) {
+    // VTK 中存的是已除以 count 的平均值; main.cu 稍後會乘回 accu_count 得到累加和
+    if (accu_count_from_vtk > 0 && v_tavg_h != NULL && w_tavg_h != NULL && u_tavg_h != NULL) {
         ifstream vtk_tavg(vtk_path);
         string line_tavg;
         bool found_U_mean = false, found_W_mean = false, found_V_mean = false;
@@ -694,26 +939,22 @@ void InitFromMergedVTK(const char* vtk_path) {
         bool have_wallnormal = found_W_mean || found_wtavg;
 
         if (have_streamwise && have_wallnormal) {
-            vel_avg_count = vel_avg_count_from_vtk;
-            rey_avg_count = rey_avg_count_from_vtk;
+            accu_count = accu_count_from_vtk;
             if (myid == 0) {
-                printf("  VTK restart: velocity time-average restored (vel_avg_count=%d", vel_avg_count);
+                printf("  VTK restart: velocity time-average restored (accu_count=%d", accu_count);
                 if (found_U_mean) printf(", U_mean format");
                 else printf(", v_time_avg format");
                 if (found_V_mean) printf(", V_mean");
                 printf(")\n");
-                if (rey_avg_count_from_vtk > 0)
-                    printf("  VTK restart: rey_avg_count=%d (binary checkpoint will be loaded separately)\n", rey_avg_count);
             }
         } else {
-            vel_avg_count = 0;
-            rey_avg_count = 0;
+            accu_count = 0;
             if (myid == 0)
                 printf("  VTK restart: time-average fields not found, starting fresh\n");
         }
     } else {
-        if (myid == 0 && vel_avg_count_from_vtk == 0)
-            printf("  VTK restart: no vel_avg_count in header, starting fresh.\n");
+        if (myid == 0 && accu_count_from_vtk == 0)
+            printf("  VTK restart: no accu_count in header, starting fresh.\n");
     }
 
     // ========== x-direction 週期性邊界填充 buffer layer ==========
@@ -897,13 +1138,13 @@ void fileIO_velocity_vtk_merged(int step) {
         idx++;
     }}}
 
-    // 準備本地時間平均資料 (若有累積), 正規化: ÷vel_avg_count÷Uref
+    // 準備本地時間平均資料 (若有累積), 正規化: ÷accu_count÷Uref
     double *ut_local = NULL, *vt_local = NULL, *wt_local = NULL;
-    if (vel_avg_count > 0) {
+    if (accu_count > 0) {
         ut_local = (double*)malloc(localPoints * sizeof(double));
         vt_local = (double*)malloc(localPoints * sizeof(double));
         wt_local = (double*)malloc(localPoints * sizeof(double));
-        double inv_count_uref = 1.0 / ((double)vel_avg_count * (double)Uref);
+        double inv_count_uref = 1.0 / ((double)accu_count * (double)Uref);
         int tidx = 0;
         for( int k = 3; k < NZ6-3; k++ ){
         for( int j = 3; j < NYD6-3; j++ ){
@@ -916,59 +1157,77 @@ void fileIO_velocity_vtk_merged(int step) {
         }}}
     }
 
-    // 準備 Reynolds stress 資料 (若有累積), 正規化: ÷Uref²
-    double *uu_local = NULL, *ww_local = NULL, *vv_local = NULL, *uw_local = NULL, *k_local = NULL;
-    if (rey_avg_count > 0 && (int)TBSWITCH) {
+    // 準備 Reynolds stress + P_mean (若有累積)
+    // 座標映射 (Code → Benchmark): code_u=spanwise=V_bench, code_v=streamwise=U_bench, code_w=wall-normal=W_bench
+    //   VTK uu_RS (流向×流向)   ← code (Σvv/N − v̄²) / Uref²     [GPU: VV, V]
+    //   VTK uv_RS (流向×展向)   ← code (Σuv/N − ū·v̄) / Uref²    [GPU: UV, U, V]
+    //   VTK uw_RS (流向×法向)   ← code (Σvw/N − v̄·w̄) / Uref²    [GPU: VW, V, W]
+    //   VTK vv_RS (展向×展向)   ← code (Σuu/N − ū²) / Uref²      [GPU: UU, U]
+    //   VTK vw_RS (展向×法向)   ← code (Σuw/N − ū·w̄) / Uref²    [GPU: UW, U, W]
+    //   VTK ww_RS (法向×法向)   ← code (Σww/N − w̄²) / Uref²      [GPU: WW, W]
+    double *uu_local = NULL, *uv_local = NULL, *uw_local = NULL;
+    double *vv_local = NULL, *vw_local = NULL, *ww_local = NULL;
+    double *k_local = NULL, *p_mean_local = NULL;
+    if (accu_count > 0 && (int)TBSWITCH) {
         uu_local = (double*)malloc(localPoints * sizeof(double));
-        ww_local = (double*)malloc(localPoints * sizeof(double));
-        vv_local = (double*)malloc(localPoints * sizeof(double));
+        uv_local = (double*)malloc(localPoints * sizeof(double));
         uw_local = (double*)malloc(localPoints * sizeof(double));
+        vv_local = (double*)malloc(localPoints * sizeof(double));
+        vw_local = (double*)malloc(localPoints * sizeof(double));
+        ww_local = (double*)malloc(localPoints * sizeof(double));
         k_local  = (double*)malloc(localPoints * sizeof(double));
+        p_mean_local = (double*)malloc(localPoints * sizeof(double));
 
-        // Copy 7 MeanVars arrays from GPU → temporary host buffers
+        // Copy 10 MeanVars arrays from GPU → temporary host buffers
         size_t grid_bytes_rs = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
         double *U_h_rs = (double*)malloc(grid_bytes_rs);
         double *V_h_rs = (double*)malloc(grid_bytes_rs);
         double *W_h_rs = (double*)malloc(grid_bytes_rs);
+        double *P_h_rs = (double*)malloc(grid_bytes_rs);
         double *UU_h_rs = (double*)malloc(grid_bytes_rs);
+        double *UV_h_rs = (double*)malloc(grid_bytes_rs);
+        double *UW_h_rs = (double*)malloc(grid_bytes_rs);
         double *VV_h_rs = (double*)malloc(grid_bytes_rs);
         double *WW_h_rs = (double*)malloc(grid_bytes_rs);
         double *VW_h_rs = (double*)malloc(grid_bytes_rs);
         CHECK_CUDA(cudaMemcpy(U_h_rs,  U,  grid_bytes_rs, cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(V_h_rs,  V,  grid_bytes_rs, cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(W_h_rs,  W,  grid_bytes_rs, cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(P_h_rs,  P,  grid_bytes_rs, cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(UU_h_rs, UU, grid_bytes_rs, cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(UV_h_rs, UV, grid_bytes_rs, cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(UW_h_rs, UW, grid_bytes_rs, cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(VV_h_rs, VV, grid_bytes_rs, cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(WW_h_rs, WW, grid_bytes_rs, cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(VW_h_rs, VW, grid_bytes_rs, cudaMemcpyDeviceToHost));
 
-        double inv_N = 1.0 / (double)rey_avg_count;
+        double inv_N = 1.0 / (double)accu_count;
         double inv_Uref2 = 1.0 / ((double)Uref * (double)Uref);
         int ridx = 0;
         for( int k = 3; k < NZ6-3; k++ ){
         for( int j = 3; j < NYD6-3; j++ ){
         for( int i = 3; i < NX6-3; i++ ){
             int index = j*NZ6*NX6 + k*NX6 + i;
-            double u_m = U_h_rs[index]*inv_N;  // <u_code> (spanwise)
+            double u_m = U_h_rs[index]*inv_N;  // <u_code> (spanwise = benchmark V)
             double v_m = V_h_rs[index]*inv_N;  // <v_code> (streamwise = benchmark U)
             double w_m = W_h_rs[index]*inv_N;  // <w_code> (wall-normal = benchmark W)
-            // Code→Benchmark mapping: v→U, w→W, u→V
-            double uu_val = (VV_h_rs[index]*inv_N - v_m*v_m) * inv_Uref2;  // <u'u'>/Uref² (benchmark)
-            double ww_val = (WW_h_rs[index]*inv_N - w_m*w_m) * inv_Uref2;  // <w'w'>/Uref²
-            double vv_val = (UU_h_rs[index]*inv_N - u_m*u_m) * inv_Uref2;  // <v'v'>/Uref² (spanwise)
-            double uw_val = (VW_h_rs[index]*inv_N - v_m*w_m) * inv_Uref2;  // <u'w'>/Uref²
-            uu_local[ridx] = uu_val;
-            ww_local[ridx] = ww_val;
-            vv_local[ridx] = vv_val;
-            uw_local[ridx] = uw_val;
-            k_local[ridx]  = 0.5 * (uu_val + ww_val + vv_val);  // TKE/Uref²
+            // Benchmark RS from code accumulators (see coordinate mapping above)
+            uu_local[ridx] = (VV_h_rs[index]*inv_N - v_m*v_m) * inv_Uref2;  // <U'U'>/Ub²
+            uv_local[ridx] = (UV_h_rs[index]*inv_N - u_m*v_m) * inv_Uref2;  // <U'V'>/Ub²
+            uw_local[ridx] = (VW_h_rs[index]*inv_N - v_m*w_m) * inv_Uref2;  // <U'W'>/Ub²
+            vv_local[ridx] = (UU_h_rs[index]*inv_N - u_m*u_m) * inv_Uref2;  // <V'V'>/Ub²
+            vw_local[ridx] = (UW_h_rs[index]*inv_N - u_m*w_m) * inv_Uref2;  // <V'W'>/Ub²
+            ww_local[ridx] = (WW_h_rs[index]*inv_N - w_m*w_m) * inv_Uref2;  // <W'W'>/Ub²
+            k_local[ridx]  = 0.5 * (uu_local[ridx] + vv_local[ridx] + ww_local[ridx]);  // k/Ub²
+            p_mean_local[ridx] = P_h_rs[index] * inv_N;  // <P>
             ridx++;
         }}}
-        free(U_h_rs); free(V_h_rs); free(W_h_rs);
-        free(UU_h_rs); free(VV_h_rs); free(WW_h_rs); free(VW_h_rs);
+        free(U_h_rs); free(V_h_rs); free(W_h_rs); free(P_h_rs);
+        free(UU_h_rs); free(UV_h_rs); free(UW_h_rs);
+        free(VV_h_rs); free(WW_h_rs); free(VW_h_rs);
     }
 
-    // Compute vorticity vector (omega_x, omega_y, omega_z) + omega_x' (fluctuation)
+    // Compute instantaneous vorticity (omega_u, omega_v, omega_w) — benchmark coordinates
     // Curvilinear coordinate derivatives:
     //   ∂φ/∂x = (1/dx) ∂φ/∂i
     //   ∂φ/∂y = (1/dy) ∂φ/∂j + dk_dy ∂φ/∂k
@@ -976,7 +1235,6 @@ void fileIO_velocity_vtk_merged(int step) {
     double *ox_local  = (double*)malloc(localPoints * sizeof(double));
     double *oy_local  = (double*)malloc(localPoints * sizeof(double));
     double *oz_local  = (double*)malloc(localPoints * sizeof(double));
-    double *oxp_local = (double*)malloc(localPoints * sizeof(double));
     {
         double dx_val = (double)LX / (double)(NX6 - 7);
         double dx_inv = 1.0 / dx_val;
@@ -1009,18 +1267,6 @@ void fileIO_velocity_vtk_merged(int step) {
 
             oidx++;
         }}}
-
-        // omega_x' = omega_x - <omega_x>_x  (subtract spanwise/x-direction average)
-        for (int k = 0; k < nzLocal; k++) {
-        for (int j = 0; j < nyLocal; j++) {
-            double sum_ox = 0.0;
-            for (int i = 0; i < nxLocal; i++)
-                sum_ox += ox_local[k * nyLocal * nxLocal + j * nxLocal + i];
-            double avg_ox = sum_ox / (double)nxLocal;
-            for (int i = 0; i < nxLocal; i++)
-                oxp_local[k * nyLocal * nxLocal + j * nxLocal + i] =
-                    ox_local[k * nyLocal * nxLocal + j * nxLocal + i] - avg_ox;
-        }}
     }
 
     // 準備本地 z 座標
@@ -1044,27 +1290,31 @@ void fileIO_velocity_vtk_merged(int step) {
     }
 
     double *ut_global = NULL, *vt_global = NULL, *wt_global = NULL;
-    if( myid == 0 && vel_avg_count > 0 ) {
+    if( myid == 0 && accu_count > 0 ) {
         ut_global = (double*)malloc(gatherPoints * sizeof(double));
         vt_global = (double*)malloc(gatherPoints * sizeof(double));
         wt_global = (double*)malloc(gatherPoints * sizeof(double));
     }
 
-    double *uu_global = NULL, *ww_global = NULL, *vv_global = NULL, *uw_global = NULL, *k_global = NULL;
-    if( myid == 0 && rey_avg_count > 0 && (int)TBSWITCH ) {
+    double *uu_global = NULL, *uv_global = NULL, *uw_global = NULL;
+    double *vv_global = NULL, *vw_global = NULL, *ww_global = NULL;
+    double *k_global = NULL, *p_mean_global = NULL;
+    if( myid == 0 && accu_count > 0 && (int)TBSWITCH ) {
         uu_global = (double*)malloc(gatherPoints * sizeof(double));
-        ww_global = (double*)malloc(gatherPoints * sizeof(double));
-        vv_global = (double*)malloc(gatherPoints * sizeof(double));
+        uv_global = (double*)malloc(gatherPoints * sizeof(double));
         uw_global = (double*)malloc(gatherPoints * sizeof(double));
+        vv_global = (double*)malloc(gatherPoints * sizeof(double));
+        vw_global = (double*)malloc(gatherPoints * sizeof(double));
+        ww_global = (double*)malloc(gatherPoints * sizeof(double));
         k_global  = (double*)malloc(gatherPoints * sizeof(double));
+        p_mean_global = (double*)malloc(gatherPoints * sizeof(double));
     }
 
-    double *ox_global = NULL, *oy_global = NULL, *oz_global = NULL, *oxp_global = NULL;
+    double *ox_global = NULL, *oy_global = NULL, *oz_global = NULL;
     if( myid == 0 ) {
         ox_global  = (double*)malloc(gatherPoints * sizeof(double));
         oy_global  = (double*)malloc(gatherPoints * sizeof(double));
         oz_global  = (double*)malloc(gatherPoints * sizeof(double));
-        oxp_global = (double*)malloc(gatherPoints * sizeof(double));
     }
 
     // 所有 rank 一起呼叫 MPI_Gather
@@ -1073,22 +1323,24 @@ void fileIO_velocity_vtk_merged(int step) {
     MPI_Gather(w_local, localPoints, MPI_DOUBLE, w_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(z_local, zLocalSize, MPI_DOUBLE, z_global, zLocalSize, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-    if (vel_avg_count > 0) {
+    if (accu_count > 0) {
         MPI_Gather(ut_local, localPoints, MPI_DOUBLE, ut_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(vt_local, localPoints, MPI_DOUBLE, vt_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(wt_local, localPoints, MPI_DOUBLE, wt_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
-    if (rey_avg_count > 0 && (int)TBSWITCH) {
-        MPI_Gather(uu_local, localPoints, MPI_DOUBLE, uu_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(ww_local, localPoints, MPI_DOUBLE, ww_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(vv_local, localPoints, MPI_DOUBLE, vv_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(uw_local, localPoints, MPI_DOUBLE, uw_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(k_local,  localPoints, MPI_DOUBLE, k_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    if (accu_count > 0 && (int)TBSWITCH) {
+        MPI_Gather(uu_local,     localPoints, MPI_DOUBLE, uu_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(uv_local,     localPoints, MPI_DOUBLE, uv_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(uw_local,     localPoints, MPI_DOUBLE, uw_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(vv_local,     localPoints, MPI_DOUBLE, vv_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(vw_local,     localPoints, MPI_DOUBLE, vw_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(ww_local,     localPoints, MPI_DOUBLE, ww_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(k_local,      localPoints, MPI_DOUBLE, k_global,      localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(p_mean_local, localPoints, MPI_DOUBLE, p_mean_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
     MPI_Gather(ox_local,  localPoints, MPI_DOUBLE, ox_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(oy_local,  localPoints, MPI_DOUBLE, oy_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(oz_local,  localPoints, MPI_DOUBLE, oz_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Gather(oxp_local, localPoints, MPI_DOUBLE, oxp_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     // rank 0 輸出合併的 VTK
     if( myid == 0 ) {
@@ -1111,7 +1363,7 @@ void fileIO_velocity_vtk_merged(int step) {
         }
         
         out << "# vtk DataFile Version 3.0\n";
-        out << "LBM Velocity Field (merged) step=" << step << " Force=" << scientific << setprecision(8) << Force_h[0] << " vel_avg_count=" << vel_avg_count << " rey_avg_count=" << rey_avg_count << "\n";
+        out << "LBM Velocity Field (merged) step=" << step << " Force=" << scientific << setprecision(8) << Force_h[0] << " accu_count=" << accu_count << "\n";
         out << "ASCII\n";
         out << "DATASET STRUCTURED_GRID\n";
         out << "DIMENSIONS " << nxLocal << " " << nyGlobal << " " << nzLocal << "\n";
@@ -1154,99 +1406,97 @@ void fileIO_velocity_vtk_merged(int step) {
             out << u_global[global_idx] << " " << v_global[global_idx] << " " << w_global[global_idx] << "\n";
         }}}
 
-        // 輸出時間平均場: U_mean, W_mean, V_mean (正規化: ÷Uref)
-        if (vel_avg_count > 0) {
-            // U_mean (streamwise = benchmark U = code v, ÷Uref)
-            out << "\nSCALARS U_mean double 1\n";
-            out << "LOOKUP_TABLE default\n";
-            for( int k = 0; k < nzLocal; k++ ){
-            for( int jg = 0; jg < nyGlobal; jg++ ){
-            for( int i = 0; i < nxLocal; i++ ){
-                int gpu_id = jg / stride;
-                if( gpu_id >= jp ) gpu_id = jp - 1;
-                int j_local = jg - gpu_id * stride;
-                int gidx = gpu_id * localPoints + k * nyLocal * nxLocal + j_local * nxLocal + i;
-                out << vt_global[gidx] << "\n";
+        // ================================================================
+        // VTK Level 0: 17 SCALARS + 1 VECTORS
+        // Coordinate mapping: code_u=spanwise(V), code_v=streamwise(U), code_w=wall-normal(W)
+        // ================================================================
+
+        // Helper macro: write one SCALAR field over the global grid
+        #define VTK_WRITE_SCALAR(name, arr_global) \
+            out << "\nSCALARS " << (name) << " double 1\n"; \
+            out << "LOOKUP_TABLE default\n"; \
+            for( int kk = 0; kk < nzLocal; kk++ ){ \
+            for( int jg = 0; jg < nyGlobal; jg++ ){ \
+            for( int ii = 0; ii < nxLocal; ii++ ){ \
+                int gid = jg / stride; \
+                if( gid >= jp ) gid = jp - 1; \
+                int jl = jg - gid * stride; \
+                int gidx = gid * localPoints + kk * nyLocal * nxLocal + jl * nxLocal + ii; \
+                out << (arr_global)[gidx] << "\n"; \
             }}}
 
-            // W_mean (wall-normal = benchmark W = code w, ÷Uref)
-            out << "\nSCALARS W_mean double 1\n";
+        // [A] 瞬時速度 (3 SCALARS): u_inst=v_code/Uref, v_inst=u_code/Uref, w_inst=w_code/Uref
+        {
+            double inv_Uref = 1.0 / (double)Uref;
+            out << "\nSCALARS u_inst double 1\n";
             out << "LOOKUP_TABLE default\n";
-            for( int k = 0; k < nzLocal; k++ ){
+            for( int kk = 0; kk < nzLocal; kk++ ){
             for( int jg = 0; jg < nyGlobal; jg++ ){
-            for( int i = 0; i < nxLocal; i++ ){
-                int gpu_id = jg / stride;
-                if( gpu_id >= jp ) gpu_id = jp - 1;
-                int j_local = jg - gpu_id * stride;
-                int gidx = gpu_id * localPoints + k * nyLocal * nxLocal + j_local * nxLocal + i;
-                out << wt_global[gidx] << "\n";
+            for( int ii = 0; ii < nxLocal; ii++ ){
+                int gid = jg / stride;
+                if( gid >= jp ) gid = jp - 1;
+                int jl = jg - gid * stride;
+                int gidx = gid * localPoints + kk * nyLocal * nxLocal + jl * nxLocal + ii;
+                out << v_global[gidx] * inv_Uref << "\n";  // streamwise = code v
             }}}
-
-            // V_mean (spanwise = benchmark V = code u, ÷Uref, should ≈ 0)
-            out << "\nSCALARS V_mean double 1\n";
+            out << "\nSCALARS v_inst double 1\n";
             out << "LOOKUP_TABLE default\n";
-            for( int k = 0; k < nzLocal; k++ ){
+            for( int kk = 0; kk < nzLocal; kk++ ){
             for( int jg = 0; jg < nyGlobal; jg++ ){
-            for( int i = 0; i < nxLocal; i++ ){
-                int gpu_id = jg / stride;
-                if( gpu_id >= jp ) gpu_id = jp - 1;
-                int j_local = jg - gpu_id * stride;
-                int gidx = gpu_id * localPoints + k * nyLocal * nxLocal + j_local * nxLocal + i;
-                out << ut_global[gidx] << "\n";
+            for( int ii = 0; ii < nxLocal; ii++ ){
+                int gid = jg / stride;
+                if( gid >= jp ) gid = jp - 1;
+                int jl = jg - gid * stride;
+                int gidx = gid * localPoints + kk * nyLocal * nxLocal + jl * nxLocal + ii;
+                out << u_global[gidx] * inv_Uref << "\n";  // spanwise = code u
+            }}}
+            out << "\nSCALARS w_inst double 1\n";
+            out << "LOOKUP_TABLE default\n";
+            for( int kk = 0; kk < nzLocal; kk++ ){
+            for( int jg = 0; jg < nyGlobal; jg++ ){
+            for( int ii = 0; ii < nxLocal; ii++ ){
+                int gid = jg / stride;
+                if( gid >= jp ) gid = jp - 1;
+                int jl = jg - gid * stride;
+                int gidx = gid * localPoints + kk * nyLocal * nxLocal + jl * nxLocal + ii;
+                out << w_global[gidx] * inv_Uref << "\n";  // wall-normal = code w
             }}}
         }
 
-        // 輸出 Reynolds stress + TKE (正規化: ÷Uref²)
-        if (rey_avg_count > 0 && (int)TBSWITCH) {
-            const char *rs_names[] = {"uu", "ww", "vv", "uw", "k"};
-            double *rs_arrays[] = {uu_global, ww_global, vv_global, uw_global, k_global};
-            for (int rs = 0; rs < 5; rs++) {
-                out << "\nSCALARS " << rs_names[rs] << " double 1\n";
-                out << "LOOKUP_TABLE default\n";
-                for( int k = 0; k < nzLocal; k++ ){
-                for( int jg = 0; jg < nyGlobal; jg++ ){
-                for( int i = 0; i < nxLocal; i++ ){
-                    int gpu_id = jg / stride;
-                    if( gpu_id >= jp ) gpu_id = jp - 1;
-                    int j_local = jg - gpu_id * stride;
-                    int gidx = gpu_id * localPoints + k * nyLocal * nxLocal + j_local * nxLocal + i;
-                    out << rs_arrays[rs][gidx] << "\n";
-                }}}
-            }
+        // [B] 瞬時渦度 (3 SCALARS): omega_u, omega_v, omega_w
+        VTK_WRITE_SCALAR("omega_u", ox_global);
+        VTK_WRITE_SCALAR("omega_v", oy_global);
+        VTK_WRITE_SCALAR("omega_w", oz_global);
+
+        // [C] 平均速度 (3 SCALARS): U_mean, V_mean, W_mean (÷count÷Uref, from u_tavg)
+        if (accu_count > 0) {
+            VTK_WRITE_SCALAR("U_mean", vt_global);  // streamwise = code v
+            VTK_WRITE_SCALAR("V_mean", ut_global);  // spanwise = code u
+            VTK_WRITE_SCALAR("W_mean", wt_global);  // wall-normal = code w
         }
 
-        // Vorticity vector: (omega_x, omega_y, omega_z)
-        out << "\nVECTORS vorticity double\n";
-        for( int k = 0; k < nzLocal; k++ ){
-        for( int jg = 0; jg < nyGlobal; jg++ ){
-        for( int i = 0; i < nxLocal; i++ ){
-            int gpu_id = jg / stride;
-            if( gpu_id >= jp ) gpu_id = jp - 1;
-            int j_local = jg - gpu_id * stride;
-            int gpu_offset = gpu_id * localPoints;
-            int local_idx = k * nyLocal * nxLocal + j_local * nxLocal + i;
-            int gidx = gpu_offset + local_idx;
-            out << ox_global[gidx] << " " << oy_global[gidx] << " " << oz_global[gidx] << "\n";
-        }}}
+        // [D] Reynolds Stress (6 SCALARS) + k_TKE (1) + P_mean (1)
+        if (accu_count > 0 && (int)TBSWITCH) {
+            VTK_WRITE_SCALAR("uu_RS", uu_global);
+            VTK_WRITE_SCALAR("uv_RS", uv_global);
+            VTK_WRITE_SCALAR("uw_RS", uw_global);
+            VTK_WRITE_SCALAR("vv_RS", vv_global);
+            VTK_WRITE_SCALAR("vw_RS", vw_global);
+            VTK_WRITE_SCALAR("ww_RS", ww_global);
+            VTK_WRITE_SCALAR("k_TKE", k_global);
+            VTK_WRITE_SCALAR("P_mean", p_mean_global);
+        }
 
-        // omega_x' = omega_x - <omega_x>_x (spanwise fluctuation)
-        out << "\nSCALARS omega_x_prime double 1\n";
-        out << "LOOKUP_TABLE default\n";
-        for( int k = 0; k < nzLocal; k++ ){
-        for( int jg = 0; jg < nyGlobal; jg++ ){
-        for( int i = 0; i < nxLocal; i++ ){
-            int gpu_id = jg / stride;
-            if( gpu_id >= jp ) gpu_id = jp - 1;
-            int j_local = jg - gpu_id * stride;
-            int gpu_offset = gpu_id * localPoints;
-            int local_idx = k * nyLocal * nxLocal + j_local * nxLocal + i;
-            out << oxp_global[gpu_offset + local_idx] << "\n";
-        }}}
+        // [E] VTK Level 1 placeholder (TODO: omega_mean, epsilon, Tturb, Pdiff, PP_RS)
+        #if VTK_OUTPUT_LEVEL >= 1
+        // Not yet implemented
+        #endif
+
+        #undef VTK_WRITE_SCALAR
 
         out.close();
         cout << "Merged VTK output: velocity_merged_" << setfill('0') << setw(6) << step << ".vtk";
-        if (vel_avg_count > 0) cout << " (vel=" << vel_avg_count << ")";
-        if (rey_avg_count > 0) cout << " (rey=" << rey_avg_count << ")";
+        if (accu_count > 0) cout << " (accu=" << accu_count << ")";
         cout << "\n";
 
         free(u_global);
@@ -1260,12 +1510,14 @@ void fileIO_velocity_vtk_merged(int step) {
         if (ox_global)  free(ox_global);
         if (oy_global)  free(oy_global);
         if (oz_global)  free(oz_global);
-        if (oxp_global) free(oxp_global);
-        if (uu_global) free(uu_global);
-        if (ww_global) free(ww_global);
-        if (vv_global) free(vv_global);
-        if (uw_global) free(uw_global);
-        if (k_global)  free(k_global);
+        if (uu_global)     free(uu_global);
+        if (uv_global)     free(uv_global);
+        if (uw_global)     free(uw_global);
+        if (vv_global)     free(vv_global);
+        if (vw_global)     free(vw_global);
+        if (ww_global)     free(ww_global);
+        if (k_global)      free(k_global);
+        if (p_mean_global) free(p_mean_global);
     }
 
     free(u_local);
@@ -1278,12 +1530,14 @@ void fileIO_velocity_vtk_merged(int step) {
     free(ox_local);
     free(oy_local);
     free(oz_local);
-    free(oxp_local);
-    if (uu_local) free(uu_local);
-    if (ww_local) free(ww_local);
-    if (vv_local) free(vv_local);
-    if (uw_local) free(uw_local);
-    if (k_local)  free(k_local);
+    if (uu_local)     free(uu_local);
+    if (uv_local)     free(uv_local);
+    if (uw_local)     free(uw_local);
+    if (vv_local)     free(vv_local);
+    if (vw_local)     free(vw_local);
+    if (ww_local)     free(ww_local);
+    if (k_local)      free(k_local);
+    if (p_mean_local) free(p_mean_local);
     
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 }

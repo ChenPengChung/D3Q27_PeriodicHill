@@ -113,6 +113,55 @@ void Launch_AccumulateTavg() {
     AccumulateTavg_Kernel<<<grid, block>>>(u_tavg_d, v_tavg_d, w_tavg_d, u, v, w, N);
 }
 
+// ===== Vorticity accumulation kernel (FTT >= FTT_STATS_START, same window as velocity mean) =====
+// Curvilinear vorticity:
+//   omega_x = dw/dy - dv/dz = (1/dy)*dw_dj + dk_dy*dw_dk - dk_dz*dv_dk
+//   omega_y = du/dz - dw/dx = dk_dz*du_dk - (1/dx)*dw_di
+//   omega_z = dv/dx - du/dy = (1/dx)*dv_di - (1/dy)*du_dj - dk_dy*du_dk
+__global__ void AccumulateVorticity_Kernel(
+    double *ox_tavg, double *oy_tavg, double *oz_tavg,
+    const double *u_in, const double *v_in, const double *w_in,
+    const double *dk_dz_in, const double *dk_dy_in,
+    double dx_inv, double dy_inv)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (i <= 2 || i >= NX6-3 || j <= 2 || j >= NYD6-3 || k <= 3 || k >= NZ6-4) return;
+
+    const int nface = NX6 * NZ6;
+    const int index = j * nface + k * NX6 + i;
+
+    // 2nd-order central differences in computational coordinates
+    double du_dj = (u_in[index + nface] - u_in[index - nface]) * 0.5;
+    double du_dk = (u_in[index + NX6]   - u_in[index - NX6])   * 0.5;
+
+    double dv_di = (v_in[index + 1]     - v_in[index - 1])     * 0.5;
+    double dv_dk = (v_in[index + NX6]   - v_in[index - NX6])   * 0.5;
+
+    double dw_di = (w_in[index + 1]     - w_in[index - 1])     * 0.5;
+    double dw_dj = (w_in[index + nface] - w_in[index - nface]) * 0.5;
+    double dw_dk = (w_in[index + NX6]   - w_in[index - NX6])   * 0.5;
+
+    double dkdz = dk_dz_in[j * NZ6 + k];
+    double dkdy = dk_dy_in[j * NZ6 + k];
+
+    ox_tavg[index] += dy_inv * dw_dj + dkdy * dw_dk - dkdz * dv_dk;
+    oy_tavg[index] += dkdz * du_dk - dx_inv * dw_di;
+    oz_tavg[index] += dx_inv * dv_di - dy_inv * du_dj - dkdy * du_dk;
+}
+
+void Launch_AccumulateVorticity() {
+    dim3 grid(NX6/NT+1, NYD6, NZ6);
+    dim3 block(NT, 1, 1);
+    double dx_inv = (double)(NX6 - 7) / (double)LX;
+    double dy_inv = (double)(NY6 - 7) / (double)LY;
+    AccumulateVorticity_Kernel<<<grid, block>>>(
+        ox_tavg_d, oy_tavg_d, oz_tavg_d,
+        u, v, w, dk_dz_d, dk_dy_d, dx_inv, dy_inv);
+}
+
 __global__ void AccumulateUbulk(double *Ub_avg, double *v)
 {
     const int i = blockIdx.x*blockDim.x + threadIdx.x;
