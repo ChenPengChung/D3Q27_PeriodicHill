@@ -495,7 +495,7 @@ mpl.rcParams.update({
     "savefig.dpi":       300,
 })
 
-c_sim = "#D62728"  # red for simulation
+c_sim = "#BB1792"  # red for simulation
 
 
 def make_legend_elements():
@@ -511,9 +511,13 @@ def make_legend_elements():
 
 
 # ── Helper: offset-profile subplot (multi-source) ─────────────
-def plot_offset_panel(ax, field_sim, field_bench, scale, title, xlabel):
-    """Offset-profile plotter with multi-source benchmark overlay."""
-    yh_fine = np.linspace(0, LY, 2000)
+def plot_offset_panel(ax, field_sim, field_bench, scale, title, xlabel, xlim_range=None):
+    """Offset-profile plotter with multi-source benchmark overlay.
+    xlim_range: (xmin, xmax) adaptive limits; None → default [0,9].
+    """
+    xl = xlim_range[0] * H_HILL if xlim_range else 0
+    xr = xlim_range[1] * H_HILL if xlim_range else LY
+    yh_fine = np.linspace(xl, xr, 3000)
     zh_fine = hill_function(yh_fine)
     ax.fill_between(yh_fine / H_HILL, 0, zh_fine / H_HILL, color="0.90", zorder=0)
     ax.plot(yh_fine / H_HILL, zh_fine / H_HILL, color="0.45", lw=1.0, zorder=1)
@@ -538,8 +542,12 @@ def plot_offset_panel(ax, field_sim, field_bench, scale, title, xlabel):
                            facecolors="none", edgecolors=info['color'],
                            linewidths=0.4, zorder=6, marker=info['marker'])
 
-    ax.set_xticks(range(10))
-    ax.set_xlim(0, 9)
+    if xlim_range is not None:
+        ax.set_xlim(xlim_range)
+        ax.set_xticks(range(int(np.floor(xlim_range[0])), int(np.ceil(xlim_range[1])) + 1))
+    else:
+        ax.set_xticks(range(10))
+        ax.set_xlim(0, 9)
     ax.set_ylim(0, LZ / H_HILL)
     ax.set_yticks([0, 1, 2, 3])
     ax.set_aspect("equal", adjustable="box")
@@ -548,13 +556,37 @@ def plot_offset_panel(ax, field_sim, field_bench, scale, title, xlabel):
     ax.set_ylabel(r"$y\,/\,h$", fontsize=11)
 
 
+def compute_offset_extent(field_sim, field_bench, scale, padding=0.3):
+    """Compute the x-axis data extent for an offset profile panel."""
+    x_min = min(XH_STATIONS)
+    x_max = max(XH_STATIONS)
+    for xh in XH_STATIONS:
+        p = profiles[xh]
+        data_sim = p.get(field_sim)
+        if data_sim is not None:
+            vals = data_sim * scale + xh
+            x_min = min(x_min, float(np.min(vals)))
+            x_max = max(x_max, float(np.max(vals)))
+        for _, info, bdata in bench_sources:
+            if xh in bdata and field_bench in bdata[xh]:
+                d_b = bdata[xh][field_bench]
+                if d_b is not None:
+                    vals = d_b * scale + xh
+                    x_min = min(x_min, float(np.min(vals)))
+                    x_max = max(x_max, float(np.max(vals)))
+    return x_min - padding, x_max + padding
+
+
 # ================================================================
 # Figure 1: <U>/Ub offset profile
 # ================================================================
-fig1, ax1 = plt.subplots(figsize=(10, 4.0))
+u_extent = compute_offset_extent("U", "U", 0.8)
+u_x_range = u_extent[1] - u_extent[0]
+fig1_width = max(10.0, 10.0 * u_x_range / 9.0)
+fig1, ax1 = plt.subplots(figsize=(fig1_width, 4.0))
 plot_offset_panel(ax1, "U", "U", scale=0.8,
                   title=r"$\langle U \rangle / U_b$  (Re = %d)" % Re,
-                  xlabel=r"$x\,/\,h$")
+                  xlabel=r"$x\,/\,h$", xlim_range=u_extent)
 ncol_leg = min(len(bench_sources) + 1, 4)
 ax1.legend(handles=make_legend_elements(), loc="lower center", frameon=True,
            edgecolor="0.7", fancybox=False, ncol=ncol_leg, fontsize=9,
@@ -576,11 +608,16 @@ if HAS_RS:
         ("k",  "k",  20, r"$k / U_b^2$  (TKE)"),
         ("W",  "V",   3, r"$\langle V \rangle / U_b$  (wall-normal mean)"),
     ]
-    fig2, axes = plt.subplots(3, 2, figsize=(18, 12))
+    # Fixed x-range for RS panels
+    xlim_rs = (-1, 10)
+    x_range_rs = xlim_rs[1] - xlim_rs[0]
+    fig2_width = max(18.0, 18.0 * x_range_rs / 9.0)
+
+    fig2, axes = plt.subplots(3, 2, figsize=(fig2_width, 12))
     axes_flat = axes.flatten()
     for idx, (fs, fb, sc, ttl) in enumerate(panels):
         plot_offset_panel(axes_flat[idx], fs, fb, scale=sc, title=ttl,
-                          xlabel=r"$x\,/\,h$")
+                          xlabel=r"$x\,/\,h$", xlim_range=xlim_rs)
     axes_flat[-1].set_visible(False)
     fig2.legend(handles=make_legend_elements(), loc="lower center", frameon=True,
                 edgecolor="0.7", fancybox=False,
