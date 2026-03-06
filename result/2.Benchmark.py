@@ -618,14 +618,15 @@ if HAS_RS:
     for idx, (fs, fb, sc, ttl) in enumerate(panels):
         plot_offset_panel(axes_flat[idx], fs, fb, scale=sc, title=ttl,
                           xlabel=r"$x\,/\,h$", xlim_range=xlim_rs)
-    axes_flat[-1].set_visible(False)
-    fig2.legend(handles=make_legend_elements(), loc="lower center", frameon=True,
-                edgecolor="0.7", fancybox=False,
-                ncol=min(len(bench_sources) + 1, 4), fontsize=11,
-                bbox_to_anchor=(0.5, 0.01))
+    # Place legend in the empty 6th cell instead of wasting bottom space
+    ax_leg = axes_flat[-1]
+    ax_leg.axis("off")
+    ax_leg.legend(handles=make_legend_elements(), loc="center", frameon=True,
+                  edgecolor="0.7", fancybox=False,
+                  ncol=1, fontsize=11)
     fig2.suptitle(f"Periodic Hill Re = {Re} \u2014 Reynolds Stress Comparison",
                   fontsize=15, y=0.98)
-    fig2.tight_layout(rect=[0, 0.04, 1, 0.96])
+    fig2.tight_layout(rect=[0, 0, 1, 0.96])
     out2 = os.path.join(SCRIPT_DIR, f"benchmark_RS_Re{Re}.png")
     fig2.savefig(out2, bbox_inches="tight")
     print(f"[OK] Saved: {os.path.basename(out2)}")

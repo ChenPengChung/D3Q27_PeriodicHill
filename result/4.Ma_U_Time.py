@@ -123,74 +123,89 @@ def convergence_analysis(ax, ftt, values, label_name):
         txt, clr = f'NEAR CONVERGED (CV={cv:.1f}%)', 'orange'
     else:
         txt, clr = f'NOT CONVERGED (CV={cv:.1f}%)', 'red'
-    ax.text(0.98, 0.92, txt, transform=ax.transAxes, ha='right', va='top',
+    ax.text(0.98, 0.78, txt, transform=ax.transAxes, ha='right', va='top',
             color=clr, fontsize=10, fontweight='bold',
             bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=2))
 
-# ── figure ────────────────────────────────────────────────
-n_rows = 4 if has_rs else 2
-fig, axes = plt.subplots(n_rows, 1, figsize=(10, 3.0 * n_rows), sharex=True)
-if n_rows == 2:
-    axes = list(axes)
+# ── Helper: draw FTT=20 dark vertical marker ─────────────
+def mark_ftt_start(ax, ftt_val=20.0):
+    ax.axvline(ftt_val, color='black', ls='-', lw=1.2, alpha=0.8)
+    ax.text(ftt_val, 0.92, f' FTT={ftt_val:.0f}\n accumulate start',
+            fontsize=9, color='black', fontweight='bold', va='top', ha='left',
+            transform=ax.get_xaxis_transform(),
+            bbox=dict(facecolor='white', alpha=0.8, edgecolor='black', pad=2, boxstyle='round,pad=0.3'))
 
-# Row 1: Ub/Uref
-ax1 = axes[0]
-ax1.plot(FTT, Ub_Uref, color='#1F77B4', lw=1.0)
-ax1.axhline(1.0, color='#D62728', ls='--', lw=0.8, alpha=0.7, label=r'$U_b/U_{ref}=1$')
-ax1.set_ylabel(r"$U_b \,/\, U_{ref}$")
-ax1.set_title(r"Bulk Velocity Convergence")
-ax1.legend(loc='upper right', fontsize=9)
+# ── Combined figure: top = Ub+Ma, bottom = RS+TKE ────────
+ftt_stats_start = 20.0  # accumulation start
+
+n_rows = 2 if has_rs else 1
+fig, all_axes = plt.subplots(n_rows, 1, figsize=(10, 4 * n_rows), sharex=True)
+if n_rows == 1:
+    all_axes = [all_axes]
+
+# --- Top panel: Ub/Uref + Ma_max ---
+ax1 = all_axes[0]
+color_ub = '#1F77B4'
+color_ma = '#D62728'
+
+ln1 = ax1.plot(FTT, Ub_Uref, color=color_ub, lw=1.0, label=r'$U_b / U_{ref}$')
+ax1.axhline(1.0, color=color_ub, ls='--', lw=0.8, alpha=0.5)
+ax1.set_ylabel(r"$U_b \,/\, U_{ref}$", color=color_ub)
+ax1.tick_params(axis='y', labelcolor=color_ub)
 ax1.grid(True, alpha=0.3)
 
-# Row 2: Ma_max
-ax2 = axes[1]
-ax2.plot(FTT, Ma_max, color='#D62728', lw=1.0)
-ax2.axhline(0.3, color='gray', ls='--', lw=0.8, alpha=0.7, label=r'$Ma = 0.3$')
-ax2.set_ylabel(r"$Ma_{\max}$")
-ax2.set_title(r"Maximum Mach Number")
-ax2.legend(loc='upper right', fontsize=9)
-ax2.grid(True, alpha=0.3)
+ax1b = ax1.twinx()
+ln2 = ax1b.plot(FTT, Ma_max, color=color_ma, lw=1.0, label=r'$Ma_{\max}$')
+ax1b.axhline(0.3, color='gray', ls='--', lw=0.8, alpha=0.5)
+ax1b.set_ylabel(r"$Ma_{\max}$", color=color_ma)
+ax1b.tick_params(axis='y', labelcolor=color_ma)
 
+mark_ftt_start(ax1, ftt_stats_start)
+lns = ln1 + ln2
+ax1.legend(lns, [l.get_label() for l in lns], loc='upper right', fontsize=9)
+ax1.set_title("Bulk Velocity & Mach Number", fontsize=12)
+
+# --- Bottom panel: RS + TKE (only if data exists) ---
 if has_rs:
-    # FTT_STATS_START line
-    ftt_stats_start = 20.0  # from variables.h
-    mask_stats = (FTT >= ftt_stats_start) & (uu_RS_check > 0)
+    mask_valid = np.isfinite(uu_RS_check) & np.isfinite(k_check)
+    mask_stats = mask_valid & (FTT >= ftt_stats_start) & (uu_RS_check > 0)
 
-    # Row 3: uu_RS_check
-    ax3 = axes[2]
+    ax3 = all_axes[1]
+    color_uu = '#006400'
+    color_k  = '#4B0082'
+
     if np.any(mask_stats):
-        ax3.plot(FTT[mask_stats], uu_RS_check[mask_stats], color='#2CA02C', lw=1.0)
+        ln3 = ax3.plot(FTT[mask_stats], uu_RS_check[mask_stats], color=color_uu, lw=1.0,
+                       label=r"$\langle u'u' \rangle / U_b^2$")
         convergence_analysis(ax3, FTT[mask_stats], uu_RS_check[mask_stats], 'uu_RS')
-    ax3.axvline(ftt_stats_start, color='gray', ls=':', lw=0.8, alpha=0.6)
-    ax3.text(ftt_stats_start + 0.3, ax3.get_ylim()[1] * 0.95 if ax3.get_ylim()[1] > 0 else 0,
-             f'FTT={ftt_stats_start:.0f}', fontsize=8, color='gray', va='top')
-    ax3.set_ylabel(r"$\langle u'u' \rangle \,/\, U_b^2$")
-    ax3.set_title(r"Streamwise Reynolds Stress at check point ($x/h=2,\, y/h=1$)")
+    else:
+        ln3 = ax3.plot([], [], color=color_uu, label=r"$\langle u'u' \rangle / U_b^2$")
+    ax3.set_ylabel(r"$\langle u'u' \rangle \,/\, U_b^2$", color=color_uu)
+    ax3.tick_params(axis='y', labelcolor=color_uu)
     ax3.grid(True, alpha=0.3)
 
-    # Row 4: k_check
-    ax4 = axes[3]
+    ax3b = ax3.twinx()
     if np.any(mask_stats):
-        ax4.plot(FTT[mask_stats], k_check[mask_stats], color='#9467BD', lw=1.0)
-        convergence_analysis(ax4, FTT[mask_stats], k_check[mask_stats], 'k')
-    ax4.axvline(ftt_stats_start, color='gray', ls=':', lw=0.8, alpha=0.6)
-    ax4.text(ftt_stats_start + 0.3, ax4.get_ylim()[1] * 0.95 if ax4.get_ylim()[1] > 0 else 0,
-             f'FTT={ftt_stats_start:.0f}', fontsize=8, color='gray', va='top')
-    ax4.set_ylabel(r"$k \,/\, U_b^2$")
-    ax4.set_title(r"TKE at check point ($x/h=2,\, y/h=1$)")
-    ax4.grid(True, alpha=0.3)
+        ln4 = ax3b.plot(FTT[mask_stats], k_check[mask_stats], color=color_k, lw=1.0,
+                        label=r"$k / U_b^2$")
+        convergence_analysis(ax3b, FTT[mask_stats], k_check[mask_stats], 'k')
+    else:
+        ln4 = ax3b.plot([], [], color=color_k, label=r"$k / U_b^2$")
+    ax3b.set_ylabel(r"$k \,/\, U_b^2$", color=color_k)
+    ax3b.tick_params(axis='y', labelcolor=color_k)
 
-# Shared x-axis label
-axes[-1].set_xlabel(r"FTT (Flow-Through Time)")
+    mark_ftt_start(ax3, ftt_stats_start)
+    lns2 = ln3 + ln4
+    ax3.legend(lns2, [l.get_label() for l in lns2], loc='upper right', fontsize=9)
+    ax3.set_title(r"RS & TKE Convergence at check point ($x/h\approx 2,\, y/h\approx 1$)", fontsize=12)
 
-fig.suptitle(f"Periodic Hill Flow Monitor — Re = {Re}", fontsize=15, y=1.01)
+all_axes[-1].set_xlabel(r"FTT (Flow-Through Time)")
+fig.suptitle(f"Periodic Hill Flow Monitor — Re = {Re}", fontsize=15)
 fig.tight_layout()
 
-# ── save ──────────────────────────────────────────────────
 out_pdf = os.path.join(SCRIPT_DIR, f"monitor_convergence_Re{Re}.pdf")
 out_png = os.path.join(SCRIPT_DIR, f"monitor_convergence_Re{Re}.png")
 fig.savefig(out_pdf, dpi=150, bbox_inches="tight")
 fig.savefig(out_png, dpi=200, bbox_inches="tight")
-print(f"[OK] Saved: {os.path.basename(out_pdf)}")
 print(f"[OK] Saved: {os.path.basename(out_png)}")
 plt.close(fig)
