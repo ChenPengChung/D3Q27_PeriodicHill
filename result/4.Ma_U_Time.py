@@ -61,10 +61,24 @@ filepath = os.path.join(SCRIPT_DIR, "..", "Ustar_Force_record.dat")
 if not os.path.isfile(filepath):
     sys.exit(f"[ERROR] File not found: {filepath}")
 
-data = np.loadtxt(filepath, comments='#')
+# Handle mixed column counts (4-col legacy → 7-col new mid-file)
+rows = []
+with open(filepath, 'r') as f:
+    for line in f:
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        vals = line.split()
+        try:
+            rows.append([float(v) for v in vals])
+        except ValueError:
+            continue
+max_cols = max(len(r) for r in rows)
+# Pad short rows with NaN
+data = np.array([r + [np.nan] * (max_cols - len(r)) for r in rows])
 if data.ndim == 1:
     data = data.reshape(1, -1)
-ncols = data.shape[1]
+ncols = max_cols
 
 FTT     = data[:, 0]
 Ub_Uref = data[:, 1]

@@ -116,10 +116,10 @@
 #define     INIT                (3)
 
 // INIT=2 用: merged VTK 檔案路徑
-#define     RESTART_VTK_FILE    "result/velocity_merged_1277001.vtk"
+#define     RESTART_VTK_FILE    "result/velocity_merged_1380001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_1279001"
+#define     RESTART_BIN_DIR     "checkpoint/step_1380001"
 
 // 統計量讀取 (僅 INIT=1 時生效)
 // 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat

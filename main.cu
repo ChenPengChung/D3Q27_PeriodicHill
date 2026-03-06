@@ -200,6 +200,9 @@ int main(int argc, char *argv[])
     GenerateMesh_Y();
     GenerateMesh_Z();
 
+    // 初始化 monitor RS 代表點 (需在 GenerateMesh_Z 之後, z_h 已填充)
+    InitMonitorCheckPoint();
+
     // Phase 0: 計算離散 Jacobian 度量項並輸出診斷文件
     DiagnoseMetricTerms(myid);
 
