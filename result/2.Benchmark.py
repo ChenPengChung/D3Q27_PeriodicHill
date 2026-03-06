@@ -517,7 +517,8 @@ def plot_offset_panel(ax, field_sim, field_bench, scale, title, xlabel, xlim_ran
     """
     xl = xlim_range[0] * H_HILL if xlim_range else 0
     xr = xlim_range[1] * H_HILL if xlim_range else LY
-    yh_fine = np.linspace(xl, xr, 3000)
+    # Hill shape always drawn within one period [0, 9h]
+    yh_fine = np.linspace(0, LY, 3000)
     zh_fine = hill_function(yh_fine)
     ax.fill_between(yh_fine / H_HILL, 0, zh_fine / H_HILL, color="0.90", zorder=0)
     ax.plot(yh_fine / H_HILL, zh_fine / H_HILL, color="0.45", lw=1.0, zorder=1)
@@ -658,9 +659,13 @@ for row, (fs, fb, xlbl) in enumerate(QUANTITIES):
         z_abs = p["z_abs"]
         data_sim = p.get(fs)
 
-        # Simulation (red line)
+        # Simulation (red line) — extend down to y/h=0 with straight line
         if data_sim is not None:
-            ax.plot(data_sim, z_abs, '-', color=c_sim, lw=1.2, zorder=10)
+            z_wall_h = p["z_w"] / H_HILL  # hill surface in y/h units
+            # Prepend points: (0, 0) and (0, z_wall_h) to draw vertical line to bottom
+            data_ext = np.concatenate([[0.0, 0.0], data_sim])
+            z_ext    = np.concatenate([[0.0, z_wall_h], z_abs])
+            ax.plot(data_ext, z_ext, '-', color=c_sim, lw=1.2, zorder=10)
 
         # Benchmark scatter (all available sources)
         for _, info, bdata in bench_sources:
@@ -687,12 +692,12 @@ for row, (fs, fb, xlbl) in enumerate(QUANTITIES):
         ax.tick_params(labelsize=8)
         ax.set_ylim(0, LZ / H_HILL)
 
-# Row labels on the left margin
-plt.subplots_adjust(hspace=0.3, wspace=0.15, left=0.05, right=0.99, top=0.95, bottom=0.04)
+# Row labels on the left margin — large, positioned left of first column
+plt.subplots_adjust(hspace=0.3, wspace=0.15, left=0.06, right=0.99, top=0.95, bottom=0.04)
 for row, (_, _, xlbl) in enumerate(QUANTITIES):
     pos = axes3[row, 0].get_position()
-    fig3.text(0.015, (pos.y0 + pos.y1) / 2, xlbl,
-              va='center', ha='center', fontsize=11, rotation=90)
+    fig3.text(pos.x0 - 0.008, (pos.y0 + pos.y1) / 2, xlbl,
+              va='center', ha='right', fontsize=16, fontweight='bold', rotation=90)
 
 # Legend only in top-left subplot
 legend_handles = [Line2D([0], [0], color=c_sim, lw=1.5, label="GILBM (present)")]

@@ -176,22 +176,22 @@ if has_rs:
 
     if np.any(mask_stats):
         ln3 = ax3.plot(FTT[mask_stats], uu_RS_check[mask_stats], color=color_uu, lw=1.0,
-                       label=r"$\langle u'u' \rangle / U_b^2$")
+                       label=r"$\langle u'u' \rangle / U_{ref}^2$")
         convergence_analysis(ax3, FTT[mask_stats], uu_RS_check[mask_stats], 'uu_RS')
     else:
-        ln3 = ax3.plot([], [], color=color_uu, label=r"$\langle u'u' \rangle / U_b^2$")
-    ax3.set_ylabel(r"$\langle u'u' \rangle \,/\, U_b^2$", color=color_uu)
+        ln3 = ax3.plot([], [], color=color_uu, label=r"$\langle u'u' \rangle / U_{ref}^2$")
+    ax3.set_ylabel(r"$\langle u'u' \rangle \,/\, U_{ref}^2$", color=color_uu)
     ax3.tick_params(axis='y', labelcolor=color_uu)
     ax3.grid(True, alpha=0.3)
 
     ax3b = ax3.twinx()
     if np.any(mask_stats):
         ln4 = ax3b.plot(FTT[mask_stats], k_check[mask_stats], color=color_k, lw=1.0,
-                        label=r"$k / U_b^2$")
+                        label=r"$k / U_{ref}^2$")
         convergence_analysis(ax3b, FTT[mask_stats], k_check[mask_stats], 'k')
     else:
-        ln4 = ax3b.plot([], [], color=color_k, label=r"$k / U_b^2$")
-    ax3b.set_ylabel(r"$k \,/\, U_b^2$", color=color_k)
+        ln4 = ax3b.plot([], [], color=color_k, label=r"$k / U_{ref}^2$")
+    ax3b.set_ylabel(r"$k \,/\, U_{ref}^2$", color=color_k)
     ax3b.tick_params(axis='y', labelcolor=color_k)
 
     mark_ftt_start(ax3, ftt_stats_start)
@@ -202,6 +202,16 @@ if has_rs:
 all_axes[-1].set_xlabel(r"FTT (Flow-Through Time)")
 fig.suptitle(f"Periodic Hill Flow Monitor — Re = {Re}", fontsize=15)
 fig.tight_layout()
+
+# ── Explanation note (2 lines) ────────────────
+note = (
+    r"$U_{ref}$ = target reference velocity = 0.0583 (fixed, equivalent to $U_b$ in benchmark literature)"
+    "\n"
+    r"$U_b$ = instantaneous cross-section-averaged velocity (fluctuates each step, driven toward $U_{ref}$ by PI controller)"
+)
+fig.text(0.5, -0.01, note, ha='center', va='top', fontsize=9,
+         style='italic',
+         bbox=dict(boxstyle='round,pad=0.4', facecolor='#FFFFDD', edgecolor='0.7', alpha=0.9))
 
 out_pdf = os.path.join(SCRIPT_DIR, f"monitor_convergence_Re{Re}.pdf")
 out_png = os.path.join(SCRIPT_DIR, f"monitor_convergence_Re{Re}.png")
