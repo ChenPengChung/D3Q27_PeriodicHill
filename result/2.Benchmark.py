@@ -1,31 +1,33 @@
 #!/usr/bin/env python3
 """
-Periodic Hill Benchmark Comparison: GILBM vs Breuer et al. (2009) DNS Re=700
-=============================================================================
-用法 (三種方式):
-  1. pvpython paraview_benchmark_comparison.py   (ParaView Python)
-  2. python3  paraview_benchmark_comparison.py   (需要 numpy + matplotlib)
-  3. 在 ParaView GUI 中 Tools → Python Shell → Run Script
+ERCOFTAC UFR 3-30 Periodic Hill Benchmark Comparison
+GILBM vs Breuer et al. (2009) DNS Re=700
+=====================================================
+用法:
+  python3 2.Benchmark.py   (需要 numpy + matplotlib)
 
 輸出:
-  benchmark_Umean_Re700.png / .pdf  — U/Ub 比對圖 (offset profile format)
+  benchmark_Umean_Re700.png   — <U>/Ub offset profile 比對圖
+  benchmark_RS_Re700.png      — RS + k + <V>/Ub 5-panel 比對圖
+  benchmark_profiles_*.png    — 6 頁 per-station profile (2×5 layout)
 
 Benchmark 資料來源:
-  Breuer, M., Peller, N., Rapp, Ch., Manhart, M. (2009).
-  "Flow over periodic hills – Numerical and experimental study in a wide
-   range of Reynolds numbers." Computers & Fluids, 38, 433–457.
-  下載: https://kbwiki.ercoftac.org/w/index.php?title=Abstr:2D_Periodic_Hill_Flow
-        (ERCOFTAC UFR 3-30, 選 Re=700 DNS 資料)
-
+  Breuer et al. (2009), Computers & Fluids, 38, 433-457.
+  ERCOFTAC UFR 3-30, Re=700 DNS data.
   請將下載的 benchmark 資料放在 result/benchmark/ 目錄下，
-  檔名格式: breuer_re700_xh{X}.dat  (如 breuer_re700_xh05.dat)
-  每個檔案格式: 兩欄 (y/h  U/Ub), 空格分隔, 無表頭
+  檔名格式: UFR3-30_C_700_data_MB-{NNN}.dat
 
-座標映射:
-  Code x → spanwise  (LX = 4.5)
-  Code y → streamwise (LY = 9.0 = 9h, h=1)
-  Code z → wall-normal (LZ = 3.036)
-  VTK U_mean = <v_code> / Uref  ≈ U / Ub (when Ub ≈ Uref)
+座標映射 (Code ↔ VTK ↔ ERCOFTAC):
+  Code x (i) = spanwise     → VTK v   → ERCOFTAC w
+  Code y (j) = streamwise   → VTK u   → ERCOFTAC u
+  Code z (k) = wall-normal  → VTK w   → ERCOFTAC v
+
+  ERCOFTAC col 2: <U>/Ub     = VTK U_mean   (streamwise = code v)
+  ERCOFTAC col 3: <V>/Ub     = VTK W_mean   (wall-normal = code w, NOT V_mean!)
+  ERCOFTAC col 4: <u'u'>/Ub² = VTK uu_RS    (stream×stream)
+  ERCOFTAC col 5: <v'v'>/Ub² = VTK ww_RS    (wallnorm×wallnorm, NOT vv_RS!)
+  ERCOFTAC col 6: <u'v'>/Ub² = VTK uw_RS    (stream×wallnorm, NOT uv_RS!)
+  ERCOFTAC col 7: k/Ub²      = VTK k_TKE
 """
 
 import os, sys, glob
@@ -195,7 +197,6 @@ def check_vtk_completeness(filepath):
         "POINT_DATA": False,
         "U_mean":     False,
         "W_mean":     False,
-        "V_mean":     False,
     }
     total_lines = 0
     grid_npts = 0
@@ -217,8 +218,6 @@ def check_vtk_completeness(filepath):
                 markers["U_mean"] = True
             elif stripped.startswith("SCALARS W_mean"):
                 markers["W_mean"] = True
-            elif stripped.startswith("SCALARS V_mean"):
-                markers["V_mean"] = True
 
     # Expected line count estimate:
     #   header ~5 + POINTS section (npts lines) + POINT_DATA + per scalar (2 header + npts data)
@@ -269,7 +268,32 @@ if "U_mean" not in scalars:
 # points[k*ny*nx + j*nx + i] = (x, y, z)
 pts_3d = points.reshape(nz, ny, nx, 3)  # [k, j, i, xyz]
 U_mean_3d = scalars["U_mean"].reshape(nz, ny, nx)  # [k, j, i]
-W_mean_3d = scalars.get("W_mean", np.zeros_like(U_mean_3d)).reshape(nz, ny, nx)
+W_mean_3d = scalars.get("W_mean", None)
+
+# Reynolds stresses — VTK Level 0 fields only
+# VTK naming: u=streamwise, v=spanwise, w=wall-normal
+# ERCOFTAC naming: u=streamwise, v=wall-normal
+#   VTK uu_RS = ERCOFTAC <u'u'>/Ub²
+#   VTK uw_RS = ERCOFTAC <u'v'>/Ub²  (stream×wallnorm)
+#   VTK ww_RS = ERCOFTAC <v'v'>/Ub²  (wallnorm×wallnorm)
+#   VTK k_TKE = ERCOFTAC k/Ub²
+uu_RS_3d = scalars.get("uu_RS", None)
+uw_RS_3d = scalars.get("uw_RS", None)
+ww_RS_3d = scalars.get("ww_RS", None)
+k_TKE_3d = scalars.get("k_TKE", None)
+
+# Reshape available fields
+if W_mean_3d is not None: W_mean_3d = W_mean_3d.reshape(nz, ny, nx)
+if uu_RS_3d is not None: uu_RS_3d = uu_RS_3d.reshape(nz, ny, nx)
+if uw_RS_3d is not None: uw_RS_3d = uw_RS_3d.reshape(nz, ny, nx)
+if ww_RS_3d is not None: ww_RS_3d = ww_RS_3d.reshape(nz, ny, nx)
+if k_TKE_3d is not None: k_TKE_3d = k_TKE_3d.reshape(nz, ny, nx)
+
+HAS_RS = (uu_RS_3d is not None)
+if HAS_RS:
+    print(f"[INFO] Reynolds stress fields found — will plot RS comparison")
+else:
+    print(f"[INFO] No Reynolds stress fields — plotting mean velocity only")
 
 # Extract coordinate arrays
 x_3d = pts_3d[:, :, :, 0]  # spanwise
@@ -304,6 +328,14 @@ def extract_profile(xh, y_stations, z_3d, U_3d):
 
     return z_norm, U_profile, y_actual, z_wall
 
+def extract_scalar_profile(xh, y_stations, field_3d):
+    """Extract spanwise-averaged vertical profile of any scalar field."""
+    if field_3d is None:
+        return None
+    y_target = xh * H_HILL
+    j_idx = np.argmin(np.abs(y_stations - y_target))
+    return np.mean(field_3d[:, j_idx, :], axis=1)  # average over i → [k]
+
 profiles = {}
 print(f"\n{'x/h':>6s}  {'j_idx':>5s}  {'y_actual':>8s}  {'z_wall':>6s}  {'U_max':>8s}")
 print("-" * 48)
@@ -311,7 +343,16 @@ for xh in XH_STATIONS:
     z_n, U_p, y_a, z_w = extract_profile(xh, y_stations, z_3d, U_mean_3d)
     # Store absolute z/h so profiles start from the hill surface
     z_abs = z_n + z_w / H_HILL
-    profiles[xh] = (z_abs, U_p, z_w)
+    # Extract additional scalar profiles (spanwise-averaged)
+    W_p = extract_scalar_profile(xh, y_stations, W_mean_3d)          # V_ERCOFTAC (wall-normal mean)
+    uu_p = extract_scalar_profile(xh, y_stations, uu_RS_3d)          # uu (stream×stream)
+    ww_p = extract_scalar_profile(xh, y_stations, ww_RS_3d)          # ERCOFTAC vv (wallnorm×wallnorm)
+    uw_p = extract_scalar_profile(xh, y_stations, uw_RS_3d)          # ERCOFTAC uv (stream×wallnorm)
+    k_p  = extract_scalar_profile(xh, y_stations, k_TKE_3d)          # k/Ub²
+    profiles[xh] = {
+        "z_abs": z_abs, "U": U_p, "z_w": z_w,
+        "W": W_p, "uu": uu_p, "ww": ww_p, "uw": uw_p, "k": k_p,
+    }
     print(f"{xh:6.1f}  {np.argmin(np.abs(y_stations - xh)):5d}  {y_a:8.4f}  {z_w:6.4f}  {U_p.max():8.5f}")
 
 # ================================================================
@@ -344,21 +385,36 @@ if os.path.isdir(BENCH_DIR):
         if file_num:
             candidates.insert(0, f"UFR3-30_C_700_data_MB-{file_num}.dat")
 
+        # Search in root, old path, and new named path
+        search_dirs = [
+            BENCH_DIR,
+            os.path.join(BENCH_DIR, "LESOCC (Breuer et al. 2009)", "Re700"),
+            os.path.join(BENCH_DIR, "LESOCC", "Re700"),
+        ]
         for cand in candidates:
-            fpath = os.path.join(BENCH_DIR, cand)
-            if os.path.exists(fpath):
-                # ERCOFTAC format: 7 columns (y/h  U/Ub  V/Ub  uu  vv  uv  k)
-                # with # comment header lines; y/h is absolute coordinate
+            fpath = None
+            for sdir in search_dirs:
+                p = os.path.join(sdir, cand)
+                if os.path.exists(p):
+                    fpath = p
+                    break
+            if fpath:
+                # ERCOFTAC format: 7 columns
+                #   y/h   U/Ub   V/Ub   <u'u'>/Ub²   <v'v'>/Ub²   <u'v'>/Ub²   k/Ub²
+                # ERCOFTAC u=streamwise, v=wall-normal (NOT spanwise!)
                 data = np.loadtxt(fpath, comments="#")
                 y_abs = data[:, 0]   # absolute y/h
-                U_bench = data[:, 1] # U/Ub
-
-                # Convert absolute y/h → (y - y_wall) / h
-                z_wall_bench = hill_function(np.array([xh]))[0]
-                # Keep absolute y/h (profiles start from hill surface)
-                benchmark[xh] = (y_abs, U_bench)
+                benchmark[xh] = {
+                    "y":  y_abs,
+                    "U":  data[:, 1],  # U/Ub (streamwise mean)
+                    "V":  data[:, 2],  # V/Ub (wall-normal mean, ERCOFTAC v)
+                    "uu": data[:, 3],  # <u'u'>/Ub² (stream×stream)
+                    "vv": data[:, 4],  # <v'v'>/Ub² (wallnorm×wallnorm, ERCOFTAC v)
+                    "uv": data[:, 5],  # <u'v'>/Ub² (stream×wallnorm)
+                    "k":  data[:, 6],  # k/Ub²
+                }
                 print(f"[INFO] Loaded benchmark x/h={xh}: {cand} ({len(data)} pts, "
-                      f"y/h=[{y_abs.min():.3f},{y_abs.max():.3f}], z_wall={z_wall_bench:.4f})")
+                      f"y/h=[{y_abs.min():.3f},{y_abs.max():.3f}])")
                 break
     if not benchmark:
         print("[WARN] No benchmark files found in benchmark/. Plotting simulation only.")
@@ -373,9 +429,9 @@ else:
 if not HAS_MPL:
     # If no matplotlib, export CSVs
     for xh in XH_STATIONS:
-        z_n, U_p = profiles[xh]
+        p = profiles[xh]
         out = os.path.join(SCRIPT_DIR, f"profile_xh{xh:.1f}.csv")
-        np.savetxt(out, np.column_stack([z_n, U_p]), header="z/h  U/Uref", fmt="%.8f")
+        np.savetxt(out, np.column_stack([p["z_abs"], p["U"]]), header="z/h  U/Uref", fmt="%.8f")
         print(f"[INFO] Exported {out}")
     sys.exit(0)
 
@@ -403,45 +459,63 @@ mpl.rcParams.update({
     "savefig.dpi":       300,
 })
 
-# ── Plot ───────────────────────────────────────────────────────
-fig, ax = plt.subplots(figsize=(10, 4.0))
-
-# Profile scale factor (how wide each profile appears in x/h units)
-SCALE = 0.8
-
 # Colors
 c_sim  = "#1F77B4"
 c_ref  = "#D62728"
-
-# Step 1: fill hill geometry at the bottom
-yh_fine = np.linspace(0, LY, 2000)
-zh_fine = hill_function(yh_fine)
-ax.fill_between(yh_fine / H_HILL, 0, zh_fine / H_HILL, color="0.90", zorder=0)
-ax.plot(yh_fine / H_HILL, zh_fine / H_HILL, color="0.45", lw=1.2, zorder=1)
-
-# Upper wall
-ax.axhline(y=LZ / H_HILL, color="0.45", lw=1.2, zorder=1)
-
-# Step 2: plot each profile (absolute z/h, starting from hill surface)
-for xh in XH_STATIONS:
-    z_abs, U_p, z_w = profiles[xh]
-
-    # Offset: U_p * SCALE + x/h
-    x_plot = U_p * SCALE + xh
-    ax.plot(x_plot, z_abs, "-", color=c_sim, lw=1.0, zorder=5)
-
-    # Zero reference line (thin dashed, from wall to top)
-    ax.plot([xh, xh], [z_abs[0], z_abs[-1]], "--", color="0.3", lw=0.4, zorder=2)
-
-    # Benchmark data (hollow scatter)
-    if xh in benchmark:
-        z_b, U_b = benchmark[xh]
-        x_b_plot = U_b * SCALE + xh
-        ax.scatter(x_b_plot, z_b, s=12, facecolors="none", edgecolors=c_ref,
-                   linewidths=0.5, zorder=6, marker="o")
-
-# Step 3: legend (placed in whitespace area)
 from matplotlib.lines import Line2D
+
+# ── Helper: draw one offset-profile subplot ────────────────────
+def plot_offset_panel(ax, profiles, benchmark, field_sim, field_bench,
+                      scale, title, xlabel, ylabel=r"$y\,/\,h$"):
+    """Generic offset-profile plotter for one subplot.
+    field_sim:   key in profiles[xh] dict (e.g. "U", "uu", "uw")
+    field_bench: key in benchmark[xh] dict (e.g. "U", "uu", "uv")
+    """
+    # Hill geometry
+    yh_fine = np.linspace(0, LY, 2000)
+    zh_fine = hill_function(yh_fine)
+    ax.fill_between(yh_fine / H_HILL, 0, zh_fine / H_HILL, color="0.90", zorder=0)
+    ax.plot(yh_fine / H_HILL, zh_fine / H_HILL, color="0.45", lw=1.0, zorder=1)
+    ax.axhline(y=LZ / H_HILL, color="0.45", lw=1.0, zorder=1)
+
+    for xh in XH_STATIONS:
+        p = profiles[xh]
+        z_abs = p["z_abs"]
+        data_sim = p.get(field_sim)
+        if data_sim is None:
+            continue
+
+        x_plot = data_sim * scale + xh
+        ax.plot(x_plot, z_abs, "-", color=c_sim, lw=1.0, zorder=5)
+        ax.plot([xh, xh], [z_abs[0], z_abs[-1]], "--", color="0.3", lw=0.3, zorder=2)
+
+        if xh in benchmark and field_bench in benchmark[xh]:
+            z_b = benchmark[xh]["y"]
+            d_b = benchmark[xh][field_bench]
+            x_b_plot = d_b * scale + xh
+            ax.scatter(x_b_plot, z_b, s=10, facecolors="none", edgecolors=c_ref,
+                       linewidths=0.4, zorder=6, marker="o")
+
+    ax.set_xticks(range(10))
+    ax.set_xlim(0, 9)
+    ax.set_ylim(0, LZ / H_HILL)
+    ax.set_yticks([0, 1, 2, 3])
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_title(title, fontsize=12, pad=4)
+    ax.set_xlabel(xlabel, fontsize=11)
+    ax.set_ylabel(ylabel, fontsize=11)
+
+# ================================================================
+# 5a. Figure 1: Mean Velocity — <U>/Ub  (original plot)
+# ================================================================
+fig1, ax1 = plt.subplots(figsize=(10, 4.0))
+SCALE_U = 0.8
+plot_offset_panel(ax1, profiles, benchmark,
+                  field_sim="U", field_bench="U",
+                  scale=SCALE_U,
+                  title=r"$\langle U \rangle / U_b$  (Re = 700, DNS)",
+                  xlabel=r"$x\,/\,h$")
+
 legend_elements = [
     Line2D([0], [0], color=c_sim, lw=1.3, label="Present (GILBM)"),
 ]
@@ -451,22 +525,119 @@ if benchmark:
                markeredgecolor=c_ref, markersize=5, markeredgewidth=0.8,
                label="Breuer et al. (2009) DNS")
     )
-ax.legend(handles=legend_elements, loc="lower center", frameon=True,
-          edgecolor="0.7", fancybox=False, ncol=2, fontsize=10,
-          bbox_to_anchor=(0.5, -0.28))
+ax1.legend(handles=legend_elements, loc="lower center", frameon=True,
+           edgecolor="0.7", fancybox=False, ncol=2, fontsize=10,
+           bbox_to_anchor=(0.5, -0.28))
+fig1.tight_layout()
+out1 = os.path.join(SCRIPT_DIR, "benchmark_Umean_Re700.png")
+fig1.savefig(out1, bbox_inches="tight")
+print(f"\n[OK] Saved: {os.path.basename(out1)}")
 
-# Step 4: labels and limits — frame tightly around hill range
-ax.set_ylabel(r"$y\,/\,h$", fontsize=13)
-ax.set_xlabel(r"$x\,/\,h$", fontsize=13)
+# ================================================================
+# 5b. Figure 2: 6-panel Reynolds stress + k + V_mean comparison
+# ================================================================
+if HAS_RS:
+    # Define the 6 quantities to compare
+    # (field_sim, field_bench, scale, title)
+    panels = [
+        ("uu", "uu", 30, r"$\langle u^\prime u^\prime \rangle / U_b^2$"),
+        ("ww", "vv", 30, r"$\langle v^\prime v^\prime \rangle / U_b^2$  (wall-normal)"),
+        ("uw", "uv", 60, r"$\langle u^\prime v^\prime \rangle / U_b^2$  (shear stress)"),
+        ("k",  "k",  20, r"$k / U_b^2$  (TKE)"),
+        ("W",  "V",   3, r"$\langle V \rangle / U_b$  (wall-normal mean)"),
+    ]
 
-# x ticks at integer positions 0..9
-ax.set_xticks(range(10))
-ax.set_xlim(0, 9)
-ax.set_ylim(0, LZ / H_HILL)
-ax.set_yticks([0, 1, 2, 3])
-ax.set_aspect("equal", adjustable="box")
+    nrows, ncols = 3, 2
+    fig2, axes = plt.subplots(nrows, ncols, figsize=(18, 12))
+    axes_flat = axes.flatten()
 
-fig.tight_layout()
-out_png = os.path.join(SCRIPT_DIR, "benchmark_Umean_Re700.png")
-fig.savefig(out_png, bbox_inches="tight")
-print(f"\n[OK] Saved: {os.path.basename(out_png)}")
+    for idx, (fs, fb, sc, ttl) in enumerate(panels):
+        plot_offset_panel(axes_flat[idx], profiles, benchmark,
+                          field_sim=fs, field_bench=fb,
+                          scale=sc, title=ttl, xlabel=r"$x\,/\,h$")
+
+    # Hide unused subplot (6th panel)
+    axes_flat[-1].set_visible(False)
+
+    # Single shared legend at the bottom
+    legend_elements2 = [
+        Line2D([0], [0], color=c_sim, lw=1.3, label="Present (GILBM)"),
+    ]
+    if benchmark:
+        legend_elements2.append(
+            Line2D([0], [0], marker="o", color="none", markerfacecolor="none",
+                   markeredgecolor=c_ref, markersize=5, markeredgewidth=0.8,
+                   label="Breuer et al. (2009) DNS Re=700")
+        )
+    fig2.legend(handles=legend_elements2, loc="lower center", frameon=True,
+                edgecolor="0.7", fancybox=False, ncol=2, fontsize=12,
+                bbox_to_anchor=(0.5, 0.01))
+
+    fig2.suptitle("Periodic Hill Re = 700 — Reynolds Stress Comparison", fontsize=15, y=0.98)
+    fig2.tight_layout(rect=[0, 0.04, 1, 0.96])
+    out2 = os.path.join(SCRIPT_DIR, "benchmark_RS_Re700.png")
+    fig2.savefig(out2, bbox_inches="tight")
+    print(f"[OK] Saved: {os.path.basename(out2)}")
+else:
+    print("[INFO] No Reynolds stress data in VTK — skipping RS comparison plot.")
+
+# ================================================================
+# 5c. Figure 3: Per-station profiles (6 pages × 2×5 subplots)
+# ================================================================
+# Each page shows one physical quantity at all 10 x/h stations.
+# X axis = physical quantity, Y axis = y/h (wall-normal).
+# Red line = simulation, black dots = ERCOFTAC benchmark.
+per_station_quantities = [
+    # (field_sim, field_bench, xlabel,                           filename_suffix)
+    ("U",  "U",  r"$\langle U \rangle / U_b$",                 "U"),
+    ("W",  "V",  r"$\langle V \rangle / U_b$ (wall-normal)",   "V"),
+    ("uu", "uu", r"$\langle u^\prime u^\prime \rangle / U_b^2$","uu"),
+    ("ww", "vv", r"$\langle v^\prime v^\prime \rangle / U_b^2$","vv"),
+    ("uw", "uv", r"$\langle u^\prime v^\prime \rangle / U_b^2$","uv"),
+    ("k",  "k",  r"$k / U_b^2$",                                "k"),
+]
+
+for fs, fb, xlbl, suffix in per_station_quantities:
+    # Check if simulation data exists for this field
+    if profiles[XH_STATIONS[0]].get(fs) is None:
+        print(f"[INFO] Skipping per-station page for '{suffix}' — no data in VTK")
+        continue
+
+    fig, axes = plt.subplots(2, 5, figsize=(20, 8), sharey=True)
+    axes_flat = axes.flatten()
+
+    for idx, xh in enumerate(XH_STATIONS):
+        ax = axes_flat[idx]
+        p = profiles[xh]
+        z_abs = p["z_abs"]
+        data_sim = p.get(fs)
+
+        # Simulation profile
+        if data_sim is not None:
+            ax.plot(data_sim, z_abs, "-", color=c_sim, lw=1.2, label="GILBM")
+
+        # Benchmark profile
+        if xh in benchmark and fb in benchmark[xh]:
+            z_b = benchmark[xh]["y"]
+            d_b = benchmark[xh][fb]
+            ax.plot(d_b, z_b, "ko", ms=2.5, mfc="none", mew=0.6, label="Breuer DNS")
+
+        ax.set_title(f"$x/h = {xh}$", fontsize=11)
+        ax.set_xlabel(xlbl, fontsize=9)
+        if idx % 5 == 0:
+            ax.set_ylabel(r"$y\,/\,h$", fontsize=11)
+        ax.set_ylim(0, LZ / H_HILL)
+        ax.tick_params(labelsize=9)
+
+    # Shared legend (from first subplot)
+    handles, labels = axes_flat[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=2, fontsize=11,
+               frameon=True, edgecolor="0.7", fancybox=False,
+               bbox_to_anchor=(0.5, 0.01))
+
+    fig.suptitle(f"Periodic Hill Re = 700 — {xlbl}", fontsize=14, y=0.98)
+    fig.tight_layout(rect=[0, 0.05, 1, 0.95])
+    out_ps = os.path.join(SCRIPT_DIR, f"benchmark_profiles_{suffix}.png")
+    fig.savefig(out_ps, bbox_inches="tight")
+    print(f"[OK] Saved: {os.path.basename(out_ps)}")
+    plt.close(fig)

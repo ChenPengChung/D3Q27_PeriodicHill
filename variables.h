@@ -100,8 +100,8 @@
 #define     FTT_STOP            100.0   // 模擬結束
 
 // VTK 輸出等級
-// 0 = 基本 (17 SCALARS): 瞬時場 + 平均速度 + RS + k_TKE + P_mean
-// 1 = 完整 (28 SCALARS): Level 0 + 平均渦度 + ε + Tturb + Pdiff + PP_RS
+// 0 = 基本 (13 SCALARS): 瞬時速度(3) + 瞬時渦度(3) + 平均速度(2) + RS(3) + k_TKE + P_mean
+// 1 = 完整: Level 0 + V_mean + 展向RS(uv,vv,vw) + 平均渦度 + ε + Tturb + Pdiff + PP_RS
 #define     VTK_OUTPUT_LEVEL    0
 
 // ================================================================

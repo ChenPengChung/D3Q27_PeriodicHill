@@ -1104,6 +1104,31 @@ void InitFromMergedVTK(const char* vtk_path) {
 }
 
 /*第四段:每1000步輸出可視化VTK檔案*/
+/*
+ * ═══════════════════════════════════════════════════════════
+ * 座標映射：Code ↔ VTK (Benchmark) ↔ ERCOFTAC
+ * ═══════════════════════════════════════════════════════════
+ *
+ *   Code    物理方向      VTK 名稱    ERCOFTAC 名稱
+ *   ─────────────────────────────────────────────────
+ *   x (i)   展向 span     v           w
+ *   y (j)   流向 stream   u           u
+ *   z (k)   法向 normal   w           v
+ *
+ * 關鍵映射（ERCOFTAC 7 欄比較時）：
+ *   ERCOFTAC col 2: <U>/Ub    = VTK U_mean  (streamwise = code v)
+ *   ERCOFTAC col 3: <V>/Ub    = VTK W_mean  (wall-normal = code w, 不是 V_mean！)
+ *   ERCOFTAC col 4: <u'u'>/Ub²= VTK uu_RS   (stream×stream)
+ *   ERCOFTAC col 5: <v'v'>/Ub²= VTK ww_RS   (wallnorm×wallnorm, 不是 vv_RS！)
+ *   ERCOFTAC col 6: <u'v'>/Ub²= VTK uw_RS   (stream×wallnorm, 不是 uv_RS！)
+ *   ERCOFTAC col 7: k/Ub²     = VTK k_TKE
+ *
+ * 渦度映射（與速度 SCALAR 一致的 benchmark frame）：
+ *   VTK omega_u (流向渦度) = code ω_y (oy)
+ *   VTK omega_v (展向渦度) = code ω_x (ox)
+ *   VTK omega_w (法向渦度) = code ω_z (oz)
+ * ═══════════════════════════════════════════════════════════
+ */
 // 合併所有 GPU 結果，輸出單一 VTK 檔案 (Paraview)
 void fileIO_velocity_vtk_merged(int step) {
     // 每個 GPU 內部有效區域的 y 層數 (不含 ghost)
@@ -1139,9 +1164,9 @@ void fileIO_velocity_vtk_merged(int step) {
     }}}
 
     // 準備本地時間平均資料 (若有累積), 正規化: ÷accu_count÷Uref
-    double *ut_local = NULL, *vt_local = NULL, *wt_local = NULL;
+    // 只輸出 U_mean (streamwise=code v) 和 W_mean (wall-normal=code w)
+    double *vt_local = NULL, *wt_local = NULL;
     if (accu_count > 0) {
-        ut_local = (double*)malloc(localPoints * sizeof(double));
         vt_local = (double*)malloc(localPoints * sizeof(double));
         wt_local = (double*)malloc(localPoints * sizeof(double));
         double inv_count_uref = 1.0 / ((double)accu_count * (double)Uref);
@@ -1150,7 +1175,6 @@ void fileIO_velocity_vtk_merged(int step) {
         for( int j = 3; j < NYD6-3; j++ ){
         for( int i = 3; i < NX6-3; i++ ){
             int index = j*NZ6*NX6 + k*NX6 + i;
-            ut_local[tidx] = u_tavg_h[index] * inv_count_uref;  // V_mean (spanwise=code u)
             vt_local[tidx] = v_tavg_h[index] * inv_count_uref;  // U_mean (streamwise=code v)
             wt_local[tidx] = w_tavg_h[index] * inv_count_uref;  // W_mean (wall-normal=code w)
             tidx++;
@@ -1158,35 +1182,29 @@ void fileIO_velocity_vtk_merged(int step) {
     }
 
     // 準備 Reynolds stress + P_mean (若有累積)
-    // 座標映射 (Code → Benchmark): code_u=spanwise=V_bench, code_v=streamwise=U_bench, code_w=wall-normal=W_bench
-    //   VTK uu_RS (流向×流向)   ← code (Σvv/N − v̄²) / Uref²     [GPU: VV, V]
-    //   VTK uv_RS (流向×展向)   ← code (Σuv/N − ū·v̄) / Uref²    [GPU: UV, U, V]
-    //   VTK uw_RS (流向×法向)   ← code (Σvw/N − v̄·w̄) / Uref²    [GPU: VW, V, W]
-    //   VTK vv_RS (展向×展向)   ← code (Σuu/N − ū²) / Uref²      [GPU: UU, U]
-    //   VTK vw_RS (展向×法向)   ← code (Σuw/N − ū·w̄) / Uref²    [GPU: UW, U, W]
-    //   VTK ww_RS (法向×法向)   ← code (Σww/N − w̄²) / Uref²      [GPU: WW, W]
-    double *uu_local = NULL, *uv_local = NULL, *uw_local = NULL;
-    double *vv_local = NULL, *vw_local = NULL, *ww_local = NULL;
+    // Level 0: 只輸出 ERCOFTAC 7 欄對應的 3 個 RS + k_TKE + P_mean
+    //   VTK uu_RS  ← code (Σvv/N − v̄²) / Uref²   = ERCOFTAC <u'u'>/Ub²  [GPU: VV, V]
+    //   VTK uw_RS  ← code (Σvw/N − v̄·w̄) / Uref²  = ERCOFTAC <u'v'>/Ub²  [GPU: VW, V, W]
+    //   VTK ww_RS  ← code (Σww/N − w̄²) / Uref²    = ERCOFTAC <v'v'>/Ub²  [GPU: WW, W]
+    //   VTK k_TKE  ← 0.5*(uu + vv_inline + ww)     = ERCOFTAC k/Ub²
+    //   vv (展向 RS) 只用於 k_TKE 計算，不單獨輸出
+    double *uu_local = NULL, *uw_local = NULL, *ww_local = NULL;
     double *k_local = NULL, *p_mean_local = NULL;
     if (accu_count > 0 && (int)TBSWITCH) {
         uu_local = (double*)malloc(localPoints * sizeof(double));
-        uv_local = (double*)malloc(localPoints * sizeof(double));
         uw_local = (double*)malloc(localPoints * sizeof(double));
-        vv_local = (double*)malloc(localPoints * sizeof(double));
-        vw_local = (double*)malloc(localPoints * sizeof(double));
         ww_local = (double*)malloc(localPoints * sizeof(double));
         k_local  = (double*)malloc(localPoints * sizeof(double));
         p_mean_local = (double*)malloc(localPoints * sizeof(double));
 
-        // Copy 10 MeanVars arrays from GPU → temporary host buffers
+        // Copy 8 MeanVars arrays from GPU → temporary host buffers
+        // (UV, UW not needed: uv_RS/vw_RS removed from Level 0)
         size_t grid_bytes_rs = (size_t)NX6 * NYD6 * NZ6 * sizeof(double);
         double *U_h_rs = (double*)malloc(grid_bytes_rs);
         double *V_h_rs = (double*)malloc(grid_bytes_rs);
         double *W_h_rs = (double*)malloc(grid_bytes_rs);
         double *P_h_rs = (double*)malloc(grid_bytes_rs);
         double *UU_h_rs = (double*)malloc(grid_bytes_rs);
-        double *UV_h_rs = (double*)malloc(grid_bytes_rs);
-        double *UW_h_rs = (double*)malloc(grid_bytes_rs);
         double *VV_h_rs = (double*)malloc(grid_bytes_rs);
         double *WW_h_rs = (double*)malloc(grid_bytes_rs);
         double *VW_h_rs = (double*)malloc(grid_bytes_rs);
@@ -1195,8 +1213,6 @@ void fileIO_velocity_vtk_merged(int step) {
         CHECK_CUDA(cudaMemcpy(W_h_rs,  W,  grid_bytes_rs, cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(P_h_rs,  P,  grid_bytes_rs, cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(UU_h_rs, UU, grid_bytes_rs, cudaMemcpyDeviceToHost));
-        CHECK_CUDA(cudaMemcpy(UV_h_rs, UV, grid_bytes_rs, cudaMemcpyDeviceToHost));
-        CHECK_CUDA(cudaMemcpy(UW_h_rs, UW, grid_bytes_rs, cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(VV_h_rs, VV, grid_bytes_rs, cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(WW_h_rs, WW, grid_bytes_rs, cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(VW_h_rs, VW, grid_bytes_rs, cudaMemcpyDeviceToHost));
@@ -1208,23 +1224,19 @@ void fileIO_velocity_vtk_merged(int step) {
         for( int j = 3; j < NYD6-3; j++ ){
         for( int i = 3; i < NX6-3; i++ ){
             int index = j*NZ6*NX6 + k*NX6 + i;
-            double u_m = U_h_rs[index]*inv_N;  // <u_code> (spanwise = benchmark V)
-            double v_m = V_h_rs[index]*inv_N;  // <v_code> (streamwise = benchmark U)
-            double w_m = W_h_rs[index]*inv_N;  // <w_code> (wall-normal = benchmark W)
-            // Benchmark RS from code accumulators (see coordinate mapping above)
-            uu_local[ridx] = (VV_h_rs[index]*inv_N - v_m*v_m) * inv_Uref2;  // <U'U'>/Ub²
-            uv_local[ridx] = (UV_h_rs[index]*inv_N - u_m*v_m) * inv_Uref2;  // <U'V'>/Ub²
-            uw_local[ridx] = (VW_h_rs[index]*inv_N - v_m*w_m) * inv_Uref2;  // <U'W'>/Ub²
-            vv_local[ridx] = (UU_h_rs[index]*inv_N - u_m*u_m) * inv_Uref2;  // <V'V'>/Ub²
-            vw_local[ridx] = (UW_h_rs[index]*inv_N - u_m*w_m) * inv_Uref2;  // <V'W'>/Ub²
-            ww_local[ridx] = (WW_h_rs[index]*inv_N - w_m*w_m) * inv_Uref2;  // <W'W'>/Ub²
-            k_local[ridx]  = 0.5 * (uu_local[ridx] + vv_local[ridx] + ww_local[ridx]);  // k/Ub²
+            double u_m = U_h_rs[index]*inv_N;  // <u_code> (spanwise)
+            double v_m = V_h_rs[index]*inv_N;  // <v_code> (streamwise)
+            double w_m = W_h_rs[index]*inv_N;  // <w_code> (wall-normal)
+            uu_local[ridx] = (VV_h_rs[index]*inv_N - v_m*v_m) * inv_Uref2;  // ERCOFTAC <u'u'>/Ub²
+            uw_local[ridx] = (VW_h_rs[index]*inv_N - v_m*w_m) * inv_Uref2;  // ERCOFTAC <u'v'>/Ub²
+            ww_local[ridx] = (WW_h_rs[index]*inv_N - w_m*w_m) * inv_Uref2;  // ERCOFTAC <v'v'>/Ub²
+            double vv_val  = (UU_h_rs[index]*inv_N - u_m*u_m) * inv_Uref2;  // 展向 RS (k_TKE 用)
+            k_local[ridx]  = 0.5 * (uu_local[ridx] + vv_val + ww_local[ridx]);  // k/Ub²
             p_mean_local[ridx] = P_h_rs[index] * inv_N;  // <P>
             ridx++;
         }}}
         free(U_h_rs); free(V_h_rs); free(W_h_rs); free(P_h_rs);
-        free(UU_h_rs); free(UV_h_rs); free(UW_h_rs);
-        free(VV_h_rs); free(WW_h_rs); free(VW_h_rs);
+        free(UU_h_rs); free(VV_h_rs); free(WW_h_rs); free(VW_h_rs);
     }
 
     // Compute instantaneous vorticity (omega_u, omega_v, omega_w) — benchmark coordinates
@@ -1289,22 +1301,17 @@ void fileIO_velocity_vtk_merged(int step) {
         z_global = (double*)malloc(zLocalSize * nProcs * sizeof(double));
     }
 
-    double *ut_global = NULL, *vt_global = NULL, *wt_global = NULL;
+    double *vt_global = NULL, *wt_global = NULL;
     if( myid == 0 && accu_count > 0 ) {
-        ut_global = (double*)malloc(gatherPoints * sizeof(double));
         vt_global = (double*)malloc(gatherPoints * sizeof(double));
         wt_global = (double*)malloc(gatherPoints * sizeof(double));
     }
 
-    double *uu_global = NULL, *uv_global = NULL, *uw_global = NULL;
-    double *vv_global = NULL, *vw_global = NULL, *ww_global = NULL;
+    double *uu_global = NULL, *uw_global = NULL, *ww_global = NULL;
     double *k_global = NULL, *p_mean_global = NULL;
     if( myid == 0 && accu_count > 0 && (int)TBSWITCH ) {
         uu_global = (double*)malloc(gatherPoints * sizeof(double));
-        uv_global = (double*)malloc(gatherPoints * sizeof(double));
         uw_global = (double*)malloc(gatherPoints * sizeof(double));
-        vv_global = (double*)malloc(gatherPoints * sizeof(double));
-        vw_global = (double*)malloc(gatherPoints * sizeof(double));
         ww_global = (double*)malloc(gatherPoints * sizeof(double));
         k_global  = (double*)malloc(gatherPoints * sizeof(double));
         p_mean_global = (double*)malloc(gatherPoints * sizeof(double));
@@ -1324,16 +1331,12 @@ void fileIO_velocity_vtk_merged(int step) {
     MPI_Gather(z_local, zLocalSize, MPI_DOUBLE, z_global, zLocalSize, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     if (accu_count > 0) {
-        MPI_Gather(ut_local, localPoints, MPI_DOUBLE, ut_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(vt_local, localPoints, MPI_DOUBLE, vt_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(wt_local, localPoints, MPI_DOUBLE, wt_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
     if (accu_count > 0 && (int)TBSWITCH) {
         MPI_Gather(uu_local,     localPoints, MPI_DOUBLE, uu_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(uv_local,     localPoints, MPI_DOUBLE, uv_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(uw_local,     localPoints, MPI_DOUBLE, uw_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(vv_local,     localPoints, MPI_DOUBLE, vv_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gather(vw_local,     localPoints, MPI_DOUBLE, vw_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(ww_local,     localPoints, MPI_DOUBLE, ww_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(k_local,      localPoints, MPI_DOUBLE, k_global,      localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(p_mean_local, localPoints, MPI_DOUBLE, p_mean_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
@@ -1407,8 +1410,9 @@ void fileIO_velocity_vtk_merged(int step) {
         }}}
 
         // ================================================================
-        // VTK Level 0: 17 SCALARS + 1 VECTORS
+        // VTK Level 0: 13 SCALARS + 1 VECTORS
         // Coordinate mapping: code_u=spanwise(V), code_v=streamwise(U), code_w=wall-normal(W)
+        // See coordinate mapping comment at top of this function
         // ================================================================
 
         // Helper macro: write one SCALAR field over the global grid
@@ -1463,27 +1467,23 @@ void fileIO_velocity_vtk_merged(int step) {
             }}}
         }
 
-        // [B] 瞬時渦度 (3 SCALARS): omega_u, omega_v, omega_w
-        VTK_WRITE_SCALAR("omega_u", ox_global);
-        VTK_WRITE_SCALAR("omega_v", oy_global);
-        VTK_WRITE_SCALAR("omega_w", oz_global);
+        // [B] 瞬時渦度 (3 SCALARS): benchmark frame (omega_u=流向, omega_v=展向, omega_w=法向)
+        VTK_WRITE_SCALAR("omega_u", oy_global);  // 流向渦度 = code ω_y
+        VTK_WRITE_SCALAR("omega_v", ox_global);  // 展向渦度 = code ω_x
+        VTK_WRITE_SCALAR("omega_w", oz_global);  // 法向渦度 = code ω_z
 
-        // [C] 平均速度 (3 SCALARS): U_mean, V_mean, W_mean (÷count÷Uref, from u_tavg)
+        // [C] 平均速度 (2 SCALARS): U_mean, W_mean (÷count÷Uref)
         if (accu_count > 0) {
-            VTK_WRITE_SCALAR("U_mean", vt_global);  // streamwise = code v
-            VTK_WRITE_SCALAR("V_mean", ut_global);  // spanwise = code u
-            VTK_WRITE_SCALAR("W_mean", wt_global);  // wall-normal = code w
+            VTK_WRITE_SCALAR("U_mean", vt_global);  // ERCOFTAC <U>/Ub = streamwise = code v
+            VTK_WRITE_SCALAR("W_mean", wt_global);  // ERCOFTAC <V>/Ub = wall-normal = code w
         }
 
-        // [D] Reynolds Stress (6 SCALARS) + k_TKE (1) + P_mean (1)
+        // [D] Reynolds Stress (3 SCALARS) + k_TKE (1) + P_mean (1) — ERCOFTAC col 4-7
         if (accu_count > 0 && (int)TBSWITCH) {
-            VTK_WRITE_SCALAR("uu_RS", uu_global);
-            VTK_WRITE_SCALAR("uv_RS", uv_global);
-            VTK_WRITE_SCALAR("uw_RS", uw_global);
-            VTK_WRITE_SCALAR("vv_RS", vv_global);
-            VTK_WRITE_SCALAR("vw_RS", vw_global);
-            VTK_WRITE_SCALAR("ww_RS", ww_global);
-            VTK_WRITE_SCALAR("k_TKE", k_global);
+            VTK_WRITE_SCALAR("uu_RS", uu_global);   // ERCOFTAC col 4: <u'u'>/Ub²
+            VTK_WRITE_SCALAR("uw_RS", uw_global);   // ERCOFTAC col 6: <u'v'>/Ub²
+            VTK_WRITE_SCALAR("ww_RS", ww_global);   // ERCOFTAC col 5: <v'v'>/Ub²
+            VTK_WRITE_SCALAR("k_TKE", k_global);    // ERCOFTAC col 7: k/Ub²
             VTK_WRITE_SCALAR("P_mean", p_mean_global);
         }
 
@@ -1504,17 +1504,13 @@ void fileIO_velocity_vtk_merged(int step) {
         free(w_global);
         free(z_global);
         free(y_global_arr);
-        if (ut_global) free(ut_global);
         if (vt_global) free(vt_global);
         if (wt_global) free(wt_global);
         if (ox_global)  free(ox_global);
         if (oy_global)  free(oy_global);
         if (oz_global)  free(oz_global);
         if (uu_global)     free(uu_global);
-        if (uv_global)     free(uv_global);
         if (uw_global)     free(uw_global);
-        if (vv_global)     free(vv_global);
-        if (vw_global)     free(vw_global);
         if (ww_global)     free(ww_global);
         if (k_global)      free(k_global);
         if (p_mean_global) free(p_mean_global);
@@ -1524,17 +1520,13 @@ void fileIO_velocity_vtk_merged(int step) {
     free(v_local);
     free(w_local);
     free(z_local);
-    if (ut_local) free(ut_local);
     if (vt_local) free(vt_local);
     if (wt_local) free(wt_local);
     free(ox_local);
     free(oy_local);
     free(oz_local);
     if (uu_local)     free(uu_local);
-    if (uv_local)     free(uv_local);
     if (uw_local)     free(uw_local);
-    if (vv_local)     free(vv_local);
-    if (vw_local)     free(vw_local);
     if (ww_local)     free(ww_local);
     if (k_local)      free(k_local);
     if (p_mean_local) free(p_mean_local);
