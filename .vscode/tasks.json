@@ -1387,6 +1387,40 @@
                       "runOptions":  {
                                          "runOn":  "folderOpen"
                                      }
+                  },
+                  {
+                      "label":  "Run Benchmark Plot",
+                      "type":  "process",
+                      "command":  "python3",
+                      "args":  [
+                                   "${workspaceFolder}/result/2.Benchmark.py"
+                               ],
+                      "windows":  {
+                                      "command":  "python"
+                                  },
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared",
+                                           "focus":  true
+                                       },
+                      "problemMatcher":  []
+                  },
+                  {
+                      "label":  "Run Time Series Plot",
+                      "type":  "process",
+                      "command":  "python3",
+                      "args":  [
+                                   "${workspaceFolder}/result/4.Ma_U_Time.py"
+                               ],
+                      "windows":  {
+                                      "command":  "python"
+                                  },
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared",
+                                           "focus":  true
+                                       },
+                      "problemMatcher":  []
                   }
               ],
     "inputs":  [

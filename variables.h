@@ -112,13 +112,13 @@
 //   1 = 從 per-rank binary 續跑 (legacy, 只有瞬時場)
 //   2 = 從 merged VTK 續跑 (f=feq 近似, 統計量無法還原)
 //   3 = 從 binary checkpoint 續跑 (精確: f + 統計量累積和)
-#define     INIT                (2)
+#define     INIT                (3)
 
 // INIT=2 用: merged VTK 檔案路徑
-#define     RESTART_VTK_FILE    "result/velocity_merged_1271001.vtk"
+#define     RESTART_VTK_FILE    "result/velocity_merged_1277001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_1685001"
+#define     RESTART_BIN_DIR     "checkpoint/step_1279001"
 
 // 統計量讀取 (僅 INIT=1 時生效)
 // 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat
