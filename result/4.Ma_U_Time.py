@@ -177,8 +177,8 @@ ln2 = ax1b.plot(FTT, Ma_max, color=color_ma, lw=1.0, label=r'$Ma_{\max}$')
 ax1b.set_ylabel(r"$Ma_{\max}$", color=color_ma)
 ax1b.tick_params(axis='y', labelcolor=color_ma)
 
-# --- Ma = 0.2 danger zone ---
-# Ensure y-axis shows at least up to 0.25 so the danger zone is visible
+# --- Ma danger zone annotations ---
+# BGK D3Q19 stability limit: Ma ≈ 0.215 at τ=0.604
 ma_ymin, ma_ymax = ax1b.get_ylim()
 ma_upper = max(ma_ymax, 0.25)
 ax1b.set_ylim(ma_ymin, ma_upper)
@@ -187,15 +187,15 @@ ax1b.set_ylim(ma_ymin, ma_upper)
 ax1b.axhspan(0.20, ma_upper, alpha=0.10, color='red', zorder=0)
 ax1b.axhline(0.20, color='red', ls='--', lw=1.2, alpha=0.8)
 
-# CAUTION zone (0.18 <= Ma < 0.20): yellow shading
-ax1b.axhspan(0.18, 0.20, alpha=0.10, color='#FFA500', zorder=0)
-ax1b.axhline(0.18, color='#FFA500', ls=':', lw=0.8, alpha=0.6)
+# CAUTION zone (0.15 <= Ma < 0.20): yellow shading
+ax1b.axhspan(0.15, 0.20, alpha=0.08, color='#FFA500', zorder=0)
+ax1b.axhline(0.15, color='#FFA500', ls=':', lw=0.8, alpha=0.6)
 
 # Annotations on right edge
 ax1b.text(FTT[-1], 0.203, r' $Ma \geq 0.20$: FREEZE',
           fontsize=8, color='red', fontweight='bold', va='bottom', ha='right',
           bbox=dict(facecolor='white', alpha=0.8, edgecolor='red', pad=1.5, boxstyle='round,pad=0.2'))
-ax1b.text(FTT[-1], 0.183, r' CAUTION',
+ax1b.text(FTT[-1], 0.153, r' CAUTION',
           fontsize=7, color='#CC7000', va='bottom', ha='right',
           bbox=dict(facecolor='white', alpha=0.7, edgecolor='#FFA500', pad=1, boxstyle='round,pad=0.2'))
 

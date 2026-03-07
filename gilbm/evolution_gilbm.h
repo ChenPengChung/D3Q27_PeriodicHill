@@ -878,6 +878,113 @@ __device__ void gilbm_step1_point(
 }
 
 // ============================================================================
+// Regularization: project f_new onto feq + stress-tensor neq (Latt & Chopard 2006)
+// Eliminates ghost modes that cause BGK/MRT instability at low τ.
+// Called AFTER Step 1.5 (macroscopic + feq computed), BEFORE MPI exchange.
+// Pure local operation: reads/writes f_new[q] and feq_d[q] at same index.
+// Conservation: Σ f^(1) = 0, Σ e·f^(1) = 0 → ρ and ρu exactly preserved.
+// ============================================================================
+#if USE_REGULARIZATION
+__device__ void gilbm_regularize_fnew(
+    double *f_new_ptrs[19], double *feq_d, int index)
+{
+    // ── Pass 1: load f^neq and compute Π^neq (6 independent components) ──
+    // f^neq_q = f_new_q - feq_q
+    double fn[19];
+    for (int q = 0; q < 19; q++)
+        fn[q] = f_new_ptrs[q][index] - feq_d[q * GRID_SIZE + index];
+
+    // Π_αβ = Σ_q e_qα · e_qβ · f^neq_q
+    // D3Q19: e ∈ {-1,0,1} → only directions with nonzero e_α contribute
+    // Diagonal: Π_xx, Π_yy, Π_zz (10 terms each)
+    double Pxx = fn[1]+fn[2]   + fn[7]+fn[8]+fn[9]+fn[10]   + fn[11]+fn[12]+fn[13]+fn[14];
+    double Pyy = fn[3]+fn[4]   + fn[7]+fn[8]+fn[9]+fn[10]   + fn[15]+fn[16]+fn[17]+fn[18];
+    double Pzz = fn[5]+fn[6]   + fn[11]+fn[12]+fn[13]+fn[14] + fn[15]+fn[16]+fn[17]+fn[18];
+    // Off-diagonal: Π_xy, Π_xz, Π_yz (4 terms each, with signs from e products)
+    double Pxy = fn[7] - fn[8] - fn[9] + fn[10];   // ex·ey: +1,-1,-1,+1
+    double Pxz = fn[11] - fn[12] - fn[13] + fn[14]; // ex·ez: +1,-1,-1,+1
+    double Pyz = fn[15] - fn[16] - fn[17] + fn[18]; // ey·ez: +1,-1,-1,+1
+
+    // ── Pass 2: reconstruct f^(1) and overwrite f_new ──
+    // f^(1)_q = w_q × (9/2) × (Σ_αβ e_qα·e_qβ·Π_αβ - Π_trace/3)
+    //         = w_q × 4.5 × QP_q
+    // where QP_q = Σ_αβ e_qα·e_qβ·Π_αβ - trace3
+    double trace3 = (Pxx + Pyy + Pzz) / 3.0;
+
+    // Face-direction QP (used directly and as building blocks for edges)
+    double QP_x = Pxx - trace3;   // q=1,2 (±1,0,0)
+    double QP_y = Pyy - trace3;   // q=3,4 (0,±1,0)
+    double QP_z = Pzz - trace3;   // q=5,6 (0,0,±1)
+
+    // Edge-direction base QP (before cross-term)
+    double QP_xy = Pxx + Pyy - trace3;  // q=7..10
+    double QP_xz = Pxx + Pzz - trace3;  // q=11..14
+    double QP_yz = Pyy + Pzz - trace3;  // q=15..18
+
+    // w_q × 4.5 coefficients: rest=1.5, face=0.25, edge=0.125
+    double f1_rest   = 1.5   * (-trace3);
+    double f1_face_x = 0.25  * QP_x;
+    double f1_face_y = 0.25  * QP_y;
+    double f1_face_z = 0.25  * QP_z;
+    double f1_xy_p   = 0.125 * (QP_xy + 2.0 * Pxy);  // q=7,10  (ex·ey=+1)
+    double f1_xy_n   = 0.125 * (QP_xy - 2.0 * Pxy);  // q=8,9   (ex·ey=-1)
+    double f1_xz_p   = 0.125 * (QP_xz + 2.0 * Pxz);  // q=11,14 (ex·ez=+1)
+    double f1_xz_n   = 0.125 * (QP_xz - 2.0 * Pxz);  // q=12,13 (ex·ez=-1)
+    double f1_yz_p   = 0.125 * (QP_yz + 2.0 * Pyz);  // q=15,18 (ey·ez=+1)
+    double f1_yz_n   = 0.125 * (QP_yz - 2.0 * Pyz);  // q=16,17 (ey·ez=-1)
+
+    // Overwrite f_new = feq + f^(1)  (ghost modes discarded)
+    f_new_ptrs[0][index]  = feq_d[0  * GRID_SIZE + index] + f1_rest;
+    f_new_ptrs[1][index]  = feq_d[1  * GRID_SIZE + index] + f1_face_x;
+    f_new_ptrs[2][index]  = feq_d[2  * GRID_SIZE + index] + f1_face_x;
+    f_new_ptrs[3][index]  = feq_d[3  * GRID_SIZE + index] + f1_face_y;
+    f_new_ptrs[4][index]  = feq_d[4  * GRID_SIZE + index] + f1_face_y;
+    f_new_ptrs[5][index]  = feq_d[5  * GRID_SIZE + index] + f1_face_z;
+    f_new_ptrs[6][index]  = feq_d[6  * GRID_SIZE + index] + f1_face_z;
+    f_new_ptrs[7][index]  = feq_d[7  * GRID_SIZE + index] + f1_xy_p;
+    f_new_ptrs[8][index]  = feq_d[8  * GRID_SIZE + index] + f1_xy_n;
+    f_new_ptrs[9][index]  = feq_d[9  * GRID_SIZE + index] + f1_xy_n;
+    f_new_ptrs[10][index] = feq_d[10 * GRID_SIZE + index] + f1_xy_p;
+    f_new_ptrs[11][index] = feq_d[11 * GRID_SIZE + index] + f1_xz_p;
+    f_new_ptrs[12][index] = feq_d[12 * GRID_SIZE + index] + f1_xz_n;
+    f_new_ptrs[13][index] = feq_d[13 * GRID_SIZE + index] + f1_xz_n;
+    f_new_ptrs[14][index] = feq_d[14 * GRID_SIZE + index] + f1_xz_p;
+    f_new_ptrs[15][index] = feq_d[15 * GRID_SIZE + index] + f1_yz_p;
+    f_new_ptrs[16][index] = feq_d[16 * GRID_SIZE + index] + f1_yz_n;
+    f_new_ptrs[17][index] = feq_d[17 * GRID_SIZE + index] + f1_yz_n;
+    f_new_ptrs[18][index] = feq_d[18 * GRID_SIZE + index] + f1_yz_p;
+}
+
+__global__ void GILBM_Regularize_Kernel(
+    double *f0_new, double *f1_new, double *f2_new, double *f3_new, double *f4_new,
+    double *f5_new, double *f6_new, double *f7_new, double *f8_new, double *f9_new,
+    double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
+    double *f15_new, double *f16_new, double *f17_new, double *f18_new,
+    double *feq_d)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (i <= 2 || i >= NX6 - 3 || j < 3 || j >= NYD6 - 3 || k <= 2 || k >= NZ6 - 3) return;
+    // Skip wall points: preserve Chapman-Enskog BC values set by Step 1.
+    // CE BC and regularization are both first-order CE, but mixing incoming (BC-set)
+    // and outgoing (interpolated) into a single Π then redistributing may introduce
+    // cross-contamination in GILBM's non-uniform grid context.
+    if (k == 3 || k == NZ6 - 4) return;
+
+    double *f_new_ptrs[19] = {
+        f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
+        f7_new, f8_new, f9_new, f10_new, f11_new, f12_new,
+        f13_new, f14_new, f15_new, f16_new, f17_new, f18_new
+    };
+
+    const int index = j * (NX6 * NZ6) + k * NX6 + i;
+    gilbm_regularize_fnew(f_new_ptrs, feq_d, index);
+}
+#endif // USE_REGULARIZATION
+
+// ============================================================================
 // Correction kernel: re-run Step 2+3 for MPI boundary rows AFTER ghost exchange
 // Fixes stale ghost zone f_new data used by the initial buffer kernel pass.
 // Launch for start=3 (left band, 3 rows) and start=NYD6-6 (right band, 3 rows).

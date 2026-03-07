@@ -70,6 +70,12 @@
 // 1 = MRT (Multi-Relaxation-Time)
 #define     USE_MRT             1
 
+// Regularized LBM (Latt & Chopard 2006)
+// 在 Step 1.5 之後正則化 f_new：投影到 feq + 應力張量 neq，消除 ghost modes
+// 與 USE_MRT 正交：正則化清理 streaming 輸出，碰撞算子(BGK/MRT)不受影響
+// 0 = 關閉, 1 = Standard Regularization (σ=1)
+#define     USE_REGULARIZATION  1
+
 // ================================================================
 // 7. Kernel 策略
 // ================================================================
@@ -91,6 +97,17 @@
 // Re=100: alpha=10, Re=2800: alpha=3~14
 // 週期山丘需較高 gain 加速收斂
 #define     force_alpha 3
+
+// Ma 安全閥閾值 (隨碰撞算子配置自動調整)
+// CAUTION: 從此 Ma 開始線性衰減外力增益 (100% → 0%)
+// FREEZE:  Ma 超過此值進入激進衰減模式
+#if USE_REGULARIZATION
+#define     MA_CAUTION  0.30    // R-LBM+MRT 穩定極限 ~0.40-0.45，從 0.30 開始抑制
+#define     MA_FREEZE   0.35    // 留 0.05-0.10 安全餘裕
+#else
+#define     MA_CAUTION  0.15    // BGK/MRT 穩定極限 ~0.22-0.30
+#define     MA_FREEZE   0.20
+#endif
 
 // ================================================================
 // 9. FTT 閾值與統計控制

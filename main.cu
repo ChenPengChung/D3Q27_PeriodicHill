@@ -224,6 +224,11 @@ int main(int argc, char *argv[])
    
     if (myid == 0) {
         printf("  ─────────────────────────────────────────────────────────\n");
+        printf("  Collision:      %s\n", USE_MRT ? "MRT (d'Humieres D3Q19)" : "BGK/SRT");
+        printf("  Regularization: %s\n", USE_REGULARIZATION ? "ON (Latt & Chopard 2006)" : "OFF");
+        printf("  Kernel:         %s\n", USE_P6 ? "P6 (Step1 -> MPI -> Step23)" : "P5 (monolithic + Correction)");
+        printf("  Ma safety:      CAUTION=%.2f  FREEZE=%.2f\n", (double)MA_CAUTION, (double)MA_FREEZE);
+        printf("  ─────────────────────────────────────────────────────────\n");
         printf("  dt_global = MIN(all ranks) = %.6e\n", dt_global);
         printf("  dt_old = minSize = %.6e\n", (double)minSize);
         printf("  ratio dt_global / minSize = %.4f\n", dt_global / (double)minSize);

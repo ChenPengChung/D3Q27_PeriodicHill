@@ -199,6 +199,18 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     );
     CHECK_CUDA( cudaStreamSynchronize(stream0) );
 
+#if USE_REGULARIZATION
+    // Regularize f_new: project onto feq + stress-tensor neq, discard ghost modes.
+    // Must run AFTER Step1 (f_new, feq valid) and BEFORE MPI exchange (neighbors get clean data).
+    GILBM_Regularize_Kernel<<<griddim, blockdim, 0, stream0>>>(
+        f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
+        f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
+        f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
+        feq_d
+    );
+    CHECK_CUDA( cudaStreamSynchronize(stream0) );
+#endif
+
     // MPI exchange: all 19 f_new directions (y-direction halo)
     ISend_LtRtBdry( f_new, iToLeft,    l_nbr, itag_f4, 0, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
     IRecv_LtRtBdry( f_new, iFromRight, r_nbr, itag_f4, 1, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
@@ -369,24 +381,27 @@ void Launch_ModifyForcingTerm()
     double K_p = beta * (double)Uref / (double)LY;
     double correction = K_p * ((double)Uref - 2.0 * Ub_avg + Ub_prev);
 
-    // Ma 安全閥 (Scheme A): 馬赫數感知外力凍結
-    // 根據發散分析: bulk Ub < Uref 時 controller 持續加力，
-    // 但 hill crest 局部 Ma 已超標 → 正反饋迴路 → 發散。
-    // Ma >= 0.20 凍結 Force（切斷正反饋源頭），微量衰減讓 Ma 自然回落。
+    // Ma 安全閥: 閾值由 variables.h 的 MA_CAUTION / MA_FREEZE 定義
+    // USE_REGULARIZATION=1: CAUTION=0.30, FREEZE=0.35 (R-LBM+MRT 極限 ~0.40-0.45)
+    // USE_REGULARIZATION=0: CAUTION=0.15, FREEZE=0.20 (BGK/MRT 極限 ~0.22-0.30)
+    // 策略: (1) CAUTION 開始線性衰減 Force 增益，防止 Ma 接近極限
+    //        (2) FREEZE 時激進衰減 Force，嘗試在失控前回復
     const char *status_tag = "";
 
-    if (Ma_max >= 0.20) {
-        // Option C: 只擋正增量，允許 PD 自然減力
-        // 若 correction > 0: PD 想加力 → 擋住（切斷正反饋源頭）
-        // 若 correction < 0: PD 想減力 → 放行（加速 Ma 回落）
-        // 額外 0.2%/cycle leak 確保 Ma 總能回落
+    if (Ma_max >= MA_FREEZE) {
+        // FREEZE: Ma 已達危險區，激進衰減
+        // 擋正增量 + Ma-proportional progressive leak:
+        //   Ma=FREEZE: leak=5%/cycle, Ma=FREEZE+0.10: leak=25%/cycle
         if (correction < 0.0) Force_h[0] += correction;
-        Force_h[0] *= 0.998;//此為特殊情況，保留當前外力 
+        double excess = fmin((Ma_max - MA_FREEZE) / 0.10, 1.0);
+        double leak = 0.95 - 0.20 * excess * excess;         // 0.95→0.75 quadratic
+        Force_h[0] *= leak;
         if (Force_h[0] < 0.0) Force_h[0] = 0.0;
         status_tag = " [Ma-FREEZE]";
-    } else if (Ma_max >= 0.18) {
-        // CAUTIOUS: 線性衰減增益 (100% at 0.18 → 50% at 0.20)
-        double scale = 1.0 - 0.5 * (Ma_max - 0.18) / 0.02;
+    } else if (Ma_max >= MA_CAUTION) {
+        // CAUTION: 從 MA_CAUTION 開始線性衰減增益 (100% → 0% at MA_FREEZE)
+        double scale = 1.0 - (Ma_max - MA_CAUTION) / (MA_FREEZE - MA_CAUTION);
+        if (scale < 0.0) scale = 0.0;
         Force_h[0] += scale * correction;
         if (Force_h[0] < 0.0) Force_h[0] = 0.0;
         status_tag = " [Ma-CAUTION]";
