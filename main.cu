@@ -224,10 +224,6 @@ int main(int argc, char *argv[])
    
     if (myid == 0) {
         printf("  ─────────────────────────────────────────────────────────\n");
-        printf("  Collision:      %s\n", USE_MRT ? "MRT (d'Humieres D3Q19)" : "BGK/SRT");
-        printf("  Kernel:         %s\n", USE_P6 ? "P6 (Step1 -> MPI -> Step23)" : "P5 (monolithic + Correction)");
-        printf("  Ma safety:      CAUTION=%.2f  FREEZE=%.2f\n", (double)MA_CAUTION, (double)MA_FREEZE);
-        printf("  ─────────────────────────────────────────────────────────\n");
         printf("  dt_global = MIN(all ranks) = %.6e\n", dt_global);
         printf("  dt_old = minSize = %.6e\n", (double)minSize);
         printf("  ratio dt_global / minSize = %.4f\n", dt_global / (double)minSize);
@@ -330,7 +326,7 @@ int main(int argc, char *argv[])
         // C_eff(s_visc) = C0 - s_visc × C1
         // C0 = I - Mi × diag(s_fixed) × M  (non-viscous relaxation baked in)
         // C1 = Mi × diag(mask_visc) × M    (viscous modes: 9,11,13,14,15)
-        double s_fixed[19] = {0, 1.19, 1.4, 0, 1.2, 0, 1.2, 0, 1.2, 0, 1.4, 0, 1.4, 0, 0, 0, 1.2, 1.2, 1.2};
+        double s_fixed[19] = {0, 1.19, 1.4, 0, 1.2, 0, 1.2, 0, 1.2, 0, 1.4, 0, 1.4, 0, 0, 0, 1.5, 1.5, 1.5};
         double s_visc_mask[19] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0};
 
         double C0_h[19][19], C1_h[19][19];
@@ -709,8 +705,8 @@ int main(int argc, char *argv[])
             printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f  Ma_max=%.4f\n",
                    restart_step, FTT_init, Ub_init, Ustar, Force_h[0], Fstar, Re_now, Ma_init, Ma_max_init);
 
-            if (Ma_max_init > 0.20)
-                printf("  >>> [WARNING] Ma_max=%.4f > 0.20 — stability risk, consider reducing Uref\n", Ma_max_init);
+            if (Ma_max_init > 0.35)
+                printf("  >>> [WARNING] Ma_max=%.4f > 0.35 — BGK stability risk, consider reducing Uref\n", Ma_max_init);
 
             if (Ustar > 1.3)
                 printf("  >>> [NOTE] U*=%.4f >> 1.0 — VTK velocity from old Uref, flow will decelerate to new target\n", Ustar);
@@ -928,7 +924,12 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            // checkrho.dat removed — density monitoring now in Ustar_Force_record.dat (rho_crest + rho_L1)
+            if (myid == 0) {
+                double FTT_rho = step * dt_global / (double)flow_through_time;
+                FILE *checkrho = fopen("checkrho.dat", "a");
+                fprintf(checkrho, "%d\t %.4f\t %lf\t %lf\n", step, FTT_rho, 1.0, rho_GlobalSum_chk / (double)jp);
+                fclose(checkrho);
+            }
         }
 
         // ===== FTT stopping criterion =====

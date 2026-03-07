@@ -47,7 +47,7 @@ void InitialUsingDftFunc() {
 // 使用有效通道高度 h = LZ - H_HILL (扣除山丘)
 {
     double h_eff = (double)LZ - (double)H_HILL;
-    Force_h[0] = (8.0 * (double)niu * (double)Uref) / (h_eff * h_eff) * 5.0;
+    Force_h[0] = (8.0 * (double)niu * (double)Uref) / (h_eff * h_eff) * 2.0;
 }
 CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
 

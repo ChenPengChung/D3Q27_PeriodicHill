@@ -33,7 +33,7 @@
 #define     NZ6     (NZ+6)      // 法向: +6 (3 buffer each side)
 
 // 非均勻網格
-#define     CFL                 0.2
+#define     CFL                 0.5
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
 #define     Uniform_In_Xdir     1   // 1=均勻, 0=非均勻
 #define     Uniform_In_Ydir     1
@@ -46,7 +46,7 @@
 // 4. 物理參數
 // ================================================================
 #define     Re      700         // Reynolds number (基於 H_HILL 和 Uref)
-#define     Uref    0.0483      // 參考速度 (bulk velocity)
+#define     Uref    0.0583      // 參考速度 (bulk velocity)
                                 // Re700:0.0583, Re1400/2800:0.0776
                                 // Re5600:0.0464, Re10595:0.0878
                                 // 限制: Uref ≤ cs = 0.1732 (Ma < 1)
@@ -87,16 +87,10 @@
 #define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
-// 外力控制器增益 (PD controller)
+// 外力控制器增益 (PI controller)
 // Re=100: alpha=10, Re=2800: alpha=3~14
 // 週期山丘需較高 gain 加速收斂
 #define     force_alpha 3
-
-// Ma 安全閥閾值 (與碰撞算子配置解耦，便於 A/B 測試)
-// CAUTION: 從此 Ma 開始線性衰減外力增益 (100% → 0%)
-// FREEZE:  Ma 超過此值進入激進衰減模式
-#define     MA_CAUTION  0.15    // 穩定極限依配置不同 (~0.22-0.45)
-#define     MA_FREEZE   0.20    // 留安全餘裕
 
 // ================================================================
 // 9. FTT 閾值與統計控制
@@ -125,7 +119,7 @@
 #define     RESTART_VTK_FILE    "result/velocity_merged_1380001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_1278001"
+#define     RESTART_BIN_DIR     "checkpoint/step_1380001"
 
 // 統計量讀取 (僅 INIT=1 時生效)
 // 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat
