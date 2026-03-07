@@ -102,10 +102,10 @@ void InitMonitorCheckPoint() {
                y_h[3], z_h[3 * NZ6 + 4]);
     }
 
-    // Write header comment to monitor file (9 columns)
+    // Write header comment to monitor file (10 columns, step at end to preserve Python col indices)
     if (myid == 0) {
         FILE *f = fopen("Ustar_Force_record.dat", "a");
-        fprintf(f, "# FTT\tUb/Uref\tForce\tMa_max\taccu_count\tuu_RS_check\tk_check\trho_crest\trho_L1\n");
+        fprintf(f, "# FTT\tUb/Uref\tForce\tMa_max\taccu_count\tuu_RS_check\tk_check\trho_crest\trho_L1\tstep\n");
         fclose(f);
     }
     MPI_Barrier(MPI_COMM_WORLD);
@@ -233,10 +233,10 @@ void Launch_Monitor(){
     // 格式: FTT  Ub/Uref  Force  Ma_max  accu_count  uu_RS_check  k_check  rho_crest  rho_L1
     if (myid == 0) {
         FILE *fhist = fopen("Ustar_Force_record.dat", "a");
-        fprintf(fhist, "%.6f\t%.10f\t%.10f\t%.6f\t%d\t%.6e\t%.6e\t%.10f\t%.6e\n",
+        fprintf(fhist, "%.6f\t%.10f\t%.10f\t%.6f\t%d\t%.6e\t%.6e\t%.10f\t%.6e\t%d\n",
                 FTT, Ub_inst/(double)Uref, F_star, Ma_max,
                 accu_count, uu_RS_check, k_check_val,
-                rho_crest, rho_L1);
+                rho_crest, rho_L1, step);
         fclose(fhist);
     }
 

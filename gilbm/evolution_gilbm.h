@@ -144,9 +144,9 @@ __device__ void gilbm_mrt_collision(
     dm[13] = s_visc * m_neq[13];    // s13 = 1/tau_A ★ LOCAL (stress p_xy)
     dm[14] = s_visc * m_neq[14];    // s14 = 1/tau_A ★ LOCAL (stress p_yz)
     dm[15] = s_visc * m_neq[15];    // s15 = 1/tau_A ★ LOCAL (stress p_xz)
-    dm[16] = 1.5   * m_neq[16];     // s16 = 1.5 (kinetic 3rd-order)
-    dm[17] = 1.5   * m_neq[17];     // s17 = 1.5
-    dm[18] = 1.5   * m_neq[18];     // s18 = 1.5
+    dm[16] = 1.2   * m_neq[16];     // s16 = 1.2 (kinetic 3rd-order)
+    dm[17] = 1.2   * m_neq[17];     // s17 = 1.2
+    dm[18] = 1.2   * m_neq[18];     // s18 = 1.2
 
     // ---- Step 3c: Inverse transform + body force ----
     // f*[q] = f̃[q] - Σ_i Mi[q][i] × dm[i] + force_source[q]

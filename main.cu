@@ -330,7 +330,7 @@ int main(int argc, char *argv[])
         // C_eff(s_visc) = C0 - s_visc × C1
         // C0 = I - Mi × diag(s_fixed) × M  (non-viscous relaxation baked in)
         // C1 = Mi × diag(mask_visc) × M    (viscous modes: 9,11,13,14,15)
-        double s_fixed[19] = {0, 1.19, 1.4, 0, 1.2, 0, 1.2, 0, 1.2, 0, 1.4, 0, 1.4, 0, 0, 0, 1.5, 1.5, 1.5};
+        double s_fixed[19] = {0, 1.19, 1.4, 0, 1.2, 0, 1.2, 0, 1.2, 0, 1.4, 0, 1.4, 0, 0, 0, 1.2, 1.2, 1.2};
         double s_visc_mask[19] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0};
 
         double C0_h[19][19], C1_h[19][19];
