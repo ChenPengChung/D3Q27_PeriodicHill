@@ -199,18 +199,6 @@ void Launch_CollisionStreaming(double *f_old[19], double *f_new[19]) {
     );
     CHECK_CUDA( cudaStreamSynchronize(stream0) );
 
-#if USE_REGULARIZATION
-    // Regularize f_new: project onto feq + stress-tensor neq, discard ghost modes.
-    // Must run AFTER Step1 (f_new, feq valid) and BEFORE MPI exchange (neighbors get clean data).
-    GILBM_Regularize_Kernel<<<griddim, blockdim, 0, stream0>>>(
-        f_new[0], f_new[1], f_new[2], f_new[3], f_new[4], f_new[5], f_new[6],
-        f_new[7], f_new[8], f_new[9], f_new[10], f_new[11], f_new[12],
-        f_new[13], f_new[14], f_new[15], f_new[16], f_new[17], f_new[18],
-        feq_d
-    );
-    CHECK_CUDA( cudaStreamSynchronize(stream0) );
-#endif
-
     // MPI exchange: all 19 f_new directions (y-direction halo)
     ISend_LtRtBdry( f_new, iToLeft,    l_nbr, itag_f4, 0, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
     IRecv_LtRtBdry( f_new, iFromRight, r_nbr, itag_f4, 1, 19,   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18  );
@@ -382,8 +370,6 @@ void Launch_ModifyForcingTerm()
     double correction = K_p * ((double)Uref - 2.0 * Ub_avg + Ub_prev);
 
     // Ma 安全閥: 閾值由 variables.h 的 MA_CAUTION / MA_FREEZE 定義
-    // USE_REGULARIZATION=1: CAUTION=0.30, FREEZE=0.35 (R-LBM+MRT 極限 ~0.40-0.45)
-    // USE_REGULARIZATION=0: CAUTION=0.15, FREEZE=0.20 (BGK/MRT 極限 ~0.22-0.30)
     // 策略: (1) CAUTION 開始線性衰減 Force 增益，防止 Ma 接近極限
     //        (2) FREEZE 時激進衰減 Force，嘗試在失控前回復
     const char *status_tag = "";
