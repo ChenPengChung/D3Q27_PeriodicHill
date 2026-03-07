@@ -87,7 +87,7 @@
 #define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
-// 外力控制器增益 (PI controller)
+// 外力控制器增益 (PD controller)
 // Re=100: alpha=10, Re=2800: alpha=3~14
 // 週期山丘需較高 gain 加速收斂
 #define     force_alpha 3
@@ -119,7 +119,7 @@
 #define     RESTART_VTK_FILE    "result/velocity_merged_1380001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_1380001"
+#define     RESTART_BIN_DIR     "checkpoint/step_1810001"
 
 // 統計量讀取 (僅 INIT=1 時生效)
 // 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat

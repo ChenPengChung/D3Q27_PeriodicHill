@@ -705,8 +705,8 @@ int main(int argc, char *argv[])
             printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f  Ma_max=%.4f\n",
                    restart_step, FTT_init, Ub_init, Ustar, Force_h[0], Fstar, Re_now, Ma_init, Ma_max_init);
 
-            if (Ma_max_init > 0.35)
-                printf("  >>> [WARNING] Ma_max=%.4f > 0.35 — BGK stability risk, consider reducing Uref\n", Ma_max_init);
+            if (Ma_max_init > 0.20)
+                printf("  >>> [WARNING] Ma_max=%.4f > 0.20 — stability risk, consider reducing Uref\n", Ma_max_init);
 
             if (Ustar > 1.3)
                 printf("  >>> [NOTE] U*=%.4f >> 1.0 — VTK velocity from old Uref, flow will decelerate to new target\n", Ustar);
@@ -924,12 +924,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            if (myid == 0) {
-                double FTT_rho = step * dt_global / (double)flow_through_time;
-                FILE *checkrho = fopen("checkrho.dat", "a");
-                fprintf(checkrho, "%d\t %.4f\t %lf\t %lf\n", step, FTT_rho, 1.0, rho_GlobalSum_chk / (double)jp);
-                fclose(checkrho);
-            }
+            // checkrho.dat removed — density monitoring now in Ustar_Force_record.dat (rho_crest + rho_L1)
         }
 
         // ===== FTT stopping criterion =====

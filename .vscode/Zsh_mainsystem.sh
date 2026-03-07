@@ -815,6 +815,8 @@ function push_args() {
     --exclude=statistics/
     --filter='P __pycache__/'
     --exclude=__pycache__/
+    --filter='P checkpoint/'
+    --exclude=checkpoint/
     # --- Build/data artifacts: not synced, deleted on remote with --delete-excluded ---
     --exclude=a.out
     --exclude=*.o

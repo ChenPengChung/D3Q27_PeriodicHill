@@ -349,63 +349,67 @@ void Launch_ModifyForcingTerm()
     CHECK_MPI( MPI_Bcast(&Ub_avg, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD) );
     Ub_avg_global = Ub_avg;
 
-    // EMA smoothing: filter vortex shedding noise from Ub before feeding to controller
-    // α=0.3 → effective window ~3 samples (3000 steps), DC gain = 1 (no steady-state bias)
-    // All ranks execute identically (same Ub_avg after Bcast) → Ub_ema synchronized
-    static double Ub_ema = -1.0;           // sentinel: uninitialized
-    const double ema_alpha = 0.3;
-    if (Ub_ema < 0.0)
-        Ub_ema = Ub_avg;                   // first call: seed with raw measurement
-    else
-        Ub_ema = ema_alpha * Ub_avg + (1.0 - ema_alpha) * Ub_ema;
-
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
     double beta = max(0.001, force_alpha/(double)Re);
     double Ma_now = Ub_avg / (double)cs;
     double Ma_max = ComputeMaMax();  // all ranks participate (MPI_Allreduce)
+    double U_star = Ub_avg / (double)Uref;
 
-    double error = (double)Uref - Ub_ema;  // ← use EMA-filtered Ub for controller
-    double gain = beta;
-    Force_h[0] = Force_h[0] + gain * error * (double)Uref / (double)LY;
+    // ====== Combined PD controller + Ma safety valve ======
+    // Prieto-Saavedra Eq.2: ΔF = K_p × (U₀ − 2Uⁿ + Uⁿ⁻¹)
+    //    = K_p×(Uref−Ub)  − K_p×(Ub−Ub_prev)
+    //     ╰── Lin P 項 ╯    ╰── D 阻尼項 ──╯
+    // K_p = β×Uref/LY: 穩態 (Ub=Ub_prev) 退化為純 C.A. Lin P-controller
+    // D 項: Ub 上升 → 抑制外力增長; Ub 下降 → 略增外力
+    // 同一個 K_p 控制 P 和 D → D 不可能獨立過大
+    static double Ub_prev = -1.0;
+    if (Ub_prev < 0.0) Ub_prev = Ub_avg;   // first call: D=0 → pure P
 
-    // Force 非負 clamp
-    if (Force_h[0] < 0.0) {
-        Force_h[0] = 0.0;
+    double K_p = beta * (double)Uref / (double)LY;
+    double correction = K_p * ((double)Uref - 2.0 * Ub_avg + Ub_prev);
+
+    // Ma 安全閥 (Scheme A): 馬赫數感知外力凍結
+    // 根據發散分析: bulk Ub < Uref 時 controller 持續加力，
+    // 但 hill crest 局部 Ma 已超標 → 正反饋迴路 → 發散。
+    // Ma >= 0.20 凍結 Force（切斷正反饋源頭），微量衰減讓 Ma 自然回落。
+    const char *status_tag = "";
+
+    if (Ma_max >= 0.20) {
+        // Option C: 只擋正增量，允許 PD 自然減力
+        // 若 correction > 0: PD 想加力 → 擋住（切斷正反饋源頭）
+        // 若 correction < 0: PD 想減力 → 放行（加速 Ma 回落）
+        // 額外 0.2%/cycle leak 確保 Ma 總能回落
+        if (correction < 0.0) Force_h[0] += correction;
+        Force_h[0] *= 0.998;//此為特殊情況，保留當前外力 
+        if (Force_h[0] < 0.0) Force_h[0] = 0.0;
+        status_tag = " [Ma-FREEZE]";
+    } else if (Ma_max >= 0.18) {
+        // CAUTIOUS: 線性衰減增益 (100% at 0.18 → 50% at 0.20)
+        double scale = 1.0 - 0.5 * (Ma_max - 0.18) / 0.02;
+        Force_h[0] += scale * correction;
+        if (Force_h[0] < 0.0) Force_h[0] = 0.0;
+        status_tag = " [Ma-CAUTION]";
+    } else {
+        // NORMAL: 完整 PD controller (Lin P + Saavedra D)
+        Force_h[0] += correction;
+        if (Force_h[0] < 0.0) Force_h[0] = 0.0;
+        if (U_star > 1.2)       status_tag = " [OVERSHOOT!]";
+        else if (U_star > 1.05) status_tag = " [OVERSHOOT]";
     }
 
-    // Ma 安全檢查 (使用 local Ma_max — LBM 穩定性取決於局部最大 Ma, 非 bulk 平均)
-    if (Ma_max > 0.35) {
-        Force_h[0] *= 0.05;
-        if (myid == 0)
-            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 5%%: %.5E\n", Ma_max, Force_h[0]);
-    } else if (Ma_max > 0.3) {
-        Force_h[0] *= 0.5;
-        if (myid == 0)
-            printf("[WARNING] Ma_max=%.4f > 0.3, Force halved to %.5E\n", Ma_max, Force_h[0]);
-    }
+    // 更新 Ub_prev (下次 D 項使用，包括 FREEZE 期間也更新以追蹤趨勢)
+    Ub_prev = Ub_avg;
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
     double FTT    = step * dt_global / (double)flow_through_time;
-    double U_star_ema = Ub_ema / (double)Uref;   // controller sees this //Ub_ema為濾波過後的涮間速度平均
-    double U_star_raw = Ub_avg / (double)Uref;   // instantaneous measurement
     double F_star = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);
-    double Re_now = Ub_ema / ((double)Uref / (double)Re);
-
-    const char *status_tag = "";
-    if (Ma_max > 0.35)          status_tag = " [WARNING: Ma_max>0.35, reduce Uref]";
-    else if (U_star_ema > 1.2)  status_tag = " [OVERSHOOT!]";
-    else if (U_star_ema > 1.05) status_tag = " [OVERSHOOT]";
+    double Re_now = Ub_avg / ((double)Uref / (double)Re);
 
     if (myid == 0) {
-        printf("[Step %d | FTT=%.2f] Ub_inst=%.6f  U*=%.4f(ema=%.4f)  Force=%.5E  F*=%.4f  Re=%.1f  Ma=%.4f  Ma_max=%.4f%s\n",
-               step, FTT, Ub_avg, U_star_raw, U_star_ema, Force_h[0], F_star, Re_now, Ma_now, Ma_max, status_tag);
-    }
-
-    if (Ma_max > 0.35 && myid == 0) {
-        printf("  >>> BGK stability limit: Ma < 0.3. Current Ma_max=%.4f at hill crest.\n", Ma_max);
-        printf("  >>> Recommended: reduce Uref to %.4f (target Ma_max<0.25)\n", (double)Uref * 0.25 / Ma_max);
+        printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re=%.1f  Ma=%.4f  Ma_max=%.4f%s\n",
+               step, FTT, Ub_avg, U_star, Force_h[0], F_star, Re_now, Ma_now, Ma_max, status_tag);
     }
 
     CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );

@@ -96,7 +96,8 @@ $script:Config = @{
     SshOpts = "-o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"
     # 排除的檔案，例如 .git 和 .vscode 設定檔等
     ExcludePatterns = @(".git/*", ".vscode/*", "a.out", "*/a.out", "*.o", "*.exe",
-        "*.swp", "*.swo", "*~", "__pycache__/*", "*.pyc", ".DS_Store", "*/.DS_Store", "*.vtu")
+        "*.swp", "*.swo", "*~", "__pycache__/*", "*.pyc", ".DS_Store", "*/.DS_Store", "*.vtu",
+        "checkpoint/*")
     # 同步的副檔名
     SyncExtensions = @("*")
     SyncAll = $true  # 同步所有類型的檔案
@@ -307,7 +308,7 @@ function Get-RemoteFiles {
     param([hashtable]$Server)
     
     # 排除 .git, .vscode, 編譯產物等 (與 Config.ExcludePatterns 一致)
-    $excludeGrep = "grep -v '/.git/' | grep -v '/.vscode/' | grep -v '/a\.out$' | grep -v '\.o$' | grep -v '\.exe$' | grep -v '\.swp$' | grep -v '\.swo$' | grep -v '~$' | grep -v '__pycache__' | grep -v '\.pyc$' | grep -v '\.DS_Store' | grep -v '\.vtu$'"
+    $excludeGrep = "grep -v '/.git/' | grep -v '/.vscode/' | grep -v '/a\.out$' | grep -v '\.o$' | grep -v '\.exe$' | grep -v '\.swp$' | grep -v '\.swo$' | grep -v '~$' | grep -v '__pycache__' | grep -v '\.pyc$' | grep -v '\.DS_Store' | grep -v '\.vtu$' | grep -v '/checkpoint/'"
     $cmd = "find $($Config.RemotePath) -type f -exec md5sum {} \; 2>/dev/null | $excludeGrep"
     $result = Invoke-Ssh -Server $Server -Command $cmd
     
@@ -1652,7 +1653,7 @@ switch ($Command) {
             
             # Skip excluded files
             $skip = $false
-            $excludePatterns = @("*.exe", "*.out", "a.out", "log*", "result\*", "statistics\*", "backup\*", ".git\*", "initial_D3Q19\*")
+            $excludePatterns = @("*.exe", "*.out", "a.out", "log*", "result\*", "statistics\*", "backup\*", ".git\*", "initial_D3Q19\*", "checkpoint\*")
             foreach ($pattern in $excludePatterns) {
                 if ($name -like $pattern) { $skip = $true; break }
             }

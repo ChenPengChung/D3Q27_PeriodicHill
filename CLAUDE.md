@@ -23,7 +23,9 @@ double dt_global;                 // 曲線坐標系 CFL 全域時間步 (runtim
 double omega_global;              // 全域鬆弛頻率 = 3*niu/dt_global + 0.5
 double omegadt_global;            // = omega_global * dt_global
 #define niu (Uref/Re)             // 運動黏度
-#define Uref 0.17320508075       // 參考速度 (固定值)
+#define Uref 0.0583              // 參考速度 (bulk velocity)
+                                 // Re700:0.0583, Re1400/2800:0.0776
+                                 // Re5600:0.0464, Re10595:0.0878
 ```
 
 ### 全域變數 (main.cu)
@@ -34,17 +36,17 @@ double *Force_h, *Force_d;        // 驅動外力
 
 ### 網格參數 (variables.h)
 ```c
-#define LX 4.5      // 流向長度
-#define LY 9.0      // 展向長度
-#define LZ 3.036    // 法向長度
-#define NX 32       // 流向格數
-#define NY 128      // 展向格數 (4 GPU 分割: jp=4)
-#define NZ 128      // 法向格數
-#define jp 4        // MPI rank 數 = GPU 數
+#define LX 4.5      // 展向 (spanwise) 長度
+#define LY 9.0      // 流向 (streamwise) 長度
+#define LZ 3.036    // 法向 (wall-normal) 長度
+#define NX 32       // 展向格點數
+#define NY 128      // 流向格點數
+#define NZ 128      // 法向格點數
+#define jp 8        // MPI rank 數 = GPU 數
 #define NX6 (NX+7)  // 含 ghost = 39
-#define NYD6 (NY/jp+7) // 每 rank 含 ghost = 39
+#define NYD6 (NY/jp+7) // 每 rank 含 ghost = 23
 #define NZ6 (NZ+6)  // 含 ghost = 134
-#define CFL 0.6
+#define CFL 0.5
 #define minSize ((LZ-1.0)/(NZ6-6)*CFL)
 #define NT 32       // CUDA block size x
 ```
@@ -60,24 +62,26 @@ double *Force_h, *Force_d;        // 驅動外力
 
 | 檔案 | 行數 | 說明 |
 |------|------|------|
-| `main.cu` | 498 | 主程式：初始化→預計算→時間迴圈→輸出 |
-| `variables.h` | 102 | 所有 #define 常數 (dt, Uref, Re, CFL...) |
+| `main.cu` | 985 | 主程式：初始化→預計算→時間迴圈→輸出 |
+| `variables.h` | 167 | 所有 #define 常數 (dt, Uref, Re, CFL, FTT閾值...) |
 | `common.h` | 90 | CHECK_CUDA/CHECK_MPI 巨集 |
-| `memory.h` | 207 | GPU 記憶體配置/釋放 |
-| `evolution.h` | 227 | kernel 調度 + Launch_CollisionStreaming() + Launch_ModifyForcingTerm() |
-| `monitor.h` | 30 | 監測點輸出 + Ustar_Force_record.dat |
-| `communication.h` | 275 | MPI ISend/IRecv 邊界交換 |
-| `initialization.h` | 195 | 網格生成 + 流場初始化 |
-| `fileIO.h` | 663 | VTK 輸出 + restart 讀寫 |
-| `statistics.h` | 251 | 時間平均統計 |
-| `model.h` | 75 | D3Q19 速度模型定義 |
-| `gilbm/evolution_gilbm.h` | 572 | **完整 4-step kernel** (已完成) |
-| `gilbm/interpolation_gilbm.h` | 48 | Intrpl7, lagrange_7point_coeffs, compute_feq_alpha |
-| `gilbm/boundary_conditions.h` | 99 | NeedsBoundaryCondition, ChapmanEnskogBC |
-| `gilbm/precompute.h` | 513 | δη/δξ/δζ 預計算 + ComputeGlobalTimeStep |
+| `memory.h` | 258 | GPU 記憶體配置/釋放 |
+| `evolution.h` | 417 | kernel 調度 + Launch_CollisionStreaming() + Launch_ModifyForcingTerm() |
+| `monitor.h` | 180 | RS收斂監測 + InitMonitorCheckPoint() + ComputeMaMax() + Launch_Monitor() |
+| `communication.h` | 274 | MPI ISend/IRecv 邊界交換 |
+| `initialization.h` | 201 | 網格生成 + 流場初始化 |
+| `fileIO.h` | 1536 | VTK 輸出 + binary checkpoint + restart 讀寫 |
+| `statistics.h` | 266 | 時間平均統計 (33 統計量) |
+| `model.h` | 74 | D3Q19 速度模型定義 |
+| `gilbm/evolution_gilbm.h` | 1235 | **完整 4-step kernel** + P5/P6 + Correction |
+| `gilbm/interpolation_gilbm.h` | 47 | Intrpl7, lagrange_7point_coeffs, compute_feq_alpha |
+| `gilbm/boundary_conditions.h` | 100 | NeedsBoundaryCondition, ChapmanEnskogBC |
+| `gilbm/precompute.h` | 693 | δη/δξ/δζ 預計算 + ComputeGlobalTimeStep |
 | `gilbm/metric_terms.h` | 419 | dk_dz, dk_dy 度量項計算 |
-| `gilbm/diagnostic_gilbm.h` | 510 | Phase 1.5 診斷測試 |
+| `gilbm/diagnostic_gilbm.h` | 526 | Phase 1.5 診斷測試 |
 | `Claude_GILBM.md` | 399 | 完整理論推導文件 |
+| `result/2.Benchmark.py` | 720 | ERCOFTAC 基準比較圖 (Umean, RS) |
+| `result/4.Ma_U_Time.py` | 221 | 收斂監測圖 (Ub/Uref, Ma, RS, TKE) |
 
 ### Include 順序 (main.cu)
 ```
@@ -304,7 +308,7 @@ Launch_CollisionStreaming(f_old[19], f_new[19]):
   8. periodicSW (x 方向週期邊界, 含 feq_d 19 planes)
 ```
 
-### Launch_ModifyForcingTerm() (每 NDTFRC=1000 步)
+### Launch_ModifyForcingTerm() (每 NDTFRC=100 步)
 ```
 1. cudaMemcpy(Ub_avg_d → Ub_avg_h)
 2. Host 端累加 Ub_avg (j=3 截面, k=3..NZ6-4, i=3..NX6-5)
@@ -320,10 +324,13 @@ Launch_CollisionStreaming(f_old[19], f_new[19]):
 for step = 0..loop:
     Launch_CollisionStreaming(ft, fd)  // 偶數步
     Launch_CollisionStreaming(fd, ft)  // 奇數步 (step += 1)
-    每 NDTFRC 步: Launch_ModifyForcingTerm()
-    每 NDTMIT 步: Launch_Monitor()  // 輸出 Ustar_Force_record.dat
-    每 1000 步: VTK 輸出
+    每 NDTFRC=100 步: Launch_ModifyForcingTerm()
+    每 NDTMIT=50 步: Launch_Monitor()  // 輸出 Ustar_Force_record.dat (7 欄)
+    每 NDTVTK=1000 步: VTK 輸出
+    每 NDTBIN=10000 步: binary checkpoint 輸出
     每步: 全域質量守恆修正
+    FTT ≥ FTT_STATS_START(20): 統計量累積
+    FTT ≥ FTT_STOP(100): 結束模擬
 ```
 
 ---
@@ -343,17 +350,39 @@ for step = 0..loop:
 | **Step 3: 碰撞 (Eq.3)** | ✅ | BGK with 1/omega_A → f_pc |
 | **Kernel 包裝函數** | ✅ | Full/Buffer/Init_FPC/Init_Feq/Init_OmegaDt |
 
-### 模擬狀態（2026-03-06 更新）
+### 模擬狀態（2026-03-07 更新）
 - 所有診斷測試通過 (Phase 0, 1.5, 2, 3, 4)
-- 已可完整運行，VTK 輸出正常
+- 已可完整運行，VTK + binary checkpoint 輸出正常
 - Force driving 已啟用，88b9ba7 穩定運行至 FTT 24.8+ (step 728001)
+- 使用 binary checkpoint (INIT=3) 續跑至 FTT 23.5+ (step 1380001)
 - CE BC 張量係數已確認為 3（Imamura Eq. A.9 推導，係數 9 會導致發散）
-- **待查**：係數 3 下仍有發散案例，需排除 VTK restart / force controller / 其他因素
+- **發散根因已查明**：VTK restart f=feq 暫態 + LTS R_AB 放大 + hill crest 聚焦 + force controller 延遲 → 正反饋迴路
+- Binary checkpoint 保存 f^neq → 消除 VTK 暫態發散因素
+- **Monitor RS 收斂檢查**：代表點 (ERCOFTAC x/h=2.0, y/h=1.0) 輸出 uu_RS_check + k_check → 7 欄 Ustar_Force_record.dat
+- **VTK Level 0**：13 SCALARS + 1 VECTORS (瞬時速度3 + 渦度3 + 平均速度2 + RS3 + k_TKE + P_mean)
+- **統計量架構**：單一 accu_count，FTT ≥ 20.0 開始累積，33 個 GPU 統計量
+
+### Monitor RS 收斂檢查 (monitor.h)
+- **代表點**: ERCOFTAC x/h=2.0 (流向, hill 後方剪切層), y/h=1.0 (法向, hill 底上方)
+- 座標映射: streamwise=y(j), wall-normal=z(k), spanwise=x(i)
+- `InitMonitorCheckPoint()`: 從網格座標計算 rank/j/k/i index，寫入 header
+- `ComputeMaMax()`: 全場最大 Ma 數 (MPI_Allreduce MAX)
+- `Launch_Monitor()`: 計算 Ub_inst + Ma_max + RS check → 7 欄輸出
+- **7 欄格式**: `FTT  Ub/Uref  Force  Ma_max  accu_count  uu_RS_check  k_check`
+- RS 計算: `<u'u'>/Uref² = (<v²>-<v>²)/Uref²` (code v = streamwise)
+- TKE: `k = 0.5*(uu + vv + ww)/Uref²`
+- 跨 rank 支援: owning rank 複製 GPU 單點值 → MPI_Bcast → rank 0 寫檔
+
+### Binary Checkpoint (INIT=3, fileIO.h)
+- 每 NDTBIN=10000 步保存完整 f0~f18 + rho + 33 統計量 + meta
+- **消除 VTK restart 暫態**: 保存 f^neq，冷重啟無暴力暫態
+- 統一 `accu_count` 取代舊 `vel_avg_count`/`rey_avg_count`
+- `sum_*` 命名 (sum_u, sum_uu, sum_uuu...)，向後相容舊 `RS_*` 格式
 
 ### MPI 同步修正（已完成）
 
 #### 問題 1: dt_global 各 rank 不一致
-- **發現**: 每個 rank 只掃描自己的 j 範圍計算 `ComputeGlobalTimeStep()` → 壁面 rank (0,3) 得小 dt (~3.45e-3)，中間 rank (1,2) 得大 dt (~8.53e-3)
+- **發現**: 每個 rank 只掃描自己的 j 範圍計算 `ComputeGlobalTimeStep()` → 壁面 rank (0,7) 得小 dt (~3.45e-3)，中間 rank 得大 dt (~8.53e-3)
 - **影響**: FTT 計算不一致 (3.99 vs 9.86)，位移量不同，LTS 加速因子錯誤
 - **修正 (main.cu L179-196)**: `double dt_rank = ComputeGlobalTimeStep(...)` → `MPI_Allreduce(&dt_rank, &dt_global, ..., MPI_MIN, ...)`, rank 0 輸出最終值
 - **驗證**: `GILBM_dt` (__constant__) 在 `MPI_Allreduce` 之後設定，所有 GPU 使用正確的全域 MIN
@@ -492,11 +521,13 @@ nvcc -O2 -arch=sm_80 main.cu -lmpi -o main.exe
 
 | Imamura 符號 | 程式碼變數 | 說明 |
 |-------------|-----------|------|
-| ω (鬆弛頻率) | `omega_A`, `omega_local_d` | = 1/τ_local |
-| ω·Δt (教科書 τ) | `omegadt_A`, `omegadt_local_d` | = omega_local × dt_local |
+| ω (Imamura) | `omega_A`, `omega_local_d` | ⚠ **代碼中 = τ_local** (0.5+3ν/dt)，NOT 1/τ |
+| ω·Δt | `omegadt_A`, `omegadt_local_d` | = omega_local × dt_local = τ×Δt |
 | Δt_local | `dt_A`, `dt_local_d` | 局部時間步長 |
 | τ_local | (非直接儲存) | = 0.5 + 1/(3·Re·dt_local) |
 | a (LTS 加速因子) | `a_local` | = dt_A / GILBM_dt |
+
+> ⚠ **命名注意**: 代碼中 `omega` 實際存儲的是鬆弛**時間** τ (= 0.5+3ν/dt)，不是頻率 1/τ。`omegadt` = τ×Δt。這是非標準命名，使用時需特別注意。
 
 ---
 
@@ -510,12 +541,12 @@ nvcc -O2 -arch=sm_80 main.cu -lmpi -o main.exe
 
 #### 1. 直角坐標系：全域時間步長
 - `dt = minSize`（由 CFL 條件決定）
-- 全域鬆弛時間 `tau = 0.6833`
-- 全域黏度：`ν = (tau - 0.5)/3 × dt`
+- 全域鬆弛時間 `tau = 0.5 + 3*niu/dt_global`（runtime 計算，依賴 dt_global）
+- 全域黏度：`ν = Uref/Re = 0.0583/700 ≈ 8.33e-5`
 
 #### 2. 曲線坐標系：全域碰撞算子
 - Lattice Boltzmann Equation 在曲線座標 (η, ξ, ζ) 中操作
-- 碰撞前綴為 `1/tau`，其中 `tau` 由全域定義（= 0.6833）
+- 碰撞前綴為 `1/tau`，其中 `tau` 由全域定義
 - 此時 `dt_global / tau` 控制碰撞步的物理時間推進
 
 #### 3. 曲線坐標系 + Local Time Stepping (LTS)：局部碰撞算子

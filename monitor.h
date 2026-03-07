@@ -2,6 +2,40 @@
 #define MONITOR_FILE
 
 // ================================================================
+// GPU reduction kernel: Σ|rho - 1.0| over interior points (L1 density deviation)
+// Same structure as ReduceRhoSum_Kernel in evolution.h
+// ================================================================
+__global__ void ReduceRhoL1_Kernel(double *rho_d, double *partial_sums_d) {
+    extern __shared__ double sdata[];
+    const int tid = threadIdx.x;
+    const int gid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    const int ni = NX6 - 7;
+    const int nk = NZ6 - 6;
+    const int nj = NYD6 - 7;
+    const int total = ni * nj * nk;
+
+    double val = 0.0;
+    if (gid < total) {
+        int j = gid / (ni * nk) + 3;
+        int rem = gid % (ni * nk);
+        int k = rem / ni + 3;
+        int i = rem % ni + 3;
+        val = fabs(rho_d[j * NX6 * NZ6 + k * NX6 + i] - 1.0);
+    }
+
+    sdata[tid] = val;
+    __syncthreads();
+
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] += sdata[tid + s];
+        __syncthreads();
+    }
+
+    if (tid == 0) partial_sums_d[blockIdx.x] = sdata[0];
+}
+
+// ================================================================
 // RS convergence check point
 // ================================================================
 // ERCOFTAC x/h=2.0 (streamwise, hill-rear shear layer, RS 峰值區)
@@ -61,10 +95,17 @@ void InitMonitorCheckPoint() {
                z_h[rs_check_j * NZ6 + 3]);
     }
 
-    // Write header comment to monitor file
+    // Print density monitoring point (hill crest: rank 0, j=3, k=4, mid-span)
+    if (myid == 0) {
+        printf("[Monitor] Density crest point: rank=0  j=3  k=4  i=%d\n", NX6 / 2);
+        printf("          y=%.4f (hill crest)  z=%.4f (1st interior above wall)\n",
+               y_h[3], z_h[3 * NZ6 + 4]);
+    }
+
+    // Write header comment to monitor file (9 columns)
     if (myid == 0) {
         FILE *f = fopen("Ustar_Force_record.dat", "a");
-        fprintf(f, "# FTT\tUb/Uref\tForce\tMa_max\taccu_count\tuu_RS_check\tk_check\n");
+        fprintf(f, "# FTT\tUb/Uref\tForce\tMa_max\taccu_count\tuu_RS_check\tk_check\trho_crest\trho_L1\n");
         fclose(f);
     }
     MPI_Barrier(MPI_COMM_WORLD);
@@ -161,16 +202,41 @@ void Launch_Monitor(){
         k_check_val = check_vals[1];
     }
 
-    // --- 4. 輸出 Ustar_Force_record.dat ---
+    // --- 4. 密度監測：hill crest 單點 + L1 norm ---
+    // rho_crest: rank 0, j=3 (hill crest y=0), k=4 (1st interior), i=NX6/2
+    double rho_crest = 1.0;
+    if (myid == 0) {
+        int crest_idx = 3 * NX6 * NZ6 + 4 * NX6 + NX6 / 2;
+        CHECK_CUDA( cudaMemcpy(&rho_crest, &rho_d[crest_idx], sizeof(double), cudaMemcpyDeviceToHost) );
+    }
+
+    // rho_L1: Σ|rho_i - 1.0| over all interior points (GPU reduction per rank → MPI sum)
+    double rho_L1 = 0.0;
+    {
+        const int rho_total_l1 = (NX6 - 7) * (NYD6 - 7) * (NZ6 - 6);
+        const int rho_threads_l1 = 256;
+        const int rho_blocks_l1 = (rho_total_l1 + rho_threads_l1 - 1) / rho_threads_l1;
+
+        ReduceRhoL1_Kernel<<<rho_blocks_l1, rho_threads_l1, rho_threads_l1 * sizeof(double)>>>(rho_d, rho_partial_d);
+        CHECK_CUDA( cudaMemcpy(rho_partial_h, rho_partial_d, rho_blocks_l1 * sizeof(double), cudaMemcpyDeviceToHost) );
+
+        double rho_L1_local = 0.0;
+        for (int b = 0; b < rho_blocks_l1; b++) rho_L1_local += rho_partial_h[b];
+
+        MPI_Reduce(&rho_L1_local, &rho_L1, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    }
+
+    // --- 5. 輸出 Ustar_Force_record.dat (9 columns) ---
     double FTT = step * dt_global / (double)flow_through_time;
     double F_star = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);
 
-    // 格式: FTT  Ub/Uref  Force  Ma_max  accu_count  uu_RS_check  k_check
+    // 格式: FTT  Ub/Uref  Force  Ma_max  accu_count  uu_RS_check  k_check  rho_crest  rho_L1
     if (myid == 0) {
         FILE *fhist = fopen("Ustar_Force_record.dat", "a");
-        fprintf(fhist, "%.6f\t%.10f\t%.10f\t%.6f\t%d\t%.6e\t%.6e\n",
+        fprintf(fhist, "%.6f\t%.10f\t%.10f\t%.6f\t%d\t%.6e\t%.6e\t%.10f\t%.6e\n",
                 FTT, Ub_inst/(double)Uref, F_star, Ma_max,
-                accu_count, uu_RS_check, k_check_val);
+                accu_count, uu_RS_check, k_check_val,
+                rho_crest, rho_L1);
         fclose(fhist);
     }
 

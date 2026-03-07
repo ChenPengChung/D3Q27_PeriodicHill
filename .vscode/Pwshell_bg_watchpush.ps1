@@ -38,7 +38,8 @@ $excludePatterns = @(
     "*.dat", "*.DAT",                # 輸出資料檔
     "log*",                          # log 檔案
     "*.plt",                         # 繪圖檔案
-    "result/*", "backup/*", "statistics/*"  # 輸出資料夾
+    "result/*", "backup/*", "statistics/*",  # 輸出資料夾
+    "checkpoint/*"                   # checkpoint 資料夾
 )
 $lastHashes = @{}
 
