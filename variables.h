@@ -19,8 +19,8 @@
 // 3. 網格設定
 // ================================================================
 // 全域格點數
-#define     NX      32          // 展向格點數
-#define     NY      128         // 流向格點數
+#define     NX      64          // 展向格點數
+#define     NY      256         // 流向格點數
 #define     NZ      128         // 法向格點數
 
 // MPI 分區
@@ -46,7 +46,7 @@
 // ================================================================
 // 4. 物理參數
 // ================================================================
-#define     Re      50         // Reynolds number (基於 H_HILL 和 Uref)
+#define     Re      700         // Reynolds number (基於 H_HILL 和 Uref)
 #define     Uref    0.0583      // 參考速度 (bulk velocity)
                                 // Re700:0.0583, Re1400/2800:0.0776
                                 // Re5600:0.0464, Re10595:0.0878
@@ -91,12 +91,12 @@
 // 外力控制器增益 (P controller, Phase 1: additive)
 // Re=100: alpha=10, Re=2800: alpha=3~14
 // 週期山丘需較高 gain 加速收斂
-#define     force_alpha 10
+#define     force_alpha 3
 
 // Gehrke & Rung (2022) 雙階段外力控制器
 // Phase 1 (P-additive): |Re%| > THRESHOLD 或 FTT < FTT_GEHRKE
 // Phase 2 (Gehrke-mult): |Re%| ≤ THRESHOLD 且 FTT ≥ FTT_GEHRKE
-#define     FORCE_SWITCH_THRESHOLD  10.0    // Re% 切換門檻 (%)
+#define     FORCE_SWITCH_THRESHOLD  5.0    // Re% 切換門檻 (%)
 #define     FTT_GEHRKE_FORCE        30.0    // 最少跑幾個 FTT 才啟用 Gehrke
 
 // ================================================================
