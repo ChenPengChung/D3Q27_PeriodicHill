@@ -88,10 +88,16 @@
 #define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
-// 外力控制器增益 (PI controller)
+// 外力控制器增益 (P controller, Phase 1: additive)
 // Re=100: alpha=10, Re=2800: alpha=3~14
 // 週期山丘需較高 gain 加速收斂
-#define     force_alpha 3
+#define     force_alpha 10
+
+// Gehrke & Rung (2022) 雙階段外力控制器
+// Phase 1 (P-additive): |Re%| > THRESHOLD 或 FTT < FTT_GEHRKE
+// Phase 2 (Gehrke-mult): |Re%| ≤ THRESHOLD 且 FTT ≥ FTT_GEHRKE
+#define     FORCE_SWITCH_THRESHOLD  10.0    // Re% 切換門檻 (%)
+#define     FTT_GEHRKE_FORCE        30.0    // 最少跑幾個 FTT 才啟用 Gehrke
 
 // ================================================================
 // 9. FTT 閾值與統計控制
