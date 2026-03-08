@@ -288,8 +288,8 @@ void DiagnoseGILBM_Phase1(
         C_alpha += du_x_dk * ((3.0*ex*ey)*bc_dk_dy + (3.0*ex*ez)*bc_dk_dz);
         C_alpha += du_y_dk * ((3.0*ey*ey - 1.0)*bc_dk_dy + (3.0*ey*ez)*bc_dk_dz);
         C_alpha += du_z_dk * ((3.0*ez*ey)*bc_dk_dy + (3.0*ez*ez - 1.0)*bc_dk_dz);
-        // omegadt_local_h[j*NZ6+k] = omega_local * dt_local (per grid point, not per direction)
-        C_alpha *= -omegadt_local_h[bc_idx_jk];
+        // [GTS] uniform omegadt = omega_global * dt_global
+        C_alpha *= -omegadt_global;
 
         double f_CE = W[alpha] * rho3 * (1.0 + C_alpha);
         sum_f_CE += f_CE;
@@ -343,7 +343,7 @@ void DiagnoseGILBM_Phase1(
 //   → z[k=2] = 2*z[3]-z[4] (extrapolated)
 //   → dz_dk(k=3) = (z[4]-z[2])/2 = minSize (central diff with extrap.)
 //   → dk_dz(k=3) = 1/minSize
-//   → With LTS: dt_local < minSize at wall → CFL < 1.0
+//   → With GTS: dt_global < minSize at wall → CFL < 1.0
 
 bool ValidateDepartureCFL(
     const double *delta_zeta_h,  // [19*NYD6*NZ6] precomputed RK2 displacement
@@ -371,7 +371,7 @@ bool ValidateDepartureCFL(
     printf("  Phase 2: Departure Point CFL Validation (Rank 0)\n");
     printf("  dt=%.6e, minSize=%.6e, NZ6=%d, NYD6=%d\n",
            dt, (double)minSize, NZ6_local, NYD6_local);
-    printf("  Wall at k=3: dk_dz = 1/minSize, CFL controlled by LTS dt_local\n");
+    printf("  Wall at k=3: dk_dz = 1/minSize, CFL controlled by GTS dt_global\n");
     printf("=============================================================\n");
 
     // ====== Bottom wall: first interior k=4 ======
@@ -515,8 +515,8 @@ bool ValidateDepartureCFL(
     if (!valid) {
         printf("\n  *** CFL VIOLATION DETECTED ***\n");
         printf("  With buffer=3 layout: dk_dz(wall k=3) = 1/minSize\n");
-        printf("  LTS should ensure dt_local * dk_dz < 1.0 everywhere.\n");
-        printf("  Check ComputeLocalTimeStep() for issues.\n");
+        printf("  GTS should ensure dt_global * dk_dz < 1.0 everywhere.\n");
+        printf("  Check ComputeGlobalTimeStep() for issues.\n");
     }
     printf("=============================================================\n\n");
 

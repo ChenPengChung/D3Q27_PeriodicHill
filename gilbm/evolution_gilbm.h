@@ -5,9 +5,9 @@
 //GILBM核心演算法流程
 //步驟一: Interpolation Lagrange插值 + Streaming 取值的內插點為上衣時間步所更新的碰撞後分佈函數陣列
 //步驟二: 以插值後的分佈函數輸出為當前計算點的f_new，以及 計算物理空間計算點的平衡分佈函數，宏觀參數
-//-------更新專數於當前計算點的陣列
-//步驟三: 更新物理空間計算點的重估一般態分佈函數陣列
-//步驟四: 更新物理空間計算點的 碰撞後一般態分佈函數陣列
+////更新專數於當前計算點的陣列
+////步驟三: 更新物理空間計算點的重估一般態分佈函數陣列
+//步驟四: 更新物理空間計算點的 碰撞後一般態分佈函數 單點
 //=============================
 
 
@@ -51,8 +51,6 @@ __constant__ double GILBM_C1[19][19];
 #define STENCIL_SIZE 7
 #define STENCIL_VOL  343  // 7*7*7
 
-// Grid size for f_pc_d / feq_d indexing
-#define GRID_SIZE (NX6 * NYD6 * NZ6)
 
 
 
@@ -161,6 +159,189 @@ __device__ void gilbm_mrt_collision(
 }
 #endif // USE_MRT
 
+// ============================================================================
+// [GTS] Core GILBM with Global Time Stepping (no f_pc, no Re-estimation)
+// ============================================================================
+// Algorithm:
+//   Step 1: 7-point Lagrange interpolation from f_old (previous time step)
+//           + Chapman-Enskog BC for wall boundary directions
+//   Step 1.5: Compute macroscopic (rho,u,v,w) + feq from streamed f
+//   Step 2: Point-wise collision at A only (BGK or MRT) using omega_global
+//           No 343-loop, no Re-estimation (R_AB=1 when omega/dt uniform)
+//
+// Memory: reads f_old_ptrs[19], writes f_new_ptrs[19] (double-buffer, no race)
+//         Eliminates f_pc (19×343×GRID_SIZE ≈ 5.5 GB)
+// ============================================================================
+__device__ void gilbm_compute_point_gts(
+    int i, int j, int k,
+    double *f_old_ptrs[19],   // previous time step (read-only)
+    double *f_new_ptrs[19],   // new time step (write)
+    double *feq_d,
+    double *dk_dz_d, double *dk_dy_d,
+    double *delta_zeta_d,
+    int *bk_precomp_d,
+    double *u_out, double *v_out, double *w_out, double *rho_out_arr,
+    double *Force, double *rho_modify,
+    double omega_global
+) {
+    const int nface = NX6 * NZ6;
+    const int index = j * nface + k * NX6 + i;
+    const int idx_jk = j * NZ6 + k;
+
+    // Stencil base: bi/bj never clamped for executed points, bk precomputed
+    const int bi = i - 3;
+    const int bj = j - 3;
+    const int bk = bk_precomp_d[k];
+    const int ci = i - bi;  // = 3 (always, for executed i ∈ [3, NX6-4])
+    const int cj = j - bj;  // = 3 (always, for executed j ∈ [3, NYD6-4])
+
+    // ── Wall BC pre-computation ──
+    bool is_bottom = (k == 3);
+    bool is_top    = (k == NZ6 - 4);
+    double dk_dy_val = dk_dy_d[idx_jk];
+    double dk_dz_val = dk_dz_d[idx_jk];
+
+    double rho_wall = 0.0, du_dk = 0.0, dv_dk = 0.0, dw_dk = 0.0;
+    if (is_bottom) {
+        int idx3 = j * nface + 4 * NX6 + i;
+        double rho3, u3, v3, w3;
+        compute_macroscopic_at(f_old_ptrs, idx3, rho3, u3, v3, w3);
+        du_dk = u3;  dv_dk = v3;  dw_dk = w3;
+        rho_wall = rho3;
+    } else if (is_top) {
+        int idxm1 = j * nface + (NZ6 - 5) * NX6 + i;
+        double rhom1, um1, vm1, wm1;
+        compute_macroscopic_at(f_old_ptrs, idxm1, rhom1, um1, vm1, wm1);
+        du_dk = -(um1);  dv_dk = -(vm1);  dw_dk = -(wm1);
+        rho_wall = rhom1;
+    }
+
+    // ── STEP 1: Interpolation + Streaming (from f_old, no a_local scaling) ──
+    double f_streamed_all[19];
+    double rho_stream = 0.0, mx_stream = 0.0, my_stream = 0.0, mz_stream = 0.0;
+
+    for (int q = 0; q < 19; q++) {
+        double f_streamed;
+
+        if (q == 0) {
+            // Rest direction: no streaming, read center from f_old
+            f_streamed = f_old_ptrs[0][index];
+        } else {
+            bool need_bc = false;
+            if (is_bottom) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
+            else if (is_top) need_bc = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
+            if (need_bc) {
+                // Chapman-Enskog BC with global omega and dt
+                f_streamed = ChapmanEnskogBC(q, rho_wall,
+                    du_dk, dv_dk, dw_dk,
+                    dk_dy_val, dk_dz_val,
+                    omega_global, GILBM_dt);
+            } else {
+                // GTS: no a_local scaling (a_local ≡ 1)
+                double t_eta = (double)ci - GILBM_delta_eta[q];
+                if (t_eta < 0.0) t_eta = 0.0; if (t_eta > 6.0) t_eta = 6.0;
+                double t_xi  = (double)cj - GILBM_delta_xi[q];
+                if (t_xi  < 0.0) t_xi  = 0.0; if (t_xi  > 6.0) t_xi  = 6.0;
+                double delta_zeta = delta_zeta_d[q * NYD6 * NZ6 + idx_jk];
+                double up_k = (double)k - delta_zeta;
+                if (up_k < 3.0)                up_k = 3.0;
+                if (up_k > (double)(NZ6 - 4))  up_k = (double)(NZ6 - 4);
+                double t_zeta = up_k - (double)bk;
+                double Lagrangarray_eta[7], Lagrangarray_xi[7], Lagrangarray_zeta[7];
+                lagrange_7point_coeffs(t_eta,  Lagrangarray_eta);
+                lagrange_7point_coeffs(t_xi,   Lagrangarray_xi);
+                lagrange_7point_coeffs(t_zeta, Lagrangarray_zeta);
+
+                // ── Fused load + η-reduction from f_old (not f_pc!) ──
+                // For each (sj,sk), read si=0..6 from f_old_ptrs[q] directly
+                // x is contiguous in memory → coalesced reads
+                double interpolation1order[7][7];
+                for (int sj = 0; sj < 7; sj++) {
+                    int gj = bj + sj;
+                    for (int sk = 0; sk < 7; sk++) {
+                        int gk = bk + sk;
+                        int base_jk = gj * nface + gk * NX6 + bi;
+                        interpolation1order[sj][sk] = Intrpl7(
+                            f_old_ptrs[q][base_jk + 0], Lagrangarray_eta[0],
+                            f_old_ptrs[q][base_jk + 1], Lagrangarray_eta[1],
+                            f_old_ptrs[q][base_jk + 2], Lagrangarray_eta[2],
+                            f_old_ptrs[q][base_jk + 3], Lagrangarray_eta[3],
+                            f_old_ptrs[q][base_jk + 4], Lagrangarray_eta[4],
+                            f_old_ptrs[q][base_jk + 5], Lagrangarray_eta[5],
+                            f_old_ptrs[q][base_jk + 6], Lagrangarray_eta[6]);
+                    }
+                }
+
+                // Step B: ξ (j) reduction → 7 values
+                double interpolation2order[7];
+                for (int sk = 0; sk < 7; sk++)
+                    interpolation2order[sk] = Intrpl7(
+                        interpolation1order[0][sk], Lagrangarray_xi[0],
+                        interpolation1order[1][sk], Lagrangarray_xi[1],
+                        interpolation1order[2][sk], Lagrangarray_xi[2],
+                        interpolation1order[3][sk], Lagrangarray_xi[3],
+                        interpolation1order[4][sk], Lagrangarray_xi[4],
+                        interpolation1order[5][sk], Lagrangarray_xi[5],
+                        interpolation1order[6][sk], Lagrangarray_xi[6]);
+
+                // Step C: ζ reduction → scalar
+                f_streamed = Intrpl7(
+                    interpolation2order[0], Lagrangarray_zeta[0],
+                    interpolation2order[1], Lagrangarray_zeta[1],
+                    interpolation2order[2], Lagrangarray_zeta[2],
+                    interpolation2order[3], Lagrangarray_zeta[3],
+                    interpolation2order[4], Lagrangarray_zeta[4],
+                    interpolation2order[5], Lagrangarray_zeta[5],
+                    interpolation2order[6], Lagrangarray_zeta[6]);
+            }
+        }
+
+        f_streamed_all[q] = f_streamed;
+        rho_stream += f_streamed;
+        mx_stream  += GILBM_e[q][0] * f_streamed;
+        my_stream  += GILBM_e[q][1] * f_streamed;
+        mz_stream  += GILBM_e[q][2] * f_streamed;
+    }
+
+    // ── STEP 1.5: Macroscopic + feq ──
+    // Mass correction only for counted points (avoid overlap overcorrection)
+    if (i < NX6 - 4 && j < NYD6 - 4) {
+        rho_stream += rho_modify[0];
+        f_streamed_all[0] += rho_modify[0];
+    }
+    double rho_A = rho_stream;
+    double u_A   = mx_stream / rho_A;
+    double v_A   = my_stream / rho_A;
+    double w_A   = mz_stream / rho_A;
+
+    double feq_A[19];
+    for (int q = 0; q < 19; q++) {
+        feq_A[q] = compute_feq_alpha(q, rho_A, u_A, v_A, w_A);
+        feq_d[q * GRID_SIZE + index] = feq_A[q];
+    }
+    rho_out_arr[index] = rho_A;
+    u_out[index] = u_A;
+    v_out[index] = v_A;
+    w_out[index] = w_A;
+
+    // ── STEP 2: Point-wise collision at A (no 343-loop, no Re-estimation) ──
+#if USE_MRT
+    // MRT collision: reuse existing function with global parameters
+    gilbm_mrt_collision(f_streamed_all, feq_A, 1.0 / omega_global, GILBM_dt, Force[0]);
+    for (int q = 0; q < 19; q++)
+        f_new_ptrs[q][index] = f_streamed_all[q];
+#else
+    // BGK collision: f* = f̃ - (1/ω)(f̃ - feq) + force
+    double inv_omega = 1.0 / omega_global;
+    for (int q = 0; q < 19; q++) {
+        double f_post = f_streamed_all[q] - inv_omega * (f_streamed_all[q] - feq_A[q]);
+        f_post += GILBM_W[q] * 3.0 * GILBM_e[q][1] * Force[0] * GILBM_dt;
+        f_new_ptrs[q][index] = f_post;
+    }
+#endif
+}
+
+#if 0  // ── LTS functions removed for GTS conversion ──
 // ============================================================================
 // Core GILBM 4-step logic (shared by Buffer and Full kernels)
 // ============================================================================
@@ -1133,51 +1314,58 @@ __global__ void GILBM_Step23_Full_Kernel(
                        Force[0]);
 #endif
 }
+#endif  // ── end LTS kernels ──
+
 
 // ============================================================================
-// Initialization kernel: fill f_pc_d from initial f arrays
+// [GTS] Single-pass kernel: interpolation + collision (no f_pc, no re-estimation)
+// Double-buffer: reads f_old (ft), writes f_new (fd), then swap in host code.
 // ============================================================================
-__global__ void Init_FPC_Kernel(
-    double *f0, double *f1, double *f2, double *f3, double *f4,
-    double *f5, double *f6, double *f7, double *f8, double *f9,
-    double *f10, double *f11, double *f12, double *f13, double *f14,
-    double *f15, double *f16, double *f17, double *f18,
-    double *f_pc
+__global__ void GILBM_GTS_Kernel(
+    double *f0_old, double *f1_old, double *f2_old, double *f3_old, double *f4_old,
+    double *f5_old, double *f6_old, double *f7_old, double *f8_old, double *f9_old,
+    double *f10_old, double *f11_old, double *f12_old, double *f13_old, double *f14_old,
+    double *f15_old, double *f16_old, double *f17_old, double *f18_old,
+    double *f0_new, double *f1_new, double *f2_new, double *f3_new, double *f4_new,
+    double *f5_new, double *f6_new, double *f7_new, double *f8_new, double *f9_new,
+    double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
+    double *f15_new, double *f16_new, double *f17_new, double *f18_new,
+    double *feq_d,
+    double *dk_dz_d, double *dk_dy_d,
+    double *delta_zeta_d,
+    int *bk_precomp_d,
+    double *u_out, double *v_out, double *w_out, double *rho_out,
+    double *Force, double *rho_modify,
+    double omega_global
 ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
     const int k = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (i >= NX6 || j >= NYD6 || k >= NZ6) return;
+    // Buffer=3: compute i∈[3,NX6-4], j∈[3,NYD6-4], k∈[3,NZ6-4]
+    if (i <= 2 || i >= NX6 - 3 || j < 3 || j >= NYD6 - 3 || k <= 2 || k >= NZ6 - 3) return;
 
-    const int nface = NX6 * NZ6;
-    const int index = j * nface + k * NX6 + i;
-
-    double *f_ptrs[19] = {
-        f0, f1, f2, f3, f4, f5, f6, f7, f8, f9,
-        f10, f11, f12, f13, f14, f15, f16, f17, f18
+    double *f_old_ptrs[19] = {
+        f0_old, f1_old, f2_old, f3_old, f4_old, f5_old, f6_old,
+        f7_old, f8_old, f9_old, f10_old, f11_old, f12_old,
+        f13_old, f14_old, f15_old, f16_old, f17_old, f18_old
+    };
+    double *f_new_ptrs[19] = {
+        f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
+        f7_new, f8_new, f9_new, f10_new, f11_new, f12_new,
+        f13_new, f14_new, f15_new, f16_new, f17_new, f18_new
     };
 
-    // Compute stencil base with clamping
-    int bi, bj, bk;
-    compute_stencil_base(i, j, k, bi, bj, bk);
-
-    // Fill f_pc for all q and all stencil positions
-    for (int q = 0; q < 19; q++) {
-        for (int si = 0; si < 7; si++) {
-            int gi = bi + si;
-            for (int sj = 0; sj < 7; sj++) {
-                int gj = bj + sj;
-                for (int sk = 0; sk < 7; sk++) {
-                    int gk = bk + sk;
-                    int idx_B = gj * nface + gk * NX6 + gi;
-                    int flat  = si * 49 + sj * 7 + sk;
-                    f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index] = f_ptrs[q][idx_B];
-                }
-            }
-        }
-    }
+    gilbm_compute_point_gts(i, j, k,
+        f_old_ptrs, f_new_ptrs,
+        feq_d,
+        dk_dz_d, dk_dy_d,
+        delta_zeta_d, bk_precomp_d,
+        u_out, v_out, w_out, rho_out,
+        Force, rho_modify,
+        omega_global);
 }
+
 
 // ============================================================================
 // Initialization kernel: compute feq_d from initial f arrays
@@ -1214,6 +1402,7 @@ __global__ void Init_Feq_Kernel(
     }
 }
 
+#if 0  // [GTS] Init_OmegaDt_Kernel removed (LTS only)
 // ============================================================================
 // Initialization kernel: compute omegadt_local_d from dt_local_d and omega_local_d
 // ============================================================================
@@ -1231,5 +1420,6 @@ __global__ void Init_OmegaDt_Kernel(
 
     omegadt_local_d[index] = omega_local_d[idx_jk] * dt_local_d[idx_jk];
 }
+#endif  // end Init_OmegaDt_Kernel
 
 #endif

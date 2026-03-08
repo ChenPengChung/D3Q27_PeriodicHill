@@ -63,15 +63,8 @@ double dt_global;
 double omega_global;     // = 3·niu/dt_global + 0.5 (dimensionless relaxation time)
 double omegadt_global;   // = omega_global · dt_global (dimensional relaxation time τ)
 
-// Phase 4: Local Time Step fields [NYD6*NZ6]
-double *dt_local_h, *dt_local_d;
-double *omega_local_h, *omega_local_d;       // ω_local = 3·niu/dt_local + 0.5
-double *omegadt_local_h;                      // ω·Δt (host only, diagnostic)
-
 // GILBM two-pass architecture: persistent global arrays
-double *f_pc_d;           // Per-point post-collision stencil data [19 * 343 * NX6*NYD6*NZ6]
 double *feq_d;            // Equilibrium distribution [19 * NX6*NYD6*NZ6]
-double *omegadt_local_d;  // Precomputed ω·Δt at each grid point [NX6*NYD6*NZ6] (3D broadcast)
 //
 // 逆變速度在 GPU kernel 中即時計算（不需全場存儲）：
 //   ẽ_α_η = e[α][0] / dx           (常數)
@@ -232,65 +225,11 @@ int main(int argc, char *argv[])
         printf("  =============================================================\n\n");
     }
 
-    // GILBM: 預計算三方向位移 δη (常數), δξ (常數), δζ (RK2 空間變化)
+    // GILBM: 預計算三方向位移 δη (常數), δξ (常數), δζ (RK2 空間變化, 使用 dt_global)
     PrecomputeGILBM_DeltaAll(delta_xi_h, delta_eta_h, delta_zeta_h,
                               dk_dz_h, dk_dy_h, NYD6, NZ6, dt_global );
 
-                              
-    // Phase 4: Local Time Step — per-point dt, omega, omega*dt
-    ComputeLocalTimeStep(dt_local_h, omega_local_h, omegadt_local_h,
-                         dk_dz_h, dk_dy_h, dx_val, dy_val,
-                         niu, dt_global, NYD6, NZ6, CFL, myid);
-
-    // Bug 3 fix: Exchange dt_local_h and omega_local_h ghost zones between MPI ranks.
-    // ComputeLocalTimeStep only fills j=3..NYD6-4 with actual local values;
-    // ghost j=0,1,2 and j=NYD6-3..NYD6-1 retain dt_global defaults.
-    // Without this fix, omegadt_local_d at ghost j is wrong → R_AB ratio in
-    // GILBM Step 2+3 is incorrect at MPI boundaries → causes divergence.
-    {
-        int ghost_count = Buffer * NZ6;  // 3 j-slices × NZ6 doubles
-        int j_send_left  = (Buffer + 1) * NZ6;            // j=4
-        int j_recv_right = (NYD6 - Buffer) * NZ6;         // j=36
-        int j_send_right = (NYD6 - 2*Buffer - 1) * NZ6;   // j=32
-        int j_recv_left  = 0;                               // j=0
-
-        // dt_local_h: send j=4..6 to left, receive from right into j=36..38
-        MPI_Sendrecv(&dt_local_h[j_send_left],  ghost_count, MPI_DOUBLE, l_nbr, 500,
-                     &dt_local_h[j_recv_right], ghost_count, MPI_DOUBLE, r_nbr, 500,
-                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        // dt_local_h: send j=32..34 to right, receive from left into j=0..2
-        MPI_Sendrecv(&dt_local_h[j_send_right], ghost_count, MPI_DOUBLE, r_nbr, 501,
-                     &dt_local_h[j_recv_left],  ghost_count, MPI_DOUBLE, l_nbr, 501,
-                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-
-        // omega_local_h: same exchange pattern
-        MPI_Sendrecv(&omega_local_h[j_send_left],  ghost_count, MPI_DOUBLE, l_nbr, 502,
-                     &omega_local_h[j_recv_right], ghost_count, MPI_DOUBLE, r_nbr, 502,
-                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        MPI_Sendrecv(&omega_local_h[j_send_right], ghost_count, MPI_DOUBLE, r_nbr, 503,
-                     &omega_local_h[j_recv_left],  ghost_count, MPI_DOUBLE, l_nbr, 503,
-                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-
-        // Recompute omegadt_local_h at exchanged ghost zones for host-side consistency
-        for (int j = 0; j < Buffer; j++)
-            for (int k = 0; k < NZ6; k++) {
-                int idx = j * NZ6 + k;
-                omegadt_local_h[idx] = omega_local_h[idx] * dt_local_h[idx];
-            }
-        for (int j = NYD6 - Buffer; j < NYD6; j++)
-            for (int k = 0; k < NZ6; k++) {
-                int idx = j * NZ6 + k;
-                omegadt_local_h[idx] = omega_local_h[idx] * dt_local_h[idx];
-            }
-
-        if (myid == 0) printf("GILBM: dt_local/omega_local ghost zones exchanged between MPI ranks.\n");
-    }
-    
-    // Phase 4: Recompute delta_zeta with local dt (overwrites global-dt values)
-    PrecomputeGILBM_DeltaZeta_Local(delta_zeta_h, dk_dz_h, dk_dy_h,
-                                     dt_local_h, NYD6, NZ6);
-
-    // Phase 2: CFL validation — departure point safety check (should now PASS)
+    // GTS: CFL validation — departure point safety check
     bool cfl_ok = ValidateDepartureCFL(delta_zeta_h, dk_dy_h, dk_dz_h, NYD6, NZ6, myid);
     if (!cfl_ok && myid == 0) {
         fprintf(stderr,
@@ -348,11 +287,7 @@ int main(int argc, char *argv[])
     }
 #endif
 
-    // Phase 4: LTS fields to GPU (omega_local is 2D; omegadt_local_d is 3D, filled by Init_OmegaDt_Kernel)
-    CHECK_CUDA( cudaMemcpy(dt_local_d,      dt_local_h,      NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
-    CHECK_CUDA( cudaMemcpy(omega_local_d,   omega_local_h,   NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
-
-    if (myid == 0) printf("GILBM: delta_zeta + __constant__(dt,eta,xi) + bk_precomp + dk + LTS fields copied to GPU.\n");
+    if (myid == 0) printf("GILBM: delta_zeta + __constant__(dt,eta,xi) + bk_precomp + dk copied to GPU.\n");
 
     if ( INIT == 0 ) {
         printf("Initializing by default function...\n");
@@ -524,16 +459,12 @@ int main(int argc, char *argv[])
         }
     }
 
-    // GILBM two-pass initialization: omega_dt, feq, f_pc
+    // GILBM initialization: feq from initial f arrays
     {
         dim3 init_block(8, 8, 4);
         dim3 init_grid((NX6 + init_block.x - 1) / init_block.x,
                        (NYD6 + init_block.y - 1) / init_block.y,
                        (NZ6 + init_block.z - 1) / init_block.z);
-
-        Init_OmegaDt_Kernel<<<init_grid, init_block>>>(
-            dt_local_d, omega_local_d, omegadt_local_d
-        );
 
         Init_Feq_Kernel<<<init_grid, init_block>>>(
             fd[0], fd[1], fd[2], fd[3], fd[4], fd[5], fd[6], fd[7], fd[8], fd[9],
@@ -541,59 +472,62 @@ int main(int argc, char *argv[])
             feq_d
         );
 
-        Init_FPC_Kernel<<<init_grid, init_block>>>(
-            fd[0], fd[1], fd[2], fd[3], fd[4], fd[5], fd[6], fd[7], fd[8], fd[9],
-            fd[10], fd[11], fd[12], fd[13], fd[14], fd[15], fd[16], fd[17], fd[18],
-            f_pc_d
-        );
-
         CHECK_CUDA( cudaDeviceSynchronize() );
-        if (myid == 0) printf("GILBM two-pass: omega_dt, feq, f_pc initialized.\n");
+        if (myid == 0) printf("GILBM: feq initialized.\n");
+    }
+
+    // [GTS] Initial MPI exchange: fill y-direction ghost zones on GPU
+    // Before the first time step, ft/fd ghost zones may be uninitialized
+    // (restart files may store only interior points).
+    // Exchange both ft and fd so that the first Launch_CollisionStreaming
+    // (which reads ft as f_old) has valid ghost zones for interpolation.
+    {
+        ISend_LtRtBdry( ft, iToLeft,    l_nbr, itag_f4, 0, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
+        IRecv_LtRtBdry( ft, iFromRight, r_nbr, itag_f4, 1, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
+        ISend_LtRtBdry( ft, iToRight,   r_nbr, itag_f3, 2, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
+        IRecv_LtRtBdry( ft, iFromLeft,  l_nbr, itag_f3, 3, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
+        for (int i = 0; i < 23; i++)
+            CHECK_MPI( MPI_Waitall(4, request[i], status[i]) );
+
+        ISend_LtRtBdry( fd, iToLeft,    l_nbr, itag_f4, 0, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
+        IRecv_LtRtBdry( fd, iFromRight, r_nbr, itag_f4, 1, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
+        ISend_LtRtBdry( fd, iToRight,   r_nbr, itag_f3, 2, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
+        IRecv_LtRtBdry( fd, iFromLeft,  l_nbr, itag_f3, 3, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
+        for (int i = 0; i < 23; i++)
+            CHECK_MPI( MPI_Waitall(4, request[i], status[i]) );
+
+        // x-direction periodic BC for both buffers
+        dim3 griddimSW(1, NYD6/NT+1, NZ6);
+        dim3 blockdimSW(3, NT, 1);
+        periodicSW<<<griddimSW, blockdimSW>>>(
+            ft[0],ft[1],ft[2],ft[3],ft[4],ft[5],ft[6],ft[7],ft[8],ft[9],ft[10],ft[11],ft[12],ft[13],ft[14],ft[15],ft[16],ft[17],ft[18],
+            ft[0],ft[1],ft[2],ft[3],ft[4],ft[5],ft[6],ft[7],ft[8],ft[9],ft[10],ft[11],ft[12],ft[13],ft[14],ft[15],ft[16],ft[17],ft[18],
+            y_d, x_d, z_d, u, v, w, rho_d, feq_d
+        );
+        periodicSW<<<griddimSW, blockdimSW>>>(
+            fd[0],fd[1],fd[2],fd[3],fd[4],fd[5],fd[6],fd[7],fd[8],fd[9],fd[10],fd[11],fd[12],fd[13],fd[14],fd[15],fd[16],fd[17],fd[18],
+            fd[0],fd[1],fd[2],fd[3],fd[4],fd[5],fd[6],fd[7],fd[8],fd[9],fd[10],fd[11],fd[12],fd[13],fd[14],fd[15],fd[16],fd[17],fd[18],
+            y_d, x_d, z_d, u, v, w, rho_d, feq_d
+        );
+        CHECK_CUDA( cudaDeviceSynchronize() );
+
+        if (myid == 0) printf("GILBM: Initial MPI ghost exchange completed (ft + fd).\n");
     }
     
-    // ---- GILBM Initialization Parameter Summary ----
-    {
-        // Find dt_local max/min over interior computational points
-        double dt_local_max_loc = 0.0;
-        double dt_local_min_loc = 1e30;
-        for (int j = 3; j < NYD6 - 3; j++) {
-            for (int k = 3; k < NZ6 - 3; k++) {
-                int idx = j * NZ6 + k;
-                if (dt_local_h[idx] > dt_local_max_loc) dt_local_max_loc = dt_local_h[idx];
-                if (dt_local_h[idx] < dt_local_min_loc) dt_local_min_loc = dt_local_h[idx];
-            }
-        }
-        double dt_local_max_g, dt_local_min_g;
-        MPI_Allreduce(&dt_local_max_loc, &dt_local_max_g, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-        MPI_Allreduce(&dt_local_min_loc, &dt_local_min_g, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-
-        if (myid == 0) {
-            double omega_dtmax = 3.0 * niu / dt_local_max_g + 0.5;
-            double tau_dtmax   = 3.0 * niu + 0.5 * dt_local_max_g;
-            double omega_dtmin = 3.0 * niu / dt_local_min_g + 0.5;
-            double tau_dtmin   = 3.0 * niu + 0.5 * dt_local_min_g;
-
-            printf("\n+================================================================+\n");
-            printf("| GILBM Initialization Parameter Summary                         |\n");
-            printf("+================================================================+\n");
-            printf("| [Input]  Re               = %d\n", (int)Re);
-            printf("| [Input]  Uref             = %.6f\n", (double)Uref);
-            printf("| [Output] niu              = %.6e\n", (double)niu);
-            printf("+----------------------------------------------------------------+\n");
-            printf("| [Output] dt_global        = %.6e\n", dt_global);
-            printf("|   -> Omega(dt_global)     = 3*niu/dt_global + 0.5     = %.6f\n", omega_global);
-            printf("|   -> tau(dt_global)       = 3*niu + 0.5*dt_global     = %.6e  (\"omegadt_global\")\n", omegadt_global);
-            printf("+----------------------------------------------------------------+\n");
-            printf("| [Output] dt_local_max     = %.6e  (channel center)\n", dt_local_max_g);
-            printf("|   -> Omega(dt_local_max)  = 3*niu/dt_local_max + 0.5  = %.6f\n", omega_dtmax);
-            printf("|   -> tau(dt_local_max)    = 3*niu + 0.5*dt_local_max  = %.6e\n", tau_dtmax);
-            printf("+----------------------------------------------------------------+\n");
-            printf("| [Output] dt_local_min     = %.6e  (wall)\n", dt_local_min_g);
-            printf("|   -> Omega(dt_local_min)  = 3*niu/dt_local_min + 0.5  = %.6f\n", omega_dtmin);
-            printf("|   -> tau(dt_local_min)    = 3*niu + 0.5*dt_local_min  = %.6e\n", tau_dtmin);
-            printf("+================================================================+\n\n");
-        }
-    } 
+    // ---- GILBM GTS Parameter Summary ----
+    if (myid == 0) {
+        printf("\n+================================================================+\n");
+        printf("| GILBM Initialization Parameter Summary (GTS)                   |\n");
+        printf("+================================================================+\n");
+        printf("| [Input]  Re               = %d\n", (int)Re);
+        printf("| [Input]  Uref             = %.6f\n", (double)Uref);
+        printf("| [Output] niu              = %.6e\n", (double)niu);
+        printf("+----------------------------------------------------------------+\n");
+        printf("| [Output] dt_global        = %.6e\n", dt_global);
+        printf("|   -> omega_global         = 3*niu/dt_global + 0.5     = %.6f\n", omega_global);
+        printf("|   -> omegadt_global       = omega*dt                  = %.6e\n", omegadt_global);
+        printf("+================================================================+\n\n");
+    }
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
     // Restore time-average from restart (if available)

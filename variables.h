@@ -31,6 +31,7 @@
 #define     NYD6    (NY/jp+7)   // 流向 per-rank: NY/jp + 7
 #define     NY6     (NY+7)      // 流向 global: NY + 7
 #define     NZ6     (NZ+6)      // 法向: +6 (3 buffer each side)
+#define     GRID_SIZE (NX6 * NYD6 * NZ6) // per-rank 總格點數
 
 // 非均勻網格
 #define     CFL                 0.5
@@ -45,7 +46,7 @@
 // ================================================================
 // 4. 物理參數
 // ================================================================
-#define     Re      700         // Reynolds number (基於 H_HILL 和 Uref)
+#define     Re      50         // Reynolds number (基於 H_HILL 和 Uref)
 #define     Uref    0.0583      // 參考速度 (bulk velocity)
                                 // Re700:0.0583, Re1400/2800:0.0776
                                 // Re5600:0.0464, Re10595:0.0878
@@ -83,7 +84,7 @@
 // ================================================================
 #define     loop        500000  // 最大時間步數
 #define     NDTMIT      50      // 每 N 步輸出 monitor 資料
-#define     NDTFRC      100     // 每 N 步更新外力項
+#define     NDTFRC      1000     // 每 N 步更新外力項
 #define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
@@ -113,7 +114,7 @@
 //   1 = 從 per-rank binary 續跑 (legacy, 只有瞬時場)
 //   2 = 從 merged VTK 續跑 (f=feq 近似, 統計量無法還原)
 //   3 = 從 binary checkpoint 續跑 (精確: f + 統計量累積和)
-#define     INIT                (3)
+#define     INIT                (0)
 
 // INIT=2 用: merged VTK 檔案路徑
 #define     RESTART_VTK_FILE    "result/velocity_merged_1380001.vtk"
@@ -164,5 +165,5 @@
 鬆弛時間:
   直角坐標系: τ = 3ν/dt + 0.5          (dt = minSize)
   曲線坐標系: ω_global = 3ν/dt_global + 0.5
-  局部時間步: ω_local(j,k) = 3ν/dt_local(j,k) + 0.5
+  [GTS] 全域時間步: ω_global 處處相同, 無局部時間步
 */

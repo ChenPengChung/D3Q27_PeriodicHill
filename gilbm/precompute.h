@@ -302,6 +302,11 @@ double ComputeGlobalTimeStep(
     return dt_g;
 }
 
+// [GTS] Removed: ComputeLocalTimeStep (LTS, Imamura Eq. 28)
+// [GTS] Removed: PrecomputeGILBM_DeltaZeta_Local, DeltaEta_Local, DeltaXi_Local
+// [GTS] Removed: lagrange_7point_coeffs_host, PrecomputeGILBM_LagrangeWeights
+
+#if 0  // ── LTS functions removed for GTS conversion ──
 // ============================================================================
 // Phase 4: Local Time Step (Imamura 2005 Eq. 28)
 // ============================================================================
@@ -657,7 +662,11 @@ void PrecomputeGILBM_LagrangeWeights(
         }
     }
 }
+#endif  // ── end LTS functions ──
 
+
+
+//內插成員起始點計算
 // ============================================================================
 // PrecomputeGILBM_StencilBaseK: precompute z-direction stencil base with wall clamping
 // ============================================================================

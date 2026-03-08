@@ -113,25 +113,12 @@ void AllocateMemory() {
     // Precomputed stencil base k [NZ6] (int array, wall-clamped, direct k indexing)
     CHECK_CUDA( cudaMallocHost((void**)&bk_precomp_h, NZ6 * sizeof(int)) );
     CHECK_CUDA( cudaMalloc(&bk_precomp_d, NZ6 * sizeof(int)) );
-    // Phase 4 LTS: local dt, omega fields [NYD6 * NZ6]
-    nBytes = NYD6 * NZ6 * sizeof(double);
-    AllocateHostArray(  nBytes, 3, &dt_local_h, &omega_local_h, &omegadt_local_h);
-    AllocateDeviceArray(nBytes, 2, &dt_local_d, &omega_local_d);
 
-    // GILBM two-pass: f_pc_d [19*343*grid], feq_d [19*grid], omegadt_local_d [grid]
+    // GILBM two-pass: feq_d [19*grid]
     {
-        size_t grid_size = (size_t)NX6 * NYD6 * NZ6;
-        size_t f_pc_bytes = 19ULL * 343ULL * grid_size * sizeof(double);
-        CHECK_CUDA( cudaMalloc(&f_pc_d, f_pc_bytes) );
-        CHECK_CUDA( cudaMemset(f_pc_d, 0, f_pc_bytes) );
-
-        size_t feq_bytes = 19ULL * grid_size * sizeof(double);
+        size_t feq_bytes = 19ULL * GRID_SIZE * sizeof(double);
         CHECK_CUDA( cudaMalloc(&feq_d, feq_bytes) );
         CHECK_CUDA( cudaMemset(feq_d, 0, feq_bytes) );
-
-        size_t omega_bytes = grid_size * sizeof(double);
-        CHECK_CUDA( cudaMalloc(&omegadt_local_d, omega_bytes) );
-        CHECK_CUDA( cudaMemset(omegadt_local_d, 0, omega_bytes) );
     }
 
     // Time-average accumulation (GPU-side): u_tavg(spanwise), v_tavg(streamwise), w_tavg(wall-normal)
@@ -222,11 +209,8 @@ void FreeSource() {
     // Precomputed stencil base k
     CHECK_CUDA( cudaFreeHost(bk_precomp_h) );
     CHECK_CUDA( cudaFree(bk_precomp_d) );
-    // Phase 4 LTS
-    FreeHostArray(  3,  dt_local_h, omega_local_h, omegadt_local_h);
-    FreeDeviceArray(2,  dt_local_d, omega_local_d);
     // GILBM two-pass arrays
-    FreeDeviceArray(3,  f_pc_d, feq_d, omegadt_local_d);
+    FreeDeviceArray(1, feq_d);
     // Time-average accumulation (GPU) + vorticity mean
     FreeDeviceArray(3,  u_tavg_d, v_tavg_d, w_tavg_d);
     FreeDeviceArray(3,  ox_tavg_d, oy_tavg_d, oz_tavg_d);
