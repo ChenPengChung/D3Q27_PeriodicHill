@@ -14,6 +14,10 @@ result/*.vtu
 result/*.vtp
 result/*.pvtu
 result/*.pvtp
+
+# 特例：追蹤 benchmark 資料夾內所有檔案
+!result/benchmark/
+!result/benchmark/**
 backup/
 statistics/
 checkpoint/
@@ -21,6 +25,10 @@ checkpoint/
 # 排除資料檔案
 *.dat
 *.DAT
+
+# 特例：追蹤 benchmark 內的 .dat 檔案
+!result/benchmark/**/*.dat
+!result/benchmark/**/*.DAT
 
 # 排除編譯產物
 a.out
