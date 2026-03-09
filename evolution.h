@@ -349,25 +349,51 @@ void Launch_ModifyForcingTerm()
     CHECK_MPI( MPI_Bcast(&Ub_avg, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD) );
     Ub_avg_global = Ub_avg;
 
-    // EMA smoothing: filter vortex shedding noise from Ub before feeding to controller
-    // α=0.3 → effective window ~3 samples (3000 steps), DC gain = 1 (no steady-state bias)
-    // All ranks execute identically (same Ub_avg after Bcast) → Ub_ema synchronized
-    static double Ub_ema = -1.0;           // sentinel: uninitialized
-    const double ema_alpha = 0.3;
-    if (Ub_ema < 0.0)
-        Ub_ema = Ub_avg;                   // first call: seed with raw measurement
-    else
-        Ub_ema = ema_alpha * Ub_avg + (1.0 - ema_alpha) * Ub_ema;
-
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
-    double beta = max(0.001, force_alpha/(double)Re);
     double Ma_now = Ub_avg / (double)cs;
     double Ma_max = ComputeMaMax();  // all ranks participate (MPI_Allreduce)
 
-    double error = (double)Uref - Ub_ema;  // ← use EMA-filtered Ub for controller
-    double gain = beta;
-    Force_h[0] = Force_h[0] + gain * error * (double)Uref / (double)LY;
+    // ====== 雙階段外力控制器 (P-additive + Gehrke multiplicative) ======
+    // Re% = (Ub - Uref) / Uref × 100
+    double Re_pct = (Ub_avg - (double)Uref) / (double)Uref * 100.0;
+    bool use_gehrke = (fabs(Re_pct) <= FORCE_SWITCH_THRESHOLD);
+    const char *ctrl_mode;
+
+    // 首次切換到 Gehrke 時輸出通知
+    static bool gehrke_activated = false;
+    if (use_gehrke && !gehrke_activated) {
+        gehrke_activated = true;
+        if (myid == 0)
+            printf("=== [Step %d | FTT=%.2f] Gehrke controller ACTIVATED (Re%%=%.2f%%, threshold=%.1f%%) ===\n",
+                   step, step * dt_global / (double)flow_through_time, Re_pct, (double)FORCE_SWITCH_THRESHOLD);
+    } else if (!use_gehrke && gehrke_activated) {
+        gehrke_activated = false;
+        if (myid == 0)
+            printf("=== [Step %d | FTT=%.2f] Gehrke controller DEACTIVATED, back to P-additive (Re%%=%.2f%%) ===\n",
+                   step, step * dt_global / (double)flow_through_time, Re_pct);
+    }
+
+    if (use_gehrke) {
+        // Phase 2: Gehrke multiplicative controller (接近目標)
+        // Dead zone: |Re%| < 1.5% → no adjustment
+        if (fabs(Re_pct) < 1.5) {
+            ctrl_mode = "Gehrke-HOLD";
+        } else {
+            // F *= (1 - 0.1 * Re%)
+            // Re% < 0 → Ub too low → increase Force
+            // Re% > 0 → Ub too high → decrease Force
+            double correction = 1.0 - 0.1 * Re_pct;
+            Force_h[0] *= correction;
+            ctrl_mode = "Gehrke-MULT";
+        }
+    } else {
+        // Phase 1: P-additive controller (冷啟動 / 遠離目標)
+        double beta  = max(0.001, force_alpha / (double)Re);
+        double error = (double)Uref - Ub_avg;
+        Force_h[0] += beta * error * (double)Uref / (double)LY;
+        ctrl_mode = "P-additive";
+    }
 
     // Force 非負 clamp
     if (Force_h[0] < 0.0) {
@@ -388,19 +414,18 @@ void Launch_ModifyForcingTerm()
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
     double FTT    = step * dt_global / (double)flow_through_time;
-    double U_star_ema = Ub_ema / (double)Uref;   // controller sees this //Ub_ema為濾波過後的涮間速度平均
-    double U_star_raw = Ub_avg / (double)Uref;   // instantaneous measurement
+    double U_star = Ub_avg / (double)Uref;
     double F_star = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);
-    double Re_now = Ub_ema / ((double)Uref / (double)Re);
+    double Re_now = Ub_avg / ((double)Uref / (double)Re);
 
     const char *status_tag = "";
-    if (Ma_max > 0.35)          status_tag = " [WARNING: Ma_max>0.35, reduce Uref]";
-    else if (U_star_ema > 1.2)  status_tag = " [OVERSHOOT!]";
-    else if (U_star_ema > 1.05) status_tag = " [OVERSHOOT]";
+    if (Ma_max > 0.35)       status_tag = " [WARNING: Ma_max>0.35, reduce Uref]";
+    else if (U_star > 1.2)   status_tag = " [OVERSHOOT!]";
+    else if (U_star > 1.05)  status_tag = " [OVERSHOOT]";
 
     if (myid == 0) {
-        printf("[Step %d | FTT=%.2f] Ub_inst=%.6f  U*=%.4f(ema=%.4f)  Force=%.5E  F*=%.4f  Re=%.1f  Ma=%.4f  Ma_max=%.4f%s\n",
-               step, FTT, Ub_avg, U_star_raw, U_star_ema, Force_h[0], F_star, Re_now, Ma_now, Ma_max, status_tag);
+        printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Re%%=%.2f%%  Force=%.5E  F*=%.4f  Re=%.1f  Ma=%.4f  Ma_max=%.4f  [%s]%s\n",
+               step, FTT, Ub_avg, U_star, Re_pct, Force_h[0], F_star, Re_now, Ma_now, Ma_max, ctrl_mode, status_tag);
     }
 
     if (Ma_max > 0.35 && myid == 0) {

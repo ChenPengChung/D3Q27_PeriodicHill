@@ -811,6 +811,8 @@ function push_args() {
     --exclude=backup/
     --filter='P result/'
     --exclude=result/
+    --filter='P checkpoint/'
+    --exclude=checkpoint/
     --filter='P statistics/'
     --exclude=statistics/
     --filter='P __pycache__/'

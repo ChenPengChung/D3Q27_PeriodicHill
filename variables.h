@@ -87,10 +87,15 @@
 #define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
-// 外力控制器增益 (PI controller)
+// 外力控制器增益 (P controller, Phase 1: additive)
 // Re=100: alpha=10, Re=2800: alpha=3~14
 // 週期山丘需較高 gain 加速收斂
 #define     force_alpha 3
+
+// Gehrke & Rung (2022) 雙階段外力控制器
+// Phase 1 (P-additive): |Re%| > THRESHOLD → 原始 P 控制器 (冷啟動/遠離目標)
+// Phase 2 (Gehrke-mult): |Re%| ≤ THRESHOLD → 乘法微調 (接近目標)
+#define     FORCE_SWITCH_THRESHOLD  8.0    // Re% 切換門檻 (%)
 
 // ================================================================
 // 9. FTT 閾值與統計控制
@@ -116,10 +121,10 @@
 #define     INIT                (3)
 
 // INIT=2 用: merged VTK 檔案路徑
-#define     RESTART_VTK_FILE    "result/velocity_merged_1380001.vtk"
+#define     RESTART_VTK_FILE    "result/velocity_merged_1800001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_1380001"
+#define     RESTART_BIN_DIR     "checkpoint/step_1800001"
 
 // 統計量讀取 (僅 INIT=1 時生效)
 // 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat
