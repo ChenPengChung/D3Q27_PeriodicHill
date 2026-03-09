@@ -4,12 +4,11 @@
 #include "initializationTool.h"
 
 void InitialUsingDftFunc() {
-    double e[19][3]={{0.0,0.0,0.0},{1.0,0.0,0.0},{-1.0,0.0,0.0},{0.0,1.0,0.0},{0.0,-1.0,0.0},{0.0,0.0,1.0},{0.0,0.0,-1.0},
-					{1.0,1.0,0.0},{-1.0,1.0,0.0},{1.0,-1.0,0.0},{-1.0,-1.0,0.0},{1.0,0.0,1.0},{-1.0,0.0,1.0},{1.0,0.0,-1.0},
-					{-1.0,0.0,-1.0},{0.0,1.0,1.0},{0.0,-1.0,1.0},{0.0,1.0,-1.0},{0.0,-1.0,-1.0}}; 
-    double W[19]={(1.0/3.0),(1.0/18.0),(1.0/18.0),(1.0/18.0),(1.0/18.0),(1.0/18.0),(1.0/18.0),(1.0/36.0),(1.0/36.0)
-				  ,(1.0/36.0),(1.0/36.0),(1.0/36.0),(1.0/36.0),(1.0/36.0),(1.0/36.0),(1.0/36.0),(1.0/36.0),(1.0/36.0)
-				  ,(1.0/36.0)};
+    // Use D3Q27 velocity vectors and weights from MRT_Matrix_D3Q27.h
+    const int    *ex = D3Q27_ex;
+    const int    *ey = D3Q27_ey;
+    const int    *ez = D3Q27_ez;
+    const double *W  = D3Q27_W;
 
     double udot;
 
@@ -34,11 +33,9 @@ void InitialUsingDftFunc() {
         udot = u_h_p[index]*u_h_p[index] + v_h_p[index]*v_h_p[index] + w_h_p[index]*w_h_p[index];
 
         fh_p[0][index] = W[0]*rho_h_p[index]*(1.0-1.5*udot);
-        for( int dir = 1; dir <= 18; dir++ ) {
-            fh_p[dir][index] = W[dir] * rho_h_p[index] *( 1.0 + 
-                                                          3.0 *( e[dir][0] * u_h_p[index] + e[dir][1] * v_h_p[index] + e[dir][2] * w_h_p[index])+ 
-                                                          4.5 *( e[dir][0] * u_h_p[index] + e[dir][1] * v_h_p[index] + e[dir][2] * w_h_p[index] )*( e[dir][0] * u_h_p[index] + e[dir][1] * v_h_p[index] + e[dir][2] * w_h_p[index] )- 
-                                                          1.5*udot );
+        for( int dir = 1; dir < NQ; dir++ ) {
+            double edotu = (double)ex[dir] * u_h_p[index] + (double)ey[dir] * v_h_p[index] + (double)ez[dir] * w_h_p[index];
+            fh_p[dir][index] = W[dir] * rho_h_p[index] *( 1.0 + 3.0*edotu + 4.5*edotu*edotu - 1.5*udot );
         }
     
     }}}

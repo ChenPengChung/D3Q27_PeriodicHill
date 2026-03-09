@@ -8,11 +8,11 @@
 // All computation is host-side — no GPU kernel needed.
 
 void DiagnoseGILBM_Phase1(
-    const double *delta_xi_h,    // [19] ξ-direction displacement
-    const double *delta_zeta_h,  // [19*NYD6*NZ6] ζ-direction displacement
+    const double *delta_xi_h,    // [NQ] ξ-direction displacement
+    const double *delta_zeta_h,  // [NQ*NYD6*NZ6] ζ-direction displacement
     const double *dk_dz_h,
     const double *dk_dy_h,
-    double **fh_p_local,     // host distribution pointers [19]
+    double **fh_p_local,     // host distribution pointers [NQ]
     int NYD6_local,
     int NZ6_local,
     int myid_local,
@@ -21,21 +21,11 @@ void DiagnoseGILBM_Phase1(
 ) {
     if (myid_local != 0) return;
 
-    // D3Q19 velocity set (host copy, matches GILBM_e in evolution_gilbm.h)
-    double e[19][3] = {
-        {0,0,0},
-        {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
-        {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
-        {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
-        {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
-    };
-    double W[19] = {
-        1.0/3.0,
-        1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0,
-        1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0,
-        1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0,
-        1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0
-    };
+    // D3Q27 velocity set (from MRT_Matrix_D3Q27.h)
+    const int    *ex = D3Q27_ex;
+    const int    *ey = D3Q27_ey;
+    const int    *ez = D3Q27_ez;
+    const double *W  = D3Q27_W;
 
     int sz = NYD6_local * NZ6_local;
     double dy_val = LY / (double)(NY6 - 7);
@@ -56,12 +46,12 @@ void DiagnoseGILBM_Phase1(
            "alpha", "e_y", "delta_xi", "dt_g*e_y/dy", "error");
 
     double max_xi_err = 0.0;
-    for (int alpha = 0; alpha < 19; alpha++) {
-        double expected = dt_global_val * e[alpha][1] / dy_val;
+    for (int alpha = 0; alpha < NQ; alpha++) {
+        double expected = dt_global_val * (double)ey[alpha] / dy_val;
         double err = fabs(delta_xi_h[alpha] - expected);
         if (err > max_xi_err) max_xi_err = err;
         printf("  %5d  %+4.0f  %+14.10e  %+14.10e  %10.2e\n",
-               alpha, e[alpha][1], delta_xi_h[alpha], expected, err);
+               alpha, (double)ey[alpha], delta_xi_h[alpha], expected, err);
     }
     printf("\n  max|error| = %.2e  %s\n", max_xi_err,
            max_xi_err < 1e-15 ? "PASS" : "FAIL");
@@ -69,14 +59,14 @@ void DiagnoseGILBM_Phase1(
     // ==================================================================
     // TEST 1: delta_zeta range (min/max across all alpha, j, k)
     // ==================================================================
-    printf("\n[Test 1] delta_zeta range (19 dirs x %d j-k points)\n", sz);
+    printf("\n[Test 1] delta_zeta range (%d dirs x %d j-k points)\n", NQ, sz);
 
     double dk_gmin = 1e30, dk_gmax = -1e30;
     int gmin_a = 0, gmin_j = 0, gmin_k = 0;
     int gmax_a = 0, gmax_j = 0, gmax_k = 0;
     int nonzero = 0;
 
-    for (int alpha = 0; alpha < 19; alpha++) {
+    for (int alpha = 0; alpha < NQ; alpha++) {
         for (int j = 0; j < NYD6_local; j++) {
             for (int k = 3; k < NZ6_local - 3; k++) {  // Buffer=3: k=3..NZ6-4
                 double val = delta_zeta_h[alpha * sz + j * NZ6_local + k];
@@ -92,13 +82,13 @@ void DiagnoseGILBM_Phase1(
     printf("  max(delta_zeta) = %+.6e  at alpha=%2d, j=%3d, k=%3d\n",
            dk_gmax, gmax_a, gmax_j, gmax_k);
     printf("  max|delta_zeta| = %.6e\n", fabs(dk_gmin) > fabs(dk_gmax) ? fabs(dk_gmin) : fabs(dk_gmax));
-    printf("  nonzero entries: %d / %d\n", nonzero, 19 * sz);
+    printf("  nonzero entries: %d / %d\n", nonzero, NQ * sz);
 
     // Per-direction breakdown (only directions with e_y or e_z != 0)
     printf("\n  Per-direction max|delta_zeta|:\n");
     printf("  %5s  %8s  %12s  %12s  %12s\n", "alpha", "e(y,z)", "max|dz|", "min(dz)", "max(dz)");
-    for (int alpha = 1; alpha < 19; alpha++) {
-        if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
+    for (int alpha = 1; alpha < NQ; alpha++) {
+        if (ey[alpha] == 0 && ez[alpha] == 0) continue;
         double amax = 0.0, amin = 1e30, amx = -1e30;
         for (int j = 0; j < NYD6_local; j++) {
             for (int k = 2; k < NZ6_local - 2; k++) {
@@ -109,7 +99,7 @@ void DiagnoseGILBM_Phase1(
             }
         }
         printf("  %5d  (%+.0f,%+.0f)  %12.6f  %+12.6f  %+12.6f\n",
-               alpha, e[alpha][1], e[alpha][2], amax, amin, amx);
+               alpha, (double)ey[alpha], (double)ez[alpha], amax, amin, amx);
     }
 
     // CFL safety check
@@ -138,7 +128,7 @@ void DiagnoseGILBM_Phase1(
     int idx_jk_spot = jmid * NZ6_local + kmid;
     double dk_dz_spot = dk_dz_h[idx_jk_spot];
     double dk_dy_spot = dk_dy_h[idx_jk_spot];
-    double etk5 = e[5][1] * dk_dy_spot + e[5][2] * dk_dz_spot;
+    double etk5 = (double)ey[5] * dk_dy_spot + (double)ez[5] * dk_dz_spot;
     printf("    dt*e_tilde_zeta(alpha=5) = %.8e  (1st-order, no RK2)\n", dt * etk5);
     printf("    delta_zeta[5]            = %.8e  (RK2)\n", dk5);
     printf("    Difference (RK2 correction) = %.2e\n", fabs(dk5 - dt * etk5));
@@ -164,10 +154,10 @@ void DiagnoseGILBM_Phase1(
     double dx_val = LX / (double)(NX6 - 7);
 
     printf("  %5s  %14s  %14s  %10s\n", "alpha", "interpolated", "expected(w_a)", "error");
-    for (int alpha = 1; alpha < 19; alpha++) {
+    for (int alpha = 1; alpha < NQ; alpha++) {
         int idx_jk = tj * NZ6_local + tk;
 
-        double delta_i = dt * e[alpha][0] / dx_val;
+        double delta_i = dt * (double)ex[alpha] / dx_val;
         double delta_xi_val = delta_xi_h[alpha];
         double delta_zeta_val = delta_zeta_h[alpha * sz + idx_jk];
 
@@ -213,7 +203,7 @@ void DiagnoseGILBM_Phase1(
         printf("  %5d  %14.10e  %14.10e  %10.2e\n", alpha, result, W[alpha], err);
     }
 
-    printf("\n  max interpolation error (18 dirs): %.2e\n", max_err);
+    printf("\n  max interpolation error (%d dirs): %.2e\n", NQ-1, max_err);
     if (max_err > 1e-12) {
         printf("  ** WARNING: Error > 1e-12 on uniform equilibrium!\n");
         printf("     Possible cause: array layout mismatch or uninitialized ghost cells.\n");
@@ -251,17 +241,18 @@ void DiagnoseGILBM_Phase1(
     int idx4 = bc_j * NX6 * NZ6_local + 5 * NX6 + bc_i;
 
     double rho3 = 0.0, rho4 = 0.0;
-    double f3[19], f4[19];
-    for (int a = 0; a < 19; a++) { f3[a] = fh_p_local[a][idx3]; rho3 += f3[a]; }
-    for (int a = 0; a < 19; a++) { f4[a] = fh_p_local[a][idx4]; rho4 += f4[a]; }
+    double f3[NQ], f4[NQ];
+    for (int a = 0; a < NQ; a++) { f3[a] = fh_p_local[a][idx3]; rho3 += f3[a]; }
+    for (int a = 0; a < NQ; a++) { f4[a] = fh_p_local[a][idx4]; rho4 += f4[a]; }
 
-    double ux3 = (f3[1]+f3[7]+f3[9]+f3[11]+f3[13] - (f3[2]+f3[8]+f3[10]+f3[12]+f3[14])) / rho3;
-    double uy3 = (f3[3]+f3[7]+f3[8]+f3[15]+f3[17] - (f3[4]+f3[9]+f3[10]+f3[16]+f3[18])) / rho3;
-    double uz3 = (f3[5]+f3[11]+f3[12]+f3[15]+f3[16] - (f3[6]+f3[13]+f3[14]+f3[17]+f3[18])) / rho3;
-
-    double ux4 = (f4[1]+f4[7]+f4[9]+f4[11]+f4[13] - (f4[2]+f4[8]+f4[10]+f4[12]+f4[14])) / rho4;
-    double uy4 = (f4[3]+f4[7]+f4[8]+f4[15]+f4[17] - (f4[4]+f4[9]+f4[10]+f4[16]+f4[18])) / rho4;
-    double uz4 = (f4[5]+f4[11]+f4[12]+f4[15]+f4[16] - (f4[6]+f4[13]+f4[14]+f4[17]+f4[18])) / rho4;
+    double ux3 = 0.0, uy3 = 0.0, uz3 = 0.0;
+    double ux4 = 0.0, uy4 = 0.0, uz4 = 0.0;
+    for (int a = 0; a < NQ; a++) {
+        ux3 += (double)ex[a] * f3[a]; uy3 += (double)ey[a] * f3[a]; uz3 += (double)ez[a] * f3[a];
+        ux4 += (double)ex[a] * f4[a]; uy4 += (double)ey[a] * f4[a]; uz4 += (double)ez[a] * f4[a];
+    }
+    ux3 /= rho3; uy3 /= rho3; uz3 /= rho3;
+    ux4 /= rho4; uy4 /= rho4; uz4 /= rho4;
 
     double du_x_dk = (4.0*ux3 - ux4) / 2.0;
     double du_y_dk = (4.0*uy3 - uy4) / 2.0;
@@ -277,17 +268,17 @@ void DiagnoseGILBM_Phase1(
            "alpha", "e_y", "e_z", "e_tilde_zeta", "C_alpha", "f_CE", "w_alpha");
 
     int bc_count = 0;
-    for (int alpha = 1; alpha < 19; alpha++) {
-        double e_tilde_zeta = e[alpha][1] * bc_dk_dy + e[alpha][2] * bc_dk_dz;
+    for (int alpha = 1; alpha < NQ; alpha++) {
+        double e_tilde_zeta = (double)ey[alpha] * bc_dk_dy + (double)ez[alpha] * bc_dk_dz;
         if (e_tilde_zeta <= 0.0) continue;  // doesn't need BC at bottom wall
         bc_count++;
 
         // Host-side replica of ChapmanEnskogBC
-        double ex = e[alpha][0], ey = e[alpha][1], ez = e[alpha][2];
+        double exa = (double)ex[alpha], eya = (double)ey[alpha], eza = (double)ez[alpha];
         double C_alpha = 0.0;
-        C_alpha += du_x_dk * ((3.0*ex*ey)*bc_dk_dy + (3.0*ex*ez)*bc_dk_dz);
-        C_alpha += du_y_dk * ((3.0*ey*ey - 1.0)*bc_dk_dy + (3.0*ey*ez)*bc_dk_dz);
-        C_alpha += du_z_dk * ((3.0*ez*ey)*bc_dk_dy + (3.0*ez*ez - 1.0)*bc_dk_dz);
+        C_alpha += du_x_dk * ((3.0*exa*eya)*bc_dk_dy + (3.0*exa*eza)*bc_dk_dz);
+        C_alpha += du_y_dk * ((3.0*eya*eya - 1.0)*bc_dk_dy + (3.0*eya*eza)*bc_dk_dz);
+        C_alpha += du_z_dk * ((3.0*eza*eya)*bc_dk_dy + (3.0*eza*eza - 1.0)*bc_dk_dz);
         // [GTS] uniform omegadt = omega_global * dt_global
         C_alpha *= -omegadt_global;
 
@@ -295,14 +286,14 @@ void DiagnoseGILBM_Phase1(
         sum_f_CE += f_CE;
 
         printf("  %5d  %+5.0f  %+5.0f  %+12.4f  %+12.6e  %12.8f  %12.8f\n",
-               alpha, ey, ez, e_tilde_zeta, C_alpha, f_CE, W[alpha]);
+               alpha, eya, eza, e_tilde_zeta, C_alpha, f_CE, W[alpha]);
     }
 
-    printf("\n  Directions needing BC: %d / 18\n", bc_count);
+    printf("\n  Directions needing BC: %d / %d\n", bc_count, NQ-1);
     printf("  Sum(f_CE) across BC directions: %.10f\n", sum_f_CE);
     printf("  Sum(w_alpha) for same directions: ");
-    for (int alpha = 1; alpha < 19; alpha++) {
-        double e_tilde_zeta = e[alpha][1] * bc_dk_dy + e[alpha][2] * bc_dk_dz;
+    for (int alpha = 1; alpha < NQ; alpha++) {
+        double e_tilde_zeta = (double)ey[alpha] * bc_dk_dy + (double)ez[alpha] * bc_dk_dz;
         if (e_tilde_zeta > 0.0) sum_w += W[alpha];
     }
     printf("%.10f\n", sum_w);
@@ -346,7 +337,7 @@ void DiagnoseGILBM_Phase1(
 //   → With GTS: dt_global < minSize at wall → CFL < 1.0
 
 bool ValidateDepartureCFL(
-    const double *delta_zeta_h,  // [19*NYD6*NZ6] precomputed RK2 displacement
+    const double *delta_zeta_h,  // [NQ*NYD6*NZ6] precomputed RK2 displacement
     const double *dk_dy_h,       // [NYD6*NZ6] metric terms
     const double *dk_dz_h,       // [NYD6*NZ6] metric terms
     int NYD6_local,
@@ -355,13 +346,9 @@ bool ValidateDepartureCFL(
 ) {
     if (myid_local != 0) return true;
 
-    double e[19][3] = {
-        {0,0,0},
-        {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
-        {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
-        {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
-        {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
-    };
+    // D3Q27 velocity set (from MRT_Matrix_D3Q27.h)
+    const int *ey = D3Q27_ey;
+    const int *ez = D3Q27_ez;
 
     int sz = NYD6_local * NZ6_local;
     bool valid = true;
@@ -387,11 +374,11 @@ bool ValidateDepartureCFL(
         double dk_dy_val = dk_dy_h[idx3];
         double dk_dz_val = dk_dz_h[idx3];
 
-        for (int alpha = 1; alpha < 19; alpha++) {
-            if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
+        for (int alpha = 1; alpha < NQ; alpha++) {
+            if (ey[alpha] == 0 && ez[alpha] == 0) continue;
 
             // Raw CFL: from metric terms at current point (no RK2)
-            double e_tilde_zeta = e[alpha][1] * dk_dy_val + e[alpha][2] * dk_dz_val;
+            double e_tilde_zeta = (double)ey[alpha] * dk_dy_val + (double)ez[alpha] * dk_dz_val;
             double raw_cfl = fabs(e_tilde_zeta) * dt;
 
             // Effective CFL: from precomputed delta_zeta (with RK2 midpoint)
@@ -409,7 +396,7 @@ bool ValidateDepartureCFL(
                 if (bot_violations <= 5) {
                     printf("  [VIOLATION] j=%d, alpha=%2d (e_y=%+.0f,e_z=%+.0f): "
                            "CFL_raw=%.4f, CFL_eff=%.4f, delta_zeta=%+.6f\n",
-                           j, alpha, e[alpha][1], e[alpha][2],
+                           j, alpha, (double)ey[alpha], (double)ez[alpha],
                            raw_cfl, eff_cfl, delta_zeta_h[alpha * sz + idx3]);
                 }
             }
@@ -442,10 +429,10 @@ bool ValidateDepartureCFL(
         double dk_dy_val = dk_dy_h[idx_top];
         double dk_dz_val = dk_dz_h[idx_top];
 
-        for (int alpha = 1; alpha < 19; alpha++) {
-            if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
+        for (int alpha = 1; alpha < NQ; alpha++) {
+            if (ey[alpha] == 0 && ez[alpha] == 0) continue;
 
-            double e_tilde_zeta = e[alpha][1] * dk_dy_val + e[alpha][2] * dk_dz_val;
+            double e_tilde_zeta = (double)ey[alpha] * dk_dy_val + (double)ez[alpha] * dk_dz_val;
             double raw_cfl = fabs(e_tilde_zeta) * dt;
             double eff_cfl = fabs(delta_zeta_h[alpha * sz + idx_top]);
 
@@ -461,7 +448,7 @@ bool ValidateDepartureCFL(
                 if (top_violations <= 5) {
                     printf("  [VIOLATION] j=%d, alpha=%2d (e_y=%+.0f,e_z=%+.0f): "
                            "CFL_raw=%.4f, CFL_eff=%.4f, delta_zeta=%+.6f\n",
-                           j, alpha, e[alpha][1], e[alpha][2],
+                           j, alpha, (double)ey[alpha], (double)ez[alpha],
                            raw_cfl, eff_cfl, delta_zeta_h[alpha * sz + idx_top]);
                 }
             }
@@ -483,9 +470,9 @@ bool ValidateDepartureCFL(
     for (int j = 3; j < NYD6_local - 3; j += 4) {
         int idx3 = j * NZ6_local + 4;
         double j_raw_max = 0.0, j_eff_max = 0.0;
-        for (int alpha = 1; alpha < 19; alpha++) {
-            if (e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
-            double e_tilde = e[alpha][1] * dk_dy_h[idx3] + e[alpha][2] * dk_dz_h[idx3];
+        for (int alpha = 1; alpha < NQ; alpha++) {
+            if (ey[alpha] == 0 && ez[alpha] == 0) continue;
+            double e_tilde = (double)ey[alpha] * dk_dy_h[idx3] + (double)ez[alpha] * dk_dz_h[idx3];
             double rc = fabs(e_tilde) * dt;
             double ec = fabs(delta_zeta_h[alpha * sz + idx3]);
             if (rc > j_raw_max) j_raw_max = rc;

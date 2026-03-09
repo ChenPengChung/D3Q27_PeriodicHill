@@ -65,7 +65,7 @@
 
 }
 
-void Launch_TurbulentSum(double *f_new[19]) {
+void Launch_TurbulentSum(double *f_new[NQ]) {
     dim3 griddimTB( NX6, NYD6, NZ6 );
     dim3 blockdimTB(1,   1,   1);
 
@@ -237,7 +237,7 @@ __global__ void MeanDerivatives(
     DWDZ2[index] += dwdz * dwdz;
 }
 
-void Launch_TurbulentSum(double *f_new[19]) {
+void Launch_TurbulentSum(double *f_new[NQ]) {
     dim3 griddimTB( NX6/NT+1, NYD6, NZ6 );
     dim3 blockdimTB(NT,     1,      1);
 

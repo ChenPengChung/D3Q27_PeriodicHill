@@ -8,12 +8,13 @@
 #include "variables.h"
 using namespace std;
 /************************** Host Variables **************************/
-double  *fh_p[19]; //主機端一般態分佈函數
+double  *fh_p[NQ]; //主機端一般態分佈函數 (D3Q27)
 double  *rho_h_p,  *u_h_p,  *v_h_p,  *w_h_p;
 
 
 /************************** Device Variables **************************/
-double  *ft[19], *fd[19];
+double  *ft[NQ], *fd[NQ];
+double  **ft_ptrs_d, **fd_ptrs_d;  // Device pointer arrays for kernel calls
 double  *rho_d,  *u,  *v,  *w;
 
 /* double  *KT,    *DISS,
@@ -49,9 +50,9 @@ double  *Xdep_h[3], *Ydep_h[3], *Zdep_h[3],
 // 只需 2 個空間變化的度量項（大小 [NYD6*NZ6]，與 z_h 相同）
 double *dk_dz_h, *dk_dz_d;   // ∂ζ/∂z = 1/(∂z/∂k)
 double *dk_dy_h, *dk_dy_d;   // ∂ζ/∂y = -(∂z/∂j)/(dy·∂z/∂k)
-double *delta_zeta_h, *delta_zeta_d;  // GILBM RK2 ζ-direction displacement [19*NYD6*NZ6]
-double delta_xi_h[19];               // GILBM ξ-direction displacement (global dt, for initial CFL check)
-double delta_eta_h[19];              // GILBM η-direction displacement (global dt, for initial CFL check)
+double *delta_zeta_h, *delta_zeta_d;  // GILBM RK2 ζ-direction displacement [NQ*NYD6*NZ6]
+double delta_xi_h[NQ];               // GILBM ξ-direction displacement (global dt, for initial CFL check)
+double delta_eta_h[NQ];              // GILBM η-direction displacement (global dt, for initial CFL check)
 
 // Precomputed stencil base k [NZ6] (int, wall-clamped)
 int *bk_precomp_h, *bk_precomp_d;
@@ -62,9 +63,10 @@ int *bk_precomp_h, *bk_precomp_d;
 double dt_global;
 double omega_global;     // = 3·niu/dt_global + 0.5 (dimensionless relaxation time)
 double omegadt_global;   // = omega_global · dt_global (dimensional relaxation time τ)
+int force_check_interval;  // FT/10 in steps (Re%-based force control check interval)
 
 // GILBM two-pass architecture: persistent global arrays
-double *feq_d;            // Equilibrium distribution [19 * NX6*NYD6*NZ6]
+double *feq_d;            // Equilibrium distribution [NQ * NX6*NYD6*NZ6]
 //
 // 逆變速度在 GPU kernel 中即時計算（不需全場存儲）：
 //   ẽ_α_η = e[α][0] / dx           (常數)
@@ -106,8 +108,8 @@ int l_nbr, r_nbr;
 
 MPI_Status    istat[8];
 
-MPI_Request   request[23][4];
-MPI_Status    status[23][4];
+MPI_Request   request[NQ+4][4];
+MPI_Status    status[NQ+4][4];
 
 MPI_Datatype  DataSideways;
 
@@ -123,12 +125,21 @@ int iFromLeft  = 0;
 int iToRight   = NX6 * NYD6 * NZ6 - (Buffer*2+1) * NX6 * NZ6;
 int iFromRight = iToRight + (Buffer+1) * NX6 * NZ6;
 
-MPI_Request reqToLeft[23], reqToRight[23],   reqFromLeft[23], reqFromRight[23];
-MPI_Request reqToTop[23],  reqToBottom[23],  reqFromTop[23],  reqFromBottom[23];
-int itag_f3[23] = {250,251,252,253,254,255,256,257,258,259,260,261,262,263,264,265,266,267,268,269,270,271,272};
-int itag_f4[23] = {200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,220,221,222};
-int itag_f5[23] = {300,301,302,303,304,305,306,307,308,309,310,311,312,313,314,315,316,317,318,319,320,321,322};
-int itag_f6[23] = {400,401,402,403,404,405,406,407,408,409,410,411,412,413,414,415,416,417,418,419,420,421,422};
+MPI_Request reqToLeft[NQ+4], reqToRight[NQ+4],   reqFromLeft[NQ+4], reqFromRight[NQ+4];
+MPI_Request reqToTop[NQ+4],  reqToBottom[NQ+4],  reqFromTop[NQ+4],  reqFromBottom[NQ+4];
+// MPI tags: NQ direction tags + 4 macroscopic (u,v,w,rho)
+int itag_f3[NQ+4], itag_f4[NQ+4], itag_f5[NQ+4], itag_f6[NQ+4];
+// Initialize tag arrays (done before main via static init helper)
+struct TagInit {
+    TagInit() {
+        for (int i = 0; i < NQ+4; i++) {
+            itag_f3[i] = 250 + i;
+            itag_f4[i] = 200 + i;
+            itag_f5[i] = 300 + i;
+            itag_f6[i] = 400 + i;
+        }
+    }
+} _tag_init;
 
 
 #include "common.h"
@@ -143,8 +154,6 @@ int itag_f6[23] = {400,401,402,403,404,405,406,407,408,409,410,411,412,413,414,4
 #include "statistics.h"
 #include "evolution.h"
 #include "fileIO.h"
-#include "MRT_Matrix.h"
-#include "MRT_Process.h"
 int main(int argc, char *argv[])
 {
     CHECK_MPI( MPI_Init(&argc, &argv) );
@@ -212,9 +221,16 @@ int main(int argc, char *argv[])
     CHECK_MPI( MPI_Allreduce(&dt_rank, &dt_global, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD) );
 
     //可以計算omega_global. ;
-    omega_global = (3*niu/dt_global) + 0.5 ; 
+    omega_global = (3*niu/dt_global) + 0.5 ;
     omegadt_global = omega_global*dt_global;
-   
+
+    // Force check interval: FT/10 (one flow-through time = LY/(Uref*dt_global) steps)
+    {
+        double FT_steps = (double)flow_through_time / dt_global;  // steps per FTT
+        force_check_interval = (int)(FT_steps / 10.0);
+        if (force_check_interval < 100) force_check_interval = 100;  // safety floor
+    }
+
     if (myid == 0) {
         printf("  ─────────────────────────────────────────────────────────\n");
         printf("  dt_global = MIN(all ranks) = %.6e\n", dt_global);
@@ -222,6 +238,7 @@ int main(int argc, char *argv[])
         printf("  ratio dt_global / minSize = %.4f\n", dt_global / (double)minSize);
         printf("  Speedup cost: %.1fx more timesteps per physical time\n", (double)minSize / dt_global);
         printf("  omega_global = %.6f, 1/omega_global = %.6f\n", omega_global, 1.0/omega_global);
+        printf("  Force check interval = %d steps (FT/10)\n", force_check_interval);
         printf("  =============================================================\n\n");
     }
 
@@ -245,45 +262,39 @@ int main(int argc, char *argv[])
     CHECK_CUDA( cudaMemcpy(dk_dz_d,   dk_dz_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaMemcpy(dk_dy_d,   dk_dy_h,   NYD6*NZ6*sizeof(double),      cudaMemcpyHostToDevice) );
     // delta_zeta → GPU (ζ displacements, space-varying, used by kernel Step 1)
-    CHECK_CUDA( cudaMemcpy(delta_zeta_d, delta_zeta_h, 19*NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
-    // __constant__ symbols: dt_global, delta_eta[19], delta_xi[19]
+    CHECK_CUDA( cudaMemcpy(delta_zeta_d, delta_zeta_h, NQ*NYD6*NZ6*sizeof(double), cudaMemcpyHostToDevice) );
+    // __constant__ symbols: dt_global, delta_eta[NQ], delta_xi[NQ]
     CHECK_CUDA( cudaMemcpyToSymbol(GILBM_dt,        &dt_global,   sizeof(double)) );
-    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_eta, delta_eta_h,  19*sizeof(double)) );
-    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_xi,  delta_xi_h,   19*sizeof(double)) );
+    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_eta, delta_eta_h,  NQ*sizeof(double)) );
+    CHECK_CUDA( cudaMemcpyToSymbol(GILBM_delta_xi,  delta_xi_h,   NQ*sizeof(double)) );
     // Precomputed stencil base k → GPU
     CHECK_CUDA( cudaMemcpy(bk_precomp_d, bk_precomp_h, NZ6*sizeof(int), cudaMemcpyHostToDevice) );
 
 #if USE_MRT
-    // Phase 3.5: MRT transformation matrices → __constant__ memory
+    // D3Q27 MRT: compute transformation matrices via Gram-Schmidt, then upload
     {
-        Matrix;           // MRT_Matrix.h → double M[19][19] = { ... };
-        Inverse_Matrix;   // MRT_Matrix.h → double Mi[19][19] = { ... };
-        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_M,  M,  sizeof(M)) );
-        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_Mi, Mi, sizeof(Mi)) );
+        double M_h[NQ][NQ], Mi_h[NQ][NQ];
+        ComputeD3Q27_MRT_Matrices(M_h, Mi_h);
 
-        // Precompute combined MRT operator matrices C0, C1 (P5 optimization)
-        // C_eff(s_visc) = C0 - s_visc × C1
-        // C0 = I - Mi × diag(s_fixed) × M  (non-viscous relaxation baked in)
-        // C1 = Mi × diag(mask_visc) × M    (viscous modes: 9,11,13,14,15)
-        double s_fixed[19] = {0, 1.19, 1.4, 0, 1.2, 0, 1.2, 0, 1.2, 0, 1.4, 0, 1.4, 0, 0, 0, 1.5, 1.5, 1.5};
-        double s_visc_mask[19] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0};
+        // Verify M × M_inv = I
+        double id_err = VerifyMRT27_Identity(M_h, Mi_h);
+        if (myid == 0) printf("D3Q27 MRT: M*Mi identity check: max_err = %.2e\n", id_err);
+        if (id_err > 1e-12 && myid == 0)
+            printf("[WARNING] MRT matrix identity error > 1e-12!\n");
 
-        double C0_h[19][19], C1_h[19][19];
-        for (int ii = 0; ii < 19; ii++) {
-            for (int jj = 0; jj < 19; jj++) {
-                double sum_fixed = 0.0, sum_visc = 0.0;
-                for (int kk = 0; kk < 19; kk++) {
-                    sum_fixed += Mi[ii][kk] * s_fixed[kk] * M[kk][jj];
-                    sum_visc  += Mi[ii][kk] * s_visc_mask[kk] * M[kk][jj];
-                }
-                C0_h[ii][jj] = ((ii == jj) ? 1.0 : 0.0) - sum_fixed;
-                C1_h[ii][jj] = sum_visc;
-            }
+        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_M,  M_h,  sizeof(M_h)) );
+        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_Mi, Mi_h, sizeof(Mi_h)) );
+
+        // Setup relaxation rates: s_visc = 1/tau = 1/(3*nu/dt + 0.5)
+        double s_visc = 1.0 / omega_global;
+        double S_h[NQ];
+        SetupD3Q27_Relaxation(S_h, s_visc);
+        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_S, S_h, sizeof(S_h)) );
+
+        if (myid == 0) {
+            printf("D3Q27 MRT: M[27x27], Mi[27x27], S[27] -> __constant__ memory.\n");
+            printf("  s_visc = 1/omega = %.6f (viscosity moments 4-9)\n", s_visc);
         }
-        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_C0, C0_h, sizeof(C0_h)) );
-        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_C1, C1_h, sizeof(C1_h)) );
-
-        if (myid == 0) printf("GILBM-MRT: M, Mi, C0, C1 copied to __constant__ memory.\n");
     }
 #endif
 
@@ -336,14 +347,11 @@ int main(int argc, char *argv[])
     // 保留已發展流場的非平衡部分 (viscous stress), 只注入速度擾動
 #if PERTURB_INIT
     {
-        double e_lbm[19][3] = {
-            {0,0,0},{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
-            {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},{1,0,1},{-1,0,1},{1,0,-1},
-            {-1,0,-1},{0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}};
-        double W_lbm[19] = {
-            1.0/3,  1.0/18, 1.0/18, 1.0/18, 1.0/18, 1.0/18, 1.0/18,
-            1.0/36, 1.0/36, 1.0/36, 1.0/36, 1.0/36, 1.0/36, 1.0/36,
-            1.0/36, 1.0/36, 1.0/36, 1.0/36, 1.0/36};
+        // Use D3Q27 velocity vectors and weights from MRT_Matrix_D3Q27.h
+        const int    *ex_lbm = D3Q27_ex;
+        const int    *ey_lbm = D3Q27_ey;
+        const int    *ez_lbm = D3Q27_ez;
+        const double *W_lbm  = D3Q27_W;
 
         double amp = (PERTURB_PERCENT / 100.0) * (double)Uref;
         // 每個 rank 用不同的 seed → 不同的擾動 pattern
@@ -379,9 +387,9 @@ int main(int argc, char *argv[])
             //S_{i}= (feq(ρ, u+δu) - feq(ρ, u)) 相當於一個外力進去，理論根據 : Kupershtokh2004-
             double udot_old = u_old * u_old + v_old * v_old + w_old * w_old;
             double udot_new = u_new * u_new + v_new * v_new + w_new * w_new;
-            for (int q = 0; q < 19; q++) {
-                double eu_old = e_lbm[q][0]*u_old + e_lbm[q][1]*v_old + e_lbm[q][2]*w_old;
-                double eu_new = e_lbm[q][0]*u_new + e_lbm[q][1]*v_new + e_lbm[q][2]*w_new;
+            for (int q = 0; q < NQ; q++) {
+                double eu_old = (double)ex_lbm[q]*u_old + (double)ey_lbm[q]*v_old + (double)ez_lbm[q]*w_old;
+                double eu_new = (double)ex_lbm[q]*u_new + (double)ey_lbm[q]*v_new + (double)ez_lbm[q]*w_new;
                 double feq_old = W_lbm[q] * rho_p * (1.0 + 3.0*eu_old + 4.5*eu_old*eu_old - 1.5*udot_old);
                 double feq_new = W_lbm[q] * rho_p * (1.0 + 3.0*eu_new + 4.5*eu_new*eu_new - 1.5*udot_new);
                 fh_p[q][index] += (feq_new - feq_old);
@@ -466,11 +474,9 @@ int main(int argc, char *argv[])
                        (NYD6 + init_block.y - 1) / init_block.y,
                        (NZ6 + init_block.z - 1) / init_block.z);
 
-        Init_Feq_Kernel<<<init_grid, init_block>>>(
-            fd[0], fd[1], fd[2], fd[3], fd[4], fd[5], fd[6], fd[7], fd[8], fd[9],
-            fd[10], fd[11], fd[12], fd[13], fd[14], fd[15], fd[16], fd[17], fd[18],
-            feq_d
-        );
+        // Upload fd pointer array to device for Init_Feq_Kernel
+        CHECK_CUDA( cudaMemcpy(fd_ptrs_d, fd, NQ * sizeof(double*), cudaMemcpyHostToDevice) );
+        Init_Feq_Kernel<<<init_grid, init_block>>>(fd_ptrs_d, feq_d);
 
         CHECK_CUDA( cudaDeviceSynchronize() );
         if (myid == 0) printf("GILBM: feq initialized.\n");
@@ -482,32 +488,32 @@ int main(int argc, char *argv[])
     // Exchange both ft and fd so that the first Launch_CollisionStreaming
     // (which reads ft as f_old) has valid ghost zones for interpolation.
     {
-        ISend_LtRtBdry( ft, iToLeft,    l_nbr, itag_f4, 0, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
-        IRecv_LtRtBdry( ft, iFromRight, r_nbr, itag_f4, 1, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
-        ISend_LtRtBdry( ft, iToRight,   r_nbr, itag_f3, 2, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
-        IRecv_LtRtBdry( ft, iFromLeft,  l_nbr, itag_f3, 3, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
-        for (int i = 0; i < 23; i++)
+        ISend_LtRtBdry( ft, iToLeft,    l_nbr, itag_f4, 0, NQ, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26 );
+        IRecv_LtRtBdry( ft, iFromRight, r_nbr, itag_f4, 1, NQ, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26 );
+        ISend_LtRtBdry( ft, iToRight,   r_nbr, itag_f3, 2, NQ, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26 );
+        IRecv_LtRtBdry( ft, iFromLeft,  l_nbr, itag_f3, 3, NQ, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26 );
+        for (int i = 0; i < NQ+4; i++)
             CHECK_MPI( MPI_Waitall(4, request[i], status[i]) );
 
-        ISend_LtRtBdry( fd, iToLeft,    l_nbr, itag_f4, 0, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
-        IRecv_LtRtBdry( fd, iFromRight, r_nbr, itag_f4, 1, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
-        ISend_LtRtBdry( fd, iToRight,   r_nbr, itag_f3, 2, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
-        IRecv_LtRtBdry( fd, iFromLeft,  l_nbr, itag_f3, 3, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18 );
-        for (int i = 0; i < 23; i++)
+        ISend_LtRtBdry( fd, iToLeft,    l_nbr, itag_f4, 0, NQ, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26 );
+        IRecv_LtRtBdry( fd, iFromRight, r_nbr, itag_f4, 1, NQ, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26 );
+        ISend_LtRtBdry( fd, iToRight,   r_nbr, itag_f3, 2, NQ, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26 );
+        IRecv_LtRtBdry( fd, iFromLeft,  l_nbr, itag_f3, 3, NQ, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26 );
+        for (int i = 0; i < NQ+4; i++)
             CHECK_MPI( MPI_Waitall(4, request[i], status[i]) );
 
         // x-direction periodic BC for both buffers
         dim3 griddimSW(1, NYD6/NT+1, NZ6);
         dim3 blockdimSW(3, NT, 1);
+        // Upload ft/fd pointer arrays to device for periodicSW
+        CHECK_CUDA( cudaMemcpy(ft_ptrs_d, ft, NQ * sizeof(double*), cudaMemcpyHostToDevice) );
+        CHECK_CUDA( cudaMemcpy(fd_ptrs_d, fd, NQ * sizeof(double*), cudaMemcpyHostToDevice) );
+
         periodicSW<<<griddimSW, blockdimSW>>>(
-            ft[0],ft[1],ft[2],ft[3],ft[4],ft[5],ft[6],ft[7],ft[8],ft[9],ft[10],ft[11],ft[12],ft[13],ft[14],ft[15],ft[16],ft[17],ft[18],
-            ft[0],ft[1],ft[2],ft[3],ft[4],ft[5],ft[6],ft[7],ft[8],ft[9],ft[10],ft[11],ft[12],ft[13],ft[14],ft[15],ft[16],ft[17],ft[18],
-            y_d, x_d, z_d, u, v, w, rho_d, feq_d
+            ft_ptrs_d, y_d, x_d, z_d, u, v, w, rho_d, feq_d
         );
         periodicSW<<<griddimSW, blockdimSW>>>(
-            fd[0],fd[1],fd[2],fd[3],fd[4],fd[5],fd[6],fd[7],fd[8],fd[9],fd[10],fd[11],fd[12],fd[13],fd[14],fd[15],fd[16],fd[17],fd[18],
-            fd[0],fd[1],fd[2],fd[3],fd[4],fd[5],fd[6],fd[7],fd[8],fd[9],fd[10],fd[11],fd[12],fd[13],fd[14],fd[15],fd[16],fd[17],fd[18],
-            y_d, x_d, z_d, u, v, w, rho_d, feq_d
+            fd_ptrs_d, y_d, x_d, z_d, u, v, w, rho_d, feq_d
         );
         CHECK_CUDA( cudaDeviceSynchronize() );
 
@@ -754,8 +760,8 @@ int main(int argc, char *argv[])
             cudaEventRecord(start1,0);
         }
 
-        // ===== Force modification (every NDTFRC steps) =====
-        if ( (step%(int)NDTFRC == 1) ) {
+        // ===== Force modification (every FT/10 steps, Re%-based adaptive) =====
+        if ( step > 0 && (step % force_check_interval == 0) ) {
             Launch_ModifyForcingTerm();
         }
 

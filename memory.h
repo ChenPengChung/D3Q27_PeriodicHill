@@ -54,16 +54,20 @@ void AllocateMemory() {
     nBytes = NX6 * NYD6 * NZ6 * sizeof(double);
 
     AllocateHostArray( nBytes, 4, &rho_h_p, &u_h_p, &v_h_p, &w_h_p );
-    for( int i = 0; i < 19; i++ ) {
+    for( int i = 0; i < NQ; i++ ) {
         CHECK_CUDA( cudaMallocHost( (void**)&fh_p[i], nBytes ) );
         memset(fh_p[i], 0.0, nBytes);
     }
 
     AllocateDeviceArray(nBytes, 4,  &rho_d, &u, &v, &w);
-    for( int i = 0; i < 19; i++ ) {
+    for( int i = 0; i < NQ; i++ ) {
         CHECK_CUDA( cudaMalloc( &fd[i], nBytes ) );     CHECK_CUDA( cudaMemset( fd[i], 0.0, nBytes ) );
         CHECK_CUDA( cudaMalloc( &ft[i], nBytes ) );     CHECK_CUDA( cudaMemset( ft[i], 0.0, nBytes ) );
     }
+
+    // Device pointer arrays for kernel calls (avoids passing NQ individual pointers)
+    CHECK_CUDA( cudaMalloc(&ft_ptrs_d, NQ * sizeof(double*)) );
+    CHECK_CUDA( cudaMalloc(&fd_ptrs_d, NQ * sizeof(double*)) );
 
     if( TBSWITCH ) {
         AllocateDeviceArray(nBytes, 4,  &U,  &V,  &W,  &P);
@@ -106,17 +110,17 @@ void AllocateMemory() {
     // GILBM 度量項：∂ζ/∂z 和 ∂ζ/∂y（與 z_h 同大小 [NYD6*NZ6]）
     AllocateHostArray(  nBytes, 2,  &dk_dz_h, &dk_dy_h);
     AllocateDeviceArray(nBytes, 2,  &dk_dz_d, &dk_dy_d);
-    // GILBM RK2 ζ 方向位移 [19 * NYD6 * NZ6] (host + device, space-varying)
-    nBytes = 19 * NYD6 * NZ6 * sizeof(double);
+    // GILBM RK2 ζ 方向位移 [NQ * NYD6 * NZ6] (host + device, space-varying)
+    nBytes = NQ * NYD6 * NZ6 * sizeof(double);
     AllocateHostArray(  nBytes, 1, &delta_zeta_h);
     AllocateDeviceArray(nBytes, 1, &delta_zeta_d);
     // Precomputed stencil base k [NZ6] (int array, wall-clamped, direct k indexing)
     CHECK_CUDA( cudaMallocHost((void**)&bk_precomp_h, NZ6 * sizeof(int)) );
     CHECK_CUDA( cudaMalloc(&bk_precomp_d, NZ6 * sizeof(int)) );
 
-    // GILBM two-pass: feq_d [19*grid]
+    // GILBM two-pass: feq_d [NQ*grid]
     {
-        size_t feq_bytes = 19ULL * GRID_SIZE * sizeof(double);
+        size_t feq_bytes = (size_t)NQ * GRID_SIZE * sizeof(double);
         CHECK_CUDA( cudaMalloc(&feq_d, feq_bytes) );
         CHECK_CUDA( cudaMemset(feq_d, 0, feq_bytes) );
     }
@@ -177,15 +181,17 @@ void AllocateMemory() {
 
 void FreeSource() {
 
-    for( int i = 0; i < 19; i++ )
+    for( int i = 0; i < NQ; i++ )
         CHECK_CUDA( cudaFreeHost( fh_p[i] ) );
-        
+
     FreeHostArray(  4,  rho_h_p, u_h_p, v_h_p, w_h_p);
 
-    for( int i = 0; i < 19; i++ ) {
+    for( int i = 0; i < NQ; i++ ) {
         CHECK_CUDA( cudaFree( ft[i] ) );
         CHECK_CUDA( cudaFree( fd[i] ) );
     }
+    CHECK_CUDA( cudaFree(ft_ptrs_d) );
+    CHECK_CUDA( cudaFree(fd_ptrs_d) );
     FreeDeviceArray(4,  rho_d, u, v, w);
 
     if( TBSWITCH ) {

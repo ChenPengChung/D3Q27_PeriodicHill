@@ -11,37 +11,42 @@
 //=============================
 
 
-// __constant__ device memory for D3Q19 velocity set and weights
-__constant__ double GILBM_e[19][3] = {
-    {0,0,0},
-    {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
-    {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
-    {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
-    {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
+// __constant__ device memory for D3Q27 velocity set and weights
+// Indices 0-18: same ordering as old D3Q19; indices 19-26: corner velocities
+__constant__ double GILBM_e[NQ][3] = {
+    { 0, 0, 0},                                    // 0: rest
+    { 1, 0, 0}, {-1, 0, 0},                        // 1-2: ±x
+    { 0, 1, 0}, { 0,-1, 0},                        // 3-4: ±y
+    { 0, 0, 1}, { 0, 0,-1},                        // 5-6: ±z
+    { 1, 1, 0}, {-1, 1, 0}, { 1,-1, 0}, {-1,-1, 0}, // 7-10: xy edges
+    { 1, 0, 1}, {-1, 0, 1}, { 1, 0,-1}, {-1, 0,-1}, // 11-14: xz edges
+    { 0, 1, 1}, { 0,-1, 1}, { 0, 1,-1}, { 0,-1,-1}, // 15-18: yz edges
+    { 1, 1, 1}, {-1, 1, 1}, { 1,-1, 1}, {-1,-1, 1}, // 19-22: corners +z
+    { 1, 1,-1}, {-1, 1,-1}, { 1,-1,-1}, {-1,-1,-1}  // 23-26: corners -z
 };
 
-__constant__ double GILBM_W[19] = {
-    1.0/3.0,
-    1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0,
-    1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0,
-    1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0,
-    1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0
+__constant__ double GILBM_W[NQ] = {
+    8.0/27.0,                                       // rest
+    2.0/27.0, 2.0/27.0, 2.0/27.0,                  // face ±x, ±y, ±z
+    2.0/27.0, 2.0/27.0, 2.0/27.0,
+    1.0/54.0, 1.0/54.0, 1.0/54.0, 1.0/54.0,        // edge
+    1.0/54.0, 1.0/54.0, 1.0/54.0, 1.0/54.0,
+    1.0/54.0, 1.0/54.0, 1.0/54.0, 1.0/54.0,
+    1.0/216.0, 1.0/216.0, 1.0/216.0, 1.0/216.0,    // corner
+    1.0/216.0, 1.0/216.0, 1.0/216.0, 1.0/216.0
 };
 
-__constant__ double GILBM_dt;             // global time step (for a_local = dt_A / GILBM_dt)
-__constant__ double GILBM_delta_eta[19];  // η displacements (precomputed with dt_global)
-__constant__ double GILBM_delta_xi[19];   // ξ displacements (precomputed with dt_global)
+__constant__ double GILBM_dt;             // global time step
+__constant__ double GILBM_delta_eta[NQ];  // η displacements (precomputed with dt_global)
+__constant__ double GILBM_delta_xi[NQ];   // ξ displacements (precomputed with dt_global)
 
 #if USE_MRT
-// MRT transformation matrix M[19][19] and inverse M⁻¹[19][19]
-// Values from MRT_Matrix.h (d'Humières 2002 D3Q19)
-__constant__ double GILBM_M[19][19];
-__constant__ double GILBM_Mi[19][19];
-// Combined MRT operator: C_eff(s_visc) = C0 - s_visc × C1
-// C0 = I - Mi × diag(s_fixed) × M   (all non-viscous relaxation rates)
-// C1 = Mi × diag(mask_visc) × M     (viscous modes 9,11,13,14,15 only)
-__constant__ double GILBM_C0[19][19];
-__constant__ double GILBM_C1[19][19];
+// D3Q27 MRT transformation matrix M[27][27] and inverse M⁻¹[27][27]
+// Computed at initialization via Gram-Schmidt (MRT_Matrix_D3Q27.h)
+__constant__ double GILBM_M[NQ][NQ];
+__constant__ double GILBM_Mi[NQ][NQ];
+// Diagonal relaxation rates S[27]
+__constant__ double GILBM_S[NQ];
 #endif
 
 // Include sub-modules (after __constant__ declarations they depend on)
@@ -73,88 +78,101 @@ __device__ __forceinline__ void compute_stencil_base(
 }
 
 // ============================================================================
-// Helper: compute macroscopic from 19 f values at a given index
+// Helper: compute macroscopic from NQ=27 f values at a given index
 // ============================================================================
 __device__ __forceinline__ void compute_macroscopic_at(
-    double *f_ptrs[19], int idx,
+    double *f_ptrs[NQ], int idx,
     double &rho_out, double &u_out, double &v_out, double &w_out
 ) {
-    double f[19];
-    for (int q = 0; q < 19; q++) f[q] = f_ptrs[q][idx];
-
-    rho_out = f[0]+f[1]+f[2]+f[3]+f[4]+f[5]+f[6]+f[7]+f[8]+f[9]
-             +f[10]+f[11]+f[12]+f[13]+f[14]+f[15]+f[16]+f[17]+f[18];
-    u_out = (f[1]+f[7]+f[9]+f[11]+f[13] - (f[2]+f[8]+f[10]+f[12]+f[14])) / rho_out;
-    v_out = (f[3]+f[7]+f[8]+f[15]+f[17] - (f[4]+f[9]+f[10]+f[16]+f[18])) / rho_out;
-    w_out = (f[5]+f[11]+f[12]+f[15]+f[16] - (f[6]+f[13]+f[14]+f[17]+f[18])) / rho_out;
+    double rho = 0.0, mx = 0.0, my = 0.0, mz = 0.0;
+    for (int q = 0; q < NQ; q++) {
+        double fq = f_ptrs[q][idx];
+        rho += fq;
+        mx  += GILBM_e[q][0] * fq;
+        my  += GILBM_e[q][1] * fq;
+        mz  += GILBM_e[q][2] * fq;
+    }
+    rho_out = rho;
+    u_out = mx / rho;
+    v_out = my / rho;
+    w_out = mz / rho;
 }
 //使用在 計算a粒子碰撞前插植後一般態分佈函數重估陣列 後面
 #if USE_MRT
 // ============================================================================
-// MRT collision device function for GILBM with Local Time Stepping
+// D3Q27 MRT collision with Guo forcing (Suga et al. 2015)
 //
-// Standard MRT: f* = f̃ - M⁻¹ S (M·f̃ - M·feq)
-//   where S = diag(s0..s18) is the relaxation rate matrix
+// MRT-LBM equation:
+//   f* = f̃ - M⁻¹ Ŝ (M·f̃ - M·feq) + M⁻¹(I - Ŝ/2)·M·|F>·δt
 //
-// LTS localization: only viscosity-related moments use local tau
-//   s9 = s11 = s13 = s14 = s15 = 1/tau_A  (LOCAL, from omega_A)
-//   all other s_i = fixed global constants (same as MRT_Matrix.h)
+// Ŝ = diag(s0..s26) diagonal relaxation matrix (from GPU constant GILBM_S)
+//   s0-3 = 0 (conserved: ρ, jx, jy, jz)
+//   s4-9 = 1/τ (viscosity-related stress moments)
+//   s10+ = fixed ghost relaxation rates
 //
-// Body force: first-order Guo (consistent with original MRT_Process.h)
-//   f_q += w_q * 3 * e_y[q] * Force * dt_A
+// Guo forcing (2nd-order accurate):
+//   F_α = w_α × ρ × [ξ_α·a/cs² × (1 + ξ_α·u/cs²) - a·u/cs²]
+//   where a = (F_x/ρ, 0, 0) body acceleration (y=streamwise)
+//
+// Half-force velocity correction applied BEFORE calling this function:
+//   u_corrected = (Σ ξ_α f_α + 0.5×F×dt) / ρ
 // ============================================================================
 __device__ void gilbm_mrt_collision(
-    double f_re[19],          // in/out: re-estimated distribution → post-collision
-    const double feq_B[19],   // input: equilibrium distribution at node B
-    double s_visc,            // 1/omega_A = 1/tau_A (local viscosity relaxation rate)
-    double dt_A,              // local time step at point A (for body force scaling)
+    double f_re[NQ],          // in/out: distribution → post-collision
+    const double feq_B[NQ],   // input: equilibrium distribution
+    double rho,               // density at this node
+    double ux, double uy, double uz,  // velocity (with half-force correction)
+    double dt_A,              // time step (for force scaling)
     double Force0             // body force magnitude (y-direction streamwise)
 ) {
-    // ---- Step 3a: Compute non-equilibrium moments ----
-    // m_neq[i] = Σ_q M[i][q] × (f̃[q] - feq[q])
-    double m_neq[19];
-    for (int i = 0; i < 19; i++) {
-        double sum = 0.0;
-        for (int q = 0; q < 19; q++)
-            sum += GILBM_M[i][q] * (f_re[q] - feq_B[q]);
-        m_neq[i] = sum;
+    // ---- Step 1: Compute Guo forcing in velocity space ----
+    // a = (0, Force0/rho, 0) — acceleration in y (streamwise) direction
+    // F_α = w_α × ρ × [ (ξ_α·a)/cs² × (1 + (ξ_α·u)/cs²) - (a·u)/cs² ]
+    // With cs²=1/3: 1/cs²=3, 1/cs⁴=9
+    double ax = 0.0, ay = Force0 / rho, az = 0.0;
+    double a_dot_u = ax*ux + ay*uy + az*uz;  // = ay*uy
+
+    double F_vel[NQ];
+    for (int q = 0; q < NQ; q++) {
+        double e_dot_a = GILBM_e[q][0]*ax + GILBM_e[q][1]*ay + GILBM_e[q][2]*az;
+        double e_dot_u = GILBM_e[q][0]*ux + GILBM_e[q][1]*uy + GILBM_e[q][2]*uz;
+        F_vel[q] = GILBM_W[q] * rho * (3.0 * e_dot_a * (1.0 + 3.0 * e_dot_u) - 3.0 * a_dot_u);
     }
 
-    // ---- Step 3b: Apply per-moment relaxation rates ----
-    // dm[i] = s_i × m_neq[i]
-    // Conserved moments (s=0): dm[0]=dm[3]=dm[5]=dm[7]=0
-    // Viscosity moments: s_visc = 1/tau_A (LOCAL)
-    // Other moments: fixed global values (MRT_Matrix.h Relaxation)
-    double dm[19];
-    dm[0]  = 0.0;                    // s0  = 0.0 (conserved: density)
-    dm[1]  = 1.19  * m_neq[1];      // s1  = 1.19 (energy)
-    dm[2]  = 1.4   * m_neq[2];      // s2  = 1.4  (energy square)
-    dm[3]  = 0.0;                    // s3  = 0.0 (conserved: momentum-x)
-    dm[4]  = 1.2   * m_neq[4];      // s4  = 1.2  (energy flux)
-    dm[5]  = 0.0;                    // s5  = 0.0 (conserved: momentum-y)
-    dm[6]  = 1.2   * m_neq[6];      // s6  = 1.2  (energy flux)
-    dm[7]  = 0.0;                    // s7  = 0.0 (conserved: momentum-z)
-    dm[8]  = 1.2   * m_neq[8];      // s8  = 1.2  (energy flux)
-    dm[9]  = s_visc * m_neq[9];     // s9  = 1/tau_A ★ LOCAL (stress p_xx-p_yy)
-    dm[10] = 1.4   * m_neq[10];     // s10 = 1.4
-    dm[11] = s_visc * m_neq[11];    // s11 = 1/tau_A ★ LOCAL (stress p_ww)
-    dm[12] = 1.4   * m_neq[12];     // s12 = 1.4
-    dm[13] = s_visc * m_neq[13];    // s13 = 1/tau_A ★ LOCAL (stress p_xy)
-    dm[14] = s_visc * m_neq[14];    // s14 = 1/tau_A ★ LOCAL (stress p_yz)
-    dm[15] = s_visc * m_neq[15];    // s15 = 1/tau_A ★ LOCAL (stress p_xz)
-    dm[16] = 1.5   * m_neq[16];     // s16 = 1.5 (kinetic 3rd-order)
-    dm[17] = 1.5   * m_neq[17];     // s17 = 1.5
-    dm[18] = 1.5   * m_neq[18];     // s18 = 1.5
+    // ---- Step 2: Transform f and feq to moment space ----
+    // m[n] = Σ_α M[n][α] × f_α
+    // meq[n] = Σ_α M[n][α] × feq_α
+    // MF[n] = Σ_α M[n][α] × F_α
+    double m[NQ], meq[NQ], MF[NQ];
+    for (int n = 0; n < NQ; n++) {
+        double s1 = 0.0, s2 = 0.0, s3 = 0.0;
+        for (int a = 0; a < NQ; a++) {
+            double Mna = GILBM_M[n][a];
+            s1 += Mna * f_re[a];
+            s2 += Mna * feq_B[a];
+            s3 += Mna * F_vel[a];
+        }
+        m[n]   = s1;
+        meq[n] = s2;
+        MF[n]  = s3;
+    }
 
-    // ---- Step 3c: Inverse transform + body force ----
-    // f*[q] = f̃[q] - Σ_i Mi[q][i] × dm[i] + force_source[q]
-    for (int q = 0; q < 19; q++) {
-        double correction = 0.0;
-        for (int i = 0; i < 19; i++)
-            correction += GILBM_Mi[q][i] * dm[i];
-        f_re[q] -= correction;
-        // Body force: w_q × 3 × e_y[q] × Force × dt_A (y=streamwise)//adding the discrete force term for each alpha index F_i delta_t
-        f_re[q] += GILBM_W[q] * 3.0 * GILBM_e[q][1] * Force0 * dt_A;
+    // ---- Step 3: Collision in moment space ----
+    // m_post[n] = m[n] - S[n] × (m[n] - meq[n]) + (1 - S[n]/2) × MF[n] × dt
+    double m_post[NQ];
+    for (int n = 0; n < NQ; n++) {
+        double sn = GILBM_S[n];
+        m_post[n] = m[n] - sn * (m[n] - meq[n])
+                  + (1.0 - 0.5 * sn) * MF[n] * dt_A;
+    }
+
+    // ---- Step 4: Inverse transform back to velocity space ----
+    // f*[α] = Σ_n Mi[α][n] × m_post[n]
+    for (int q = 0; q < NQ; q++) {
+        double sum = 0.0;
+        for (int n = 0; n < NQ; n++)
+            sum += GILBM_Mi[q][n] * m_post[n];
+        f_re[q] = sum;
     }
 }
 #endif // USE_MRT
@@ -169,13 +187,13 @@ __device__ void gilbm_mrt_collision(
 //   Step 2: Point-wise collision at A only (BGK or MRT) using omega_global
 //           No 343-loop, no Re-estimation (R_AB=1 when omega/dt uniform)
 //
-// Memory: reads f_old_ptrs[19], writes f_new_ptrs[19] (double-buffer, no race)
-//         Eliminates f_pc (19×343×GRID_SIZE ≈ 5.5 GB)
+// Memory: reads f_old_ptrs[NQ], writes f_new_ptrs[NQ] (double-buffer, no race)
+//         Eliminates f_pc (NQ×343×GRID_SIZE ≈ 5.5 GB)
 // ============================================================================
 __device__ void gilbm_compute_point_gts(
     int i, int j, int k,
-    double *f_old_ptrs[19],   // previous time step (read-only)
-    double *f_new_ptrs[19],   // new time step (write)
+    double *f_old_ptrs[NQ],   // previous time step (read-only)
+    double *f_new_ptrs[NQ],   // new time step (write)
     double *feq_d,
     double *dk_dz_d, double *dk_dy_d,
     double *delta_zeta_d,
@@ -217,10 +235,10 @@ __device__ void gilbm_compute_point_gts(
     }
 
     // ── STEP 1: Interpolation + Streaming (from f_old, no a_local scaling) ──
-    double f_streamed_all[19];
+    double f_streamed_all[NQ];
     double rho_stream = 0.0, mx_stream = 0.0, my_stream = 0.0, mz_stream = 0.0;
 
-    for (int q = 0; q < 19; q++) {
+    for (int q = 0; q < NQ; q++) {
         double f_streamed;
 
         if (q == 0) {
@@ -310,12 +328,13 @@ __device__ void gilbm_compute_point_gts(
         f_streamed_all[0] += rho_modify[0];
     }
     double rho_A = rho_stream;
-    double u_A   = mx_stream / rho_A;
-    double v_A   = my_stream / rho_A;
-    double w_A   = mz_stream / rho_A;
+    // Half-force velocity correction (Guo 2002): u = (Σξf + 0.5*F*dt) / ρ
+    double u_A = (mx_stream + 0.0) / rho_A;             // no x-force
+    double v_A = (my_stream + 0.5 * Force[0] * GILBM_dt) / rho_A;  // y=streamwise
+    double w_A = (mz_stream + 0.0) / rho_A;             // no z-force
 
-    double feq_A[19];
-    for (int q = 0; q < 19; q++) {
+    double feq_A[NQ];
+    for (int q = 0; q < NQ; q++) {
         feq_A[q] = compute_feq_alpha(q, rho_A, u_A, v_A, w_A);
         feq_d[q * GRID_SIZE + index] = feq_A[q];
     }
@@ -326,14 +345,14 @@ __device__ void gilbm_compute_point_gts(
 
     // ── STEP 2: Point-wise collision at A (no 343-loop, no Re-estimation) ──
 #if USE_MRT
-    // MRT collision: reuse existing function with global parameters
-    gilbm_mrt_collision(f_streamed_all, feq_A, 1.0 / omega_global, GILBM_dt, Force[0]);
-    for (int q = 0; q < 19; q++)
+    // D3Q27 MRT collision with Guo forcing (2nd-order accurate)
+    gilbm_mrt_collision(f_streamed_all, feq_A, rho_A, u_A, v_A, w_A, GILBM_dt, Force[0]);
+    for (int q = 0; q < NQ; q++)
         f_new_ptrs[q][index] = f_streamed_all[q];
 #else
     // BGK collision: f* = f̃ - (1/ω)(f̃ - feq) + force
     double inv_omega = 1.0 / omega_global;
-    for (int q = 0; q < 19; q++) {
+    for (int q = 0; q < NQ; q++) {
         double f_post = f_streamed_all[q] - inv_omega * (f_streamed_all[q] - feq_A[q]);
         f_post += GILBM_W[q] * 3.0 * GILBM_e[q][1] * Force[0] * GILBM_dt;
         f_new_ptrs[q][index] = f_post;
@@ -364,7 +383,7 @@ __device__ void gilbm_compute_point(
 
     // Local dt and tau at point A
     const double dt_A    = dt_local_d[idx_jk];  // Δt_A (local time step)
-    const double omega_A   = omega_local_d[idx_jk]; // ω_A (Imamura無因次鬆弛時間 ≡ τ/Δt, Eq.1)
+    // const double omega_A = omega_local_d[idx_jk]; // [GTS] LTS-only, unused (nvcc #177-D)
     const double omegadt_A = omegadt_local_d[index];  // ω_A × Δt_A = τ_A (教科書鬆弛時間)
 
     const double a_local = dt_A / GILBM_dt;  // LTS acceleration factor
@@ -1093,7 +1112,7 @@ __global__ void GILBM_Correction_Kernel(
     const int idx_jk = j * NZ6 + k;
 
     const double dt_A      = dt_local_d[idx_jk];
-    const double omega_A   = omega_local_d[idx_jk];
+    // const double omega_A = omega_local_d[idx_jk]; // [GTS] LTS-only, unused (nvcc #177-D)
     const double omegadt_A = omegadt_local_d[index];
 
     const int bi = i - 3;
@@ -1286,7 +1305,7 @@ __global__ void GILBM_Step23_Full_Kernel(
     const int idx_jk = j * NZ6 + k;
 
     const double dt_A      = dt_local_d[idx_jk];
-    const double omega_A   = omega_local_d[idx_jk];
+    // const double omega_A = omega_local_d[idx_jk]; // [GTS] LTS-only, unused (nvcc #177-D)
     const double omegadt_A = omegadt_local_d[index];
 
     const int bi = i - 3;
@@ -1318,18 +1337,13 @@ __global__ void GILBM_Step23_Full_Kernel(
 
 
 // ============================================================================
-// [GTS] Single-pass kernel: interpolation + collision (no f_pc, no re-estimation)
+// [GTS] Single-pass kernel: interpolation + collision (D3Q27)
+// Uses device pointer arrays instead of 27 individual args.
 // Double-buffer: reads f_old (ft), writes f_new (fd), then swap in host code.
 // ============================================================================
 __global__ void GILBM_GTS_Kernel(
-    double *f0_old, double *f1_old, double *f2_old, double *f3_old, double *f4_old,
-    double *f5_old, double *f6_old, double *f7_old, double *f8_old, double *f9_old,
-    double *f10_old, double *f11_old, double *f12_old, double *f13_old, double *f14_old,
-    double *f15_old, double *f16_old, double *f17_old, double *f18_old,
-    double *f0_new, double *f1_new, double *f2_new, double *f3_new, double *f4_new,
-    double *f5_new, double *f6_new, double *f7_new, double *f8_new, double *f9_new,
-    double *f10_new, double *f11_new, double *f12_new, double *f13_new, double *f14_new,
-    double *f15_new, double *f16_new, double *f17_new, double *f18_new,
+    double **f_old_d,         // device array of NQ pointers (previous timestep)
+    double **f_new_d,         // device array of NQ pointers (new timestep)
     double *feq_d,
     double *dk_dz_d, double *dk_dy_d,
     double *delta_zeta_d,
@@ -1345,16 +1359,12 @@ __global__ void GILBM_GTS_Kernel(
     // Buffer=3: compute i∈[3,NX6-4], j∈[3,NYD6-4], k∈[3,NZ6-4]
     if (i <= 2 || i >= NX6 - 3 || j < 3 || j >= NYD6 - 3 || k <= 2 || k >= NZ6 - 3) return;
 
-    double *f_old_ptrs[19] = {
-        f0_old, f1_old, f2_old, f3_old, f4_old, f5_old, f6_old,
-        f7_old, f8_old, f9_old, f10_old, f11_old, f12_old,
-        f13_old, f14_old, f15_old, f16_old, f17_old, f18_old
-    };
-    double *f_new_ptrs[19] = {
-        f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
-        f7_new, f8_new, f9_new, f10_new, f11_new, f12_new,
-        f13_new, f14_new, f15_new, f16_new, f17_new, f18_new
-    };
+    // Load pointer arrays from global memory to registers
+    double *f_old_ptrs[NQ], *f_new_ptrs[NQ];
+    for (int q = 0; q < NQ; q++) {
+        f_old_ptrs[q] = f_old_d[q];
+        f_new_ptrs[q] = f_new_d[q];
+    }
 
     gilbm_compute_point_gts(i, j, k,
         f_old_ptrs, f_new_ptrs,
@@ -1368,13 +1378,10 @@ __global__ void GILBM_GTS_Kernel(
 
 
 // ============================================================================
-// Initialization kernel: compute feq_d from initial f arrays
+// Initialization kernel: compute feq_d from initial f arrays (D3Q27)
 // ============================================================================
 __global__ void Init_Feq_Kernel(
-    double *f0, double *f1, double *f2, double *f3, double *f4,
-    double *f5, double *f6, double *f7, double *f8, double *f9,
-    double *f10, double *f11, double *f12, double *f13, double *f14,
-    double *f15, double *f16, double *f17, double *f18,
+    double **f_d,             // device array of NQ pointers
     double *feq_d
 ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1385,20 +1392,20 @@ __global__ void Init_Feq_Kernel(
 
     const int index = j * NX6 * NZ6 + k * NX6 + i;
 
-    double f[19];
-    f[0]=f0[index]; f[1]=f1[index]; f[2]=f2[index]; f[3]=f3[index]; f[4]=f4[index];
-    f[5]=f5[index]; f[6]=f6[index]; f[7]=f7[index]; f[8]=f8[index]; f[9]=f9[index];
-    f[10]=f10[index]; f[11]=f11[index]; f[12]=f12[index]; f[13]=f13[index]; f[14]=f14[index];
-    f[15]=f15[index]; f[16]=f16[index]; f[17]=f17[index]; f[18]=f18[index];
+    double rho = 0.0, ux = 0.0, uy = 0.0, uz = 0.0;
+    for (int q = 0; q < NQ; q++) {
+        double fq = f_d[q][index];
+        rho += fq;
+        ux  += GILBM_e[q][0] * fq;
+        uy  += GILBM_e[q][1] * fq;
+        uz  += GILBM_e[q][2] * fq;
+    }
+    ux /= rho;
+    uy /= rho;
+    uz /= rho;
 
-    double rho = f[0]+f[1]+f[2]+f[3]+f[4]+f[5]+f[6]+f[7]+f[8]+f[9]
-                +f[10]+f[11]+f[12]+f[13]+f[14]+f[15]+f[16]+f[17]+f[18];
-    double u = (f[1]+f[7]+f[9]+f[11]+f[13] - (f[2]+f[8]+f[10]+f[12]+f[14])) / rho;
-    double v = (f[3]+f[7]+f[8]+f[15]+f[17] - (f[4]+f[9]+f[10]+f[16]+f[18])) / rho;
-    double w = (f[5]+f[11]+f[12]+f[15]+f[16] - (f[6]+f[13]+f[14]+f[17]+f[18])) / rho;
-
-    for (int q = 0; q < 19; q++) {
-        feq_d[q * GRID_SIZE + index] = compute_feq_alpha(q, rho, u, v, w);
+    for (int q = 0; q < NQ; q++) {
+        feq_d[q * GRID_SIZE + index] = compute_feq_alpha(q, rho, ux, uy, uz);
     }
 }
 

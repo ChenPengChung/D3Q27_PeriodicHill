@@ -145,8 +145,8 @@ void result_writebin_velocityandf() {
     result_writebin(v_h_p,   "v",   myid);
     result_writebin(w_h_p,   "w",   myid);
     
-    // 輸出分佈函數 (f0 ~ f18)
-    for( int q = 0; q < 19; q++ ) {
+    // 輸出分佈函數 (f0 ~ f{NQ-1})
+    for( int q = 0; q < NQ; q++ ) {
         ostringstream fname;
         fname << "f" << q;
         result_writebin(fh_p[q], fname.str().c_str(), myid);
@@ -170,25 +170,11 @@ void result_readbin_velocityandf()
     result_readbin(v_h_p,   result, "v",   myid);
     result_readbin(w_h_p,   result, "w",   myid);
 
-    result_readbin(fh_p[0],  result, "f0",  myid);
-    result_readbin(fh_p[1],  result, "f1",  myid);
-    result_readbin(fh_p[2],  result, "f2",  myid);
-    result_readbin(fh_p[3],  result, "f3",  myid);
-    result_readbin(fh_p[4],  result, "f4",  myid);
-    result_readbin(fh_p[5],  result, "f5",  myid);
-    result_readbin(fh_p[6],  result, "f6",  myid);
-    result_readbin(fh_p[7],  result, "f7",  myid);
-    result_readbin(fh_p[8],  result, "f8",  myid);
-    result_readbin(fh_p[9],  result, "f9",  myid);
-    result_readbin(fh_p[10], result, "f10", myid);
-    result_readbin(fh_p[11], result, "f11", myid);
-    result_readbin(fh_p[12], result, "f12", myid);
-    result_readbin(fh_p[13], result, "f13", myid);
-    result_readbin(fh_p[14], result, "f14", myid);
-    result_readbin(fh_p[15], result, "f15", myid);
-    result_readbin(fh_p[16], result, "f16", myid);
-    result_readbin(fh_p[17], result, "f17", myid);
-    result_readbin(fh_p[18], result, "f18", myid);
+    for (int q = 0; q < NQ; q++) {
+        ostringstream fname;
+        fname << "f" << q;
+        result_readbin(fh_p[q], result, fname.str().c_str(), myid);
+    }
 }
 
 //=============================================================================
@@ -196,9 +182,9 @@ void result_readbin_velocityandf()
 //=============================================================================
 
 // 週期性二進制 checkpoint (新格式, single accu_count):
-//   永遠寫: f00~f18 + rho + meta.dat (20 files + metadata)
+//   永遠寫: f00~f{NQ-1} + rho + meta.dat (NQ+1 files + metadata)
 //   FTT >= 20 (accu_count > 0): + 33 統計量累加器
-//   合計: 19(f) + 1(rho) + 33(stats) = 53 .bin + meta.dat
+//   合計: NQ(f) + 1(rho) + 33(stats) .bin + meta.dat
 void SaveBinaryCheckpoint(int ckpt_step) {
     // 1. 建立資料夾 ./checkpoint/step_XXXXXX/
     ostringstream dir_oss;
@@ -210,8 +196,8 @@ void SaveBinaryCheckpoint(int ckpt_step) {
     }
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
-    // 2. 寫入 f00~f18 (分佈函數，含 f^neq)
-    for (int q = 0; q < 19; q++) {
+    // 2. 寫入 f00~f{NQ-1} (分佈函數，含 f^neq)
+    for (int q = 0; q < NQ; q++) {
         char fname[8];
         sprintf(fname, "f%02d", q);
         result_writebin_to(fh_p[q], dir_name.c_str(), fname, myid);
@@ -271,19 +257,16 @@ void SaveBinaryCheckpoint(int ckpt_step) {
 }
 
 // 從 binary checkpoint 讀取 (新格式):
-//   永遠讀: f00~f18 + rho + meta.dat
+//   永遠讀: f00~f{NQ-1} + rho + meta.dat
 //   accu_count > 0: + 33 統計量累加器
-//   u,v,w 宏觀量從 f0~f18 即時計算 (D3Q19 moments)
+//   u,v,w 宏觀量從 f0~f{NQ-1} 即時計算 (D3Q27 moments)
 void LoadBinaryCheckpoint(const char* checkpoint_dir) {
     PreCheckDir();
 
-    // D3Q19 速度向量 (for computing macroscopic from f)
-    const int e_loc[19][3] = {
-        {0,0,0},{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
-        {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
-        {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
-        {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
-    };
+    // D3Q27 速度向量 (for computing macroscopic from f)
+    const int *e_loc_x = D3Q27_ex;
+    const int *e_loc_y = D3Q27_ey;
+    const int *e_loc_z = D3Q27_ez;
 
     // 1. 讀取 metadata
     {
@@ -318,8 +301,8 @@ void LoadBinaryCheckpoint(const char* checkpoint_dir) {
     }
     CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
 
-    // 2. 讀取 f00~f18 (含完整 f^neq!)
-    for (int q = 0; q < 19; q++) {
+    // 2. 讀取 f00~f{NQ-1} (含完整 f^neq!)
+    for (int q = 0; q < NQ; q++) {
         char fname[8];
         sprintf(fname, "f%02d", q);
         // Try new format first (f00), fall back to old format (f0)
@@ -330,7 +313,7 @@ void LoadBinaryCheckpoint(const char* checkpoint_dir) {
             test_file.close();
             result_readbin(fh_p[q], checkpoint_dir, fname, myid);
         } else {
-            // Old format: f0, f1, ..., f18
+            // Old format: f0, f1, ..., f{NQ-1}
             ostringstream old_fname;
             old_fname << "f" << q;
             result_readbin(fh_p[q], checkpoint_dir, old_fname.str().c_str(), myid);
@@ -340,17 +323,17 @@ void LoadBinaryCheckpoint(const char* checkpoint_dir) {
     // 3. 讀取 rho
     result_readbin(rho_h_p, checkpoint_dir, "rho", myid);
 
-    // 4. 從 f0~f18 計算 u, v, w (不再從檔案讀取)
+    // 4. 從 f0~f{NQ-1} 計算 u, v, w (不再從檔案讀取)
     {
         const size_t nTotal = (size_t)NX6 * NYD6 * NZ6;
         for (size_t idx = 0; idx < nTotal; idx++) {
             double rho_loc = rho_h_p[idx];
             double mx = 0.0, my = 0.0, mz = 0.0;
-            for (int q = 0; q < 19; q++) {
+            for (int q = 0; q < NQ; q++) {
                 double fq = fh_p[q][idx];
-                mx += e_loc[q][0] * fq;
-                my += e_loc[q][1] * fq;
-                mz += e_loc[q][2] * fq;
+                mx += e_loc_x[q] * fq;
+                my += e_loc_y[q] * fq;
+                mz += e_loc_z[q] * fq;
             }
             if (rho_loc > 1e-15) {
                 u_h_p[idx] = mx / rho_loc;
@@ -362,7 +345,7 @@ void LoadBinaryCheckpoint(const char* checkpoint_dir) {
                 w_h_p[idx] = 0.0;
             }
         }
-        if (myid == 0) printf("[CHECKPOINT] u,v,w computed from f00~f18 (D3Q19 moments)\n");
+        if (myid == 0) printf("[CHECKPOINT] u,v,w computed from f00~f%02d (D3Q27 moments)\n", NQ-1);
     }
 
     // 5. 讀取 32 統計量累加器 (if accu_count > 0)
@@ -791,19 +774,10 @@ void InitFromMergedVTK(const char* vtk_path) {
     const int nzLocal  = NZ6  - 6;
     const int nyGlobal = NY6  - 6;
 
-    double e_loc[19][3] = {
-        {0,0,0},{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
-        {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
-        {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
-        {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
-    };
-    double W_loc[19] = {
-        1.0/3.0,
-        1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0,
-        1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0,
-        1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0,
-        1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0
-    };
+    const int    *e_loc_x = D3Q27_ex;
+    const int    *e_loc_y = D3Q27_ey;
+    const int    *e_loc_z = D3Q27_ez;
+    const double *W_loc   = D3Q27_W;
 
     // 初始化全場為 rho=1, u=v=w=0
     for (int idx = 0; idx < NX6 * NYD6 * NZ6; idx++) {
@@ -1064,8 +1038,8 @@ void InitFromMergedVTK(const char* vtk_path) {
         double udot = uu * uu + vv * vv + ww * ww;
 
         fh_p[0][index] = W_loc[0] * rho * (1.0 - 1.5 * udot);
-        for (int dir = 1; dir <= 18; dir++) {
-            double eu = e_loc[dir][0] * uu + e_loc[dir][1] * vv + e_loc[dir][2] * ww;
+        for (int dir = 1; dir < NQ; dir++) {
+            double eu = (double)e_loc_x[dir] * uu + (double)e_loc_y[dir] * vv + (double)e_loc_z[dir] * ww;
             fh_p[dir][index] = W_loc[dir] * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * udot);
         }
     }}}

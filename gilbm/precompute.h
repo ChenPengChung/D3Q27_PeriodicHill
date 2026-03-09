@@ -27,28 +27,20 @@
 // 逆變速度 ẽ^ζ_α = e_y·dk_dy + e_z·dk_dz > 0（底壁）或 < 0（頂壁），
 // 則該 α 由 Chapman-Enskog BC 處理，不走 streaming。
 // 此時 delta_eta[α] 雖已計算，但在該壁面節點上不會被 streaming 讀取。
-// η 方向為均勻網格，δη 為常數陣列 [19]，不區分壁面/內部，統一預計算。
+// η 方向為均勻網格，δη 為常數陣列 [NQ]，不區分壁面/內部，統一預計算。
 //
-// When x becomes non-uniform, promote delta_eta from [19] to [19*NYD6*NZ6]
+// When x becomes non-uniform, promote delta_eta from [NQ] to [NQ*NYD6*NZ6]
 // and add RK2 midpoint interpolation in i-direction.
 void PrecomputeGILBM_DeltaEta(
-    double *delta_eta_h,   // 輸出: [19]，η 方向位移量（常數）
+    double *delta_eta_h,   // 輸出: [NQ]，η 方向位移量（常數）
     double dx_val,         // 輸入: uniform grid spacing dx = LX/(NX6-7)
     double dt_val          // 輸入: 參考時間步長 (dt_global)
 ) {
-    // D3Q19 離散速度集（與 initialization.h 中一致）
-    double e_x[19] = {
-        0,
-        1, -1, 0, 0, 0, 0,
-        1, -1, 1, -1,
-        1, -1, 1, -1,
-        0, 0, 0, 0
-    };
-
-    for (int alpha = 0; alpha < 19; alpha++) {
-        delta_eta_h[alpha] = dt_val * e_x[alpha] / dx_val;
+    // D3Q27 discrete velocity set (from MRT_Matrix_D3Q27.h)
+    for (int alpha = 0; alpha < NQ; alpha++) {
+        delta_eta_h[alpha] = dt_val * (double)D3Q27_ex[alpha] / dx_val;
     }
-}
+}    //eta方向為記憶體配置為27:D3Q27模型之編號速度總個數量 
 
 // ============================================================================
 // PrecomputeGILBM_DeltaXi: ξ-direction displacement (constant for uniform y)
@@ -62,30 +54,22 @@ void PrecomputeGILBM_DeltaEta(
 // 由 Chapman-Enskog BC 處理，不走 streaming，因此 delta_xi[α] 在壁面節點
 // 對該 α 無效（不被讀取）。ξ 為均勻網格，統一預計算所有 α。
 //
-// When y becomes non-uniform, promote delta_xi from [19] to [19*NYD6*NZ6]
+// When y becomes non-uniform, promote delta_xi from [NQ] to [NQ*NYD6*NZ6]
 // and add RK2 midpoint interpolation in j-direction.
 void PrecomputeGILBM_DeltaXi(
-    double *delta_xi_h,    // 輸出: [19]，ξ 方向位移量（常數）
+    double *delta_xi_h,    // 輸出: [NQ]，ξ 方向位移量（常數）
     double dy_val,         // 輸入: uniform grid spacing dy = LY/(NY6-7)
     double dt_val          // 輸入: 參考時間步長 (dt_global)
 ) {
-    // D3Q19 離散速度集（與 initialization.h 中一致）
-    double e_y[19] = {
-        0,
-        0, 0, 1, -1, 0, 0,
-        1, 1, -1, -1,
-        0, 0, 0, 0,
-        1, -1, 1, -1
-    };
-
-    for (int alpha = 0; alpha < 19; alpha++) {
-        delta_xi_h[alpha] = dt_val * e_y[alpha] / dy_val;
+    // D3Q27 discrete velocity set (from MRT_Matrix_D3Q27.h)
+    for (int alpha = 0; alpha < NQ; alpha++) {
+        delta_xi_h[alpha] = dt_val * (double)D3Q27_ey[alpha] / dy_val;
     }
 }
 /*void PrecomputeGILBM_DeltaXi 說明：
 - 對一維陣列寫入資料
 - 計算曲線座標系，各個編號的xi方向偏移距離
-- 輸出一維陣列 delta_xi_h[19]，每個 alpha 對應一個常數偏移量
+- 輸出一維陣列 delta_xi_h[NQ]，每個 alpha 對應一個常數偏移量
 - 輸入物理空間的dy : dy_val = LY/(NY6-7)，用於計算偏移距離
 - 公式：
 → ẽ^ξ_α = e_y[α] · (1/dy) = e_y[α] / dy
@@ -110,42 +94,26 @@ void PrecomputeGILBM_DeltaXi(
 //   平坦底壁 (dk_dy=0) 的 BC 方向: α={5,11,12,15,16}（e_z>0，共 5 個）
 //   斜面底壁 (dk_dy≠0, slope<45°): BC 方向增至 8 個（額外含 e_y 分量方向）
 //
-// δζ 對所有 19 方向統一計算（含 BC 方向），但 BC 方向的值不被 streaming 讀取。
+// δζ 對所有 NQ 方向統一計算（含 BC 方向），但 BC 方向的值不被 streaming 讀取。
 // 統一計算原因：
 //(1) BC 方向隨 (j,k) 的 dk_dy 變化，條件判斷反增複雜度；
-// (2) D3Q19 的 (e_y,e_z)↔(-e_y,-e_z) 對稱性保證 BC 方向的 δζ 值有限且無害。
+// (2) D3Q27 的 (e_y,e_z)↔(-e_y,-e_z) 對稱性保證 BC 方向的 δζ 值有限且無害。
 void PrecomputeGILBM_DeltaZeta(
-    double *delta_zeta_h,    // 輸出: [19 * NYD6 * NZ6]，預計算的位移量
+    double *delta_zeta_h,    // 輸出: [NQ * NYD6 * NZ6]，預計算的位移量
     const double *dk_dz_h,   // 輸入: 度量項 dk/dz [NYD6*NZ6]
     const double *dk_dy_h,   // 輸入: 度量項 dk/dy [NYD6*NZ6]
     int NYD6_local,
     int NZ6_local,
     double dt_val 
 ) {
-    // D3Q19 離散速度集
-    double e[19][3] = {
-        {0,0,0},
-        {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
-        {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
-        {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
-        {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
-    };
-    /*分類：
-    ẽ^ζ_α(k) = e_y·(dk/dy) + e_z·(dk/dz)  at current point
-    e_y=0 者：alpha = 1,2,5,6,11,12,13,14 ; (其中，e_z=0 ： 1,2.)
-    e_y!=0 者：alpha = 3,4,7,8,9,10,15,16,17,18 ; (其中，e_z=0 ： 3,4,7,8,9,10)
-    策略：先計算半步偏移位置
-    再計算逆變速度分量e_zeta在該半步偏移位置的量
-    e_y·(dk/dy) + e_z·(dk/dz)
-    其中，需要線性插值：離散度量項 dk/dz 和 dk/dy 在半步位置的值
-    */
-    for(int alpha = 1 ; alpha <= 18 ; alpha++){
-        //若y方向速度分量=0且z方向速度分量=0，則跳過不特別寫入資料；
-        if(e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;//就是指alpha = 1,2
+    // D3Q27 discrete velocity set (from MRT_Matrix_D3Q27.h)
+    for(int alpha = 1 ; alpha < NQ ; alpha++){
+        // Skip pure x-directions (e_y=0 and e_z=0): delta_zeta = 0
+        if(D3Q27_ey[alpha] == 0 && D3Q27_ez[alpha] == 0) continue;
        for (int j = 3; j < NYD6_local - 3; j++) { // 跳過 y 方向 buffer layer (含 MPI 重疊點)
             for (int k = 3; k < NZ6_local - 3; k++) {  // Buffer=3: k=3(壁面)..NZ6-4(頂壁)
                 int idx_xi = j * NZ6_local + k ;
-                double e_alpha_k = e[alpha][1] * dk_dy_h[idx_xi] + e[alpha][2] * dk_dz_h[idx_xi];
+                double e_alpha_k = (double)D3Q27_ey[alpha] * dk_dy_h[idx_xi] + (double)D3Q27_ez[alpha] * dk_dz_h[idx_xi];
                 double k_half = (double)k - 0.5 * dt_val * e_alpha_k;
                 int k_low = (int)floor(k_half);
                 // Buffer=3: clamp 到有效度量項範圍 [3, NZ6-5]
@@ -159,7 +127,7 @@ void PrecomputeGILBM_DeltaZeta(
                 double dk_dy_half = dk_dy_h[idx_xi_low] * (1.0 - frac) + dk_dy_h[idx_xi_high] * frac;
                 double dk_dz_half = dk_dz_h[idx_xi_low] * (1.0 - frac) + dk_dz_h[idx_xi_high] * frac;
                 //step4:結合起來計算半步長位置點的逆變速度（對於alpha編號，對於空間點j,k_half)
-                double e_alpha_k_half = e[alpha][1] * dk_dy_half + e[alpha][2] * dk_dz_half;
+                double e_alpha_k_half = (double)D3Q27_ey[alpha] * dk_dy_half + (double)D3Q27_ez[alpha] * dk_dz_half;
                 //step5:寫入陣列，對於該空間點(j,k)對於編號alpha，zeta方向的非物理空間計算點的偏移量
                 delta_zeta_h[alpha * NYD6_local * NZ6_local + idx_xi] = dt_val * e_alpha_k_half;
             }
@@ -170,13 +138,13 @@ void PrecomputeGILBM_DeltaZeta(
 // ============================================================================
 // Wrapper: precompute all three direction displacements (η, ξ, ζ)
 // ============================================================================
-// η: δη[α] = dt_global · e_x[α] / dx   (constant, [19])
-// ξ: δξ[α] = dt_global · e_y[α] / dy   (constant, [19])
-// ζ: δζ[α,j,k] = dt_local(j,k) · ẽ^ζ(k_half)  (RK2, [19*NYD6*NZ6])
+// η: δη[α] = dt_global · e_x[α] / dx   (constant, [NQ])
+// ξ: δξ[α] = dt_global · e_y[α] / dy   (constant, [NQ])
+// ζ: δζ[α,j,k] = dt_local(j,k) · ẽ^ζ(k_half)  (RK2, [NQ*NYD6*NZ6])
 void PrecomputeGILBM_DeltaAll(
-    double *delta_xi_h,      // 輸出: [19]，ξ 方向位移量
-    double *delta_eta_h,     // 輸出: [19]，η 方向位移量
-    double *delta_zeta_h,    // 輸出: [19 * NYD6 * NZ6]，ζ 方向位移量
+    double *delta_xi_h,      // 輸出: [NQ]，ξ 方向位移量
+    double *delta_eta_h,     // 輸出: [NQ]，η 方向位移量
+    double *delta_zeta_h,    // 輸出: [NQ * NYD6 * NZ6]，ζ 方向位移量
     const double *dk_dz_h,   // 輸入: 度量項 dk/dz [NYD6*NZ6]
     const double *dk_dy_h,   // 輸入: 度量項 dk/dy [NYD6*NZ6]
     int NYD6_local,
@@ -218,13 +186,7 @@ double ComputeGlobalTimeStep(
     int myid_local,
     int nprocs_local
 ) {
-    double e[19][3] = {
-        {0,0,0},
-        {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
-        {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
-        {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
-        {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1}
-    };
+    // D3Q27 velocity vectors from MRT_Matrix_D3Q27.h (D3Q27_ex/ey/ez)
 //目標：求最大的速度分量c̃
     //比較維度：各個空間計算點(j,k),各個速度編號alpha,三個分量，求最大值
     //比較順序：分量->編號->空間點
@@ -257,9 +219,9 @@ double ComputeGlobalTimeStep(
             int idx_jk = j * NZ6_local + k;
             double dk_dy_val = dk_dy_h[idx_jk];
             double dk_dz_val = dk_dz_h[idx_jk];
-            for(int alpha = 1 ; alpha <19 ; alpha++){
-                if(e[alpha][1] == 0.0 && e[alpha][2] == 0.0) continue;
-                double c_zeta = fabs(e[alpha][1] * dk_dy_val + e[alpha][2] * dk_dz_val);
+            for(int alpha = 1 ; alpha < NQ ; alpha++){
+                if(D3Q27_ey[alpha] == 0 && D3Q27_ez[alpha] == 0) continue;
+                double c_zeta = fabs((double)D3Q27_ey[alpha] * dk_dy_val + (double)D3Q27_ez[alpha] * dk_dz_val);
                 if(c_zeta > max_c_tilde){
                     max_c_tilde = c_zeta;
                     max_component = 2; //1.
@@ -289,8 +251,8 @@ double ComputeGlobalTimeStep(
             if (max_component == 2) {
                 std::cout << " at alpha=" << max_alpha
                           << " (e_y=" << std::showpos << std::setprecision(0) << std::fixed
-                          << (double)e[max_alpha][1]
-                          << ", e_z=" << (double)e[max_alpha][2] << std::noshowpos
+                          << (double)D3Q27_ey[max_alpha]
+                          << ", e_z=" << (double)D3Q27_ez[max_alpha] << std::noshowpos
                           << "), j=" << max_j << ", k=" << max_k;
             }
             std::cout << ", dt_rank = " << std::scientific << std::setprecision(6) << dt_g

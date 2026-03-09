@@ -9,8 +9,8 @@ void CreateDataType() {
 }
 
 void ISend_LtRtBdry(
-    double *f_new[19], 
-    const int istart,       const int nbr,      const int itag[23], 
+    double *f_new[NQ],
+    const int istart,       const int nbr,      const int itag[NQ+4],
     const int req,          const int num_arrays, ...)
 {
     va_list args;
@@ -27,27 +27,27 @@ void ISend_LtRtBdry(
     va_end( args );
 
     CHECK_MPI(
-        MPI_Isend((void *)&u[istart],           1,      DataSideways,      nbr,     itag[19],
-                  MPI_COMM_WORLD,   &(request[19][req]))
+        MPI_Isend((void *)&u[istart],           1,      DataSideways,      nbr,     itag[NQ],
+                  MPI_COMM_WORLD,   &(request[NQ][req]))
     );
     CHECK_MPI(
-        MPI_Isend((void *)&v[istart],           1,      DataSideways,      nbr,     itag[20],
-                  MPI_COMM_WORLD,   &(request[20][req]))
+        MPI_Isend((void *)&v[istart],           1,      DataSideways,      nbr,     itag[NQ+1],
+                  MPI_COMM_WORLD,   &(request[NQ+1][req]))
     );
     CHECK_MPI(
-        MPI_Isend((void *)&w[istart],           1,      DataSideways,      nbr,     itag[21],
-                  MPI_COMM_WORLD,   &(request[21][req]))
+        MPI_Isend((void *)&w[istart],           1,      DataSideways,      nbr,     itag[NQ+2],
+                  MPI_COMM_WORLD,   &(request[NQ+2][req]))
     );
     CHECK_MPI(
-        MPI_Isend((void *)&rho_d[istart],       1,      DataSideways,      nbr,     itag[22],
-                  MPI_COMM_WORLD,   &(request[22][req]))
+        MPI_Isend((void *)&rho_d[istart],       1,      DataSideways,      nbr,     itag[NQ+3],
+                  MPI_COMM_WORLD,   &(request[NQ+3][req]))
     );
 
 }
 
 void IRecv_LtRtBdry(
-    double *f_new[19],
-    const int istart,       const int nbr,      const int itag[23],
+    double *f_new[NQ],
+    const int istart,       const int nbr,      const int itag[NQ+4],
     const int req,          const int num_arrays, ...)
 {
     va_list args;
@@ -64,24 +64,24 @@ void IRecv_LtRtBdry(
     va_end( args );
 
     CHECK_MPI(
-        MPI_Irecv((void *)&u[istart],           1,      DataSideways,      nbr,     itag[19],
-                  MPI_COMM_WORLD,   &(request[19][req]))
+        MPI_Irecv((void *)&u[istart],           1,      DataSideways,      nbr,     itag[NQ],
+                  MPI_COMM_WORLD,   &(request[NQ][req]))
     );
     CHECK_MPI(
-        MPI_Irecv((void *)&v[istart],           1,      DataSideways,      nbr,     itag[20],
-                  MPI_COMM_WORLD,   &(request[20][req]))
+        MPI_Irecv((void *)&v[istart],           1,      DataSideways,      nbr,     itag[NQ+1],
+                  MPI_COMM_WORLD,   &(request[NQ+1][req]))
     );
     CHECK_MPI(
-        MPI_Irecv((void *)&w[istart],           1,      DataSideways,      nbr,     itag[21],
-                  MPI_COMM_WORLD,   &(request[21][req]))
+        MPI_Irecv((void *)&w[istart],           1,      DataSideways,      nbr,     itag[NQ+2],
+                  MPI_COMM_WORLD,   &(request[NQ+2][req]))
     );
     CHECK_MPI(
-        MPI_Irecv((void *)&rho_d[istart],       1,      DataSideways,      nbr,     itag[22],
-                  MPI_COMM_WORLD,   &(request[22][req]))
+        MPI_Irecv((void *)&rho_d[istart],       1,      DataSideways,      nbr,     itag[NQ+3],
+                  MPI_COMM_WORLD,   &(request[NQ+3][req]))
     );
 }
 
-void Isend_Sideways(const int istart, const int sw_nbr, const int itag_sw[23], MPI_Request reqSideways[23], const int num_arrays, ...) {
+void Isend_Sideways(const int istart, const int sw_nbr, const int itag_sw[NQ+4], MPI_Request reqSideways[NQ+4], const int num_arrays, ...) {
     va_list args;
     va_start( args, num_arrays );
 
@@ -96,25 +96,25 @@ void Isend_Sideways(const int istart, const int sw_nbr, const int itag_sw[23], M
     va_end( args );
 
     CHECK_MPI(
-        MPI_Isend((void *)&u_h_p[istart],       1,      DataSideways,   sw_nbr,     itag_sw[19],
-                  MPI_COMM_WORLD,   &reqSideways[19])
+        MPI_Isend((void *)&u_h_p[istart],       1,      DataSideways,   sw_nbr,     itag_sw[NQ],
+                  MPI_COMM_WORLD,   &reqSideways[NQ])
     );
     CHECK_MPI(
-        MPI_Isend((void *)&v_h_p[istart],       1,      DataSideways,   sw_nbr,     itag_sw[20],
-                  MPI_COMM_WORLD,   &reqSideways[20])
+        MPI_Isend((void *)&v_h_p[istart],       1,      DataSideways,   sw_nbr,     itag_sw[NQ+1],
+                  MPI_COMM_WORLD,   &reqSideways[NQ+1])
     );
     CHECK_MPI(
-        MPI_Isend((void *)&w_h_p[istart],       1,      DataSideways,   sw_nbr,     itag_sw[21],
-                  MPI_COMM_WORLD,   &reqSideways[21])
+        MPI_Isend((void *)&w_h_p[istart],       1,      DataSideways,   sw_nbr,     itag_sw[NQ+2],
+                  MPI_COMM_WORLD,   &reqSideways[NQ+2])
     );
     CHECK_MPI(
-        MPI_Isend((void *)&rho_h_p[istart],     1,      DataSideways,   sw_nbr,     itag_sw[22],
-                  MPI_COMM_WORLD,   &reqSideways[22])
+        MPI_Isend((void *)&rho_h_p[istart],     1,      DataSideways,   sw_nbr,     itag_sw[NQ+3],
+                  MPI_COMM_WORLD,   &reqSideways[NQ+3])
     );
 
 }
 
-void Irecv_Sideways(const int istart, const int sw_nbr, const int itag_sw[23], MPI_Request reqSideways[23], const int num_arrays, ...) {
+void Irecv_Sideways(const int istart, const int sw_nbr, const int itag_sw[NQ+4], MPI_Request reqSideways[NQ+4], const int num_arrays, ...) {
     va_list args;
     va_start( args, num_arrays );
 
@@ -129,29 +129,29 @@ void Irecv_Sideways(const int istart, const int sw_nbr, const int itag_sw[23], M
     va_end( args );
 
     CHECK_MPI(
-        MPI_Irecv((void *)&u_h_p[istart],       1,      DataSideways,   sw_nbr,     itag_sw[19],
-                  MPI_COMM_WORLD,   &reqSideways[19])
+        MPI_Irecv((void *)&u_h_p[istart],       1,      DataSideways,   sw_nbr,     itag_sw[NQ],
+                  MPI_COMM_WORLD,   &reqSideways[NQ])
     );
     CHECK_MPI(
-        MPI_Irecv((void *)&v_h_p[istart],       1,      DataSideways,   sw_nbr,     itag_sw[20],
-                  MPI_COMM_WORLD,   &reqSideways[20])
+        MPI_Irecv((void *)&v_h_p[istart],       1,      DataSideways,   sw_nbr,     itag_sw[NQ+1],
+                  MPI_COMM_WORLD,   &reqSideways[NQ+1])
     );
     CHECK_MPI(
-        MPI_Irecv((void *)&w_h_p[istart],       1,      DataSideways,   sw_nbr,     itag_sw[21],
-                  MPI_COMM_WORLD,   &reqSideways[21])
+        MPI_Irecv((void *)&w_h_p[istart],       1,      DataSideways,   sw_nbr,     itag_sw[NQ+2],
+                  MPI_COMM_WORLD,   &reqSideways[NQ+2])
     );
     CHECK_MPI(
-        MPI_Irecv((void *)&rho_h_p[istart],     1,      DataSideways,   sw_nbr,     itag_sw[22],
-                  MPI_COMM_WORLD,   &reqSideways[22])
+        MPI_Irecv((void *)&rho_h_p[istart],     1,      DataSideways,   sw_nbr,     itag_sw[NQ+3],
+                  MPI_COMM_WORLD,   &reqSideways[NQ+3])
     );
 
 }
 
 void Wait_Sideways(
-    double *f_new[19], const int iend_sw, 
-    MPI_Request reqSend[23], MPI_Request reqRecv[23], const int transfsize, cudaStream_t stream0,
+    double *f_new[NQ], const int iend_sw,
+    MPI_Request reqSend[NQ+4], MPI_Request reqRecv[NQ+4], const int transfsize, cudaStream_t stream0,
     const int num_arrays, ...)
-{    
+{
     va_list args;
     va_start( args, num_arrays );
 
@@ -168,26 +168,26 @@ void Wait_Sideways(
 
     va_end( args );
 
-    CHECK_MPI( MPI_Wait(&reqSend[19], istat) );
-    CHECK_MPI( MPI_Wait(&reqRecv[19], istat) );
+    CHECK_MPI( MPI_Wait(&reqSend[NQ], istat) );
+    CHECK_MPI( MPI_Wait(&reqRecv[NQ], istat) );
     CHECK_CUDA(
         cudaMemcpyAsync((void *)&u[iend_sw],    (void *)&u_h_p[iend_sw],   transfsize*sizeof(double),
                         cudaMemcpyHostToDevice,     stream0)
     );
-    CHECK_MPI( MPI_Wait(&reqSend[20], istat) );
-    CHECK_MPI( MPI_Wait(&reqRecv[20], istat) );
+    CHECK_MPI( MPI_Wait(&reqSend[NQ+1], istat) );
+    CHECK_MPI( MPI_Wait(&reqRecv[NQ+1], istat) );
     CHECK_CUDA(
         cudaMemcpyAsync((void *)&v[iend_sw],    (void *)&v_h_p[iend_sw],   transfsize*sizeof(double),
                         cudaMemcpyHostToDevice,     stream0)
     );
-    CHECK_MPI( MPI_Wait(&reqSend[21], istat) );
-    CHECK_MPI( MPI_Wait(&reqRecv[21], istat) );
+    CHECK_MPI( MPI_Wait(&reqSend[NQ+2], istat) );
+    CHECK_MPI( MPI_Wait(&reqRecv[NQ+2], istat) );
     CHECK_CUDA(
         cudaMemcpyAsync((void *)&w[iend_sw],    (void *)&w_h_p[iend_sw],   transfsize*sizeof(double),
                         cudaMemcpyHostToDevice,     stream0)
     );
-    CHECK_MPI( MPI_Wait(&reqSend[22], istat) );
-    CHECK_MPI( MPI_Wait(&reqRecv[22], istat) );
+    CHECK_MPI( MPI_Wait(&reqSend[NQ+3], istat) );
+    CHECK_MPI( MPI_Wait(&reqRecv[NQ+3], istat) );
     CHECK_CUDA(
         cudaMemcpyAsync((void *)&rho_d[iend_sw],(void *)&rho_h_p[iend_sw], transfsize*sizeof(double),
                         cudaMemcpyHostToDevice,     stream0)
@@ -195,7 +195,7 @@ void Wait_Sideways(
 
 }
 
-void SendBdryToCPU_Sideways(cudaStream_t stream, double *f_new[19], const int istart, const int num_arrays, ...) {
+void SendBdryToCPU_Sideways(cudaStream_t stream, double *f_new[NQ], const int istart, const int num_arrays, ...) {
     va_list args;
     va_start( args, num_arrays );
 
@@ -216,30 +216,19 @@ void SendBdryToCPU_Sideways(cudaStream_t stream, double *f_new[19], const int is
     va_end( args );
 }
 
-void SendSrcToGPU(const size_t nBytes, const int num_arrays, ...) {
-    va_list args;
-    va_start( args, num_arrays );
-
-    for( int i = 0; i < num_arrays; i++ ) {
-        const int dir = va_arg(args, int);
+void SendSrcToGPU(const size_t nBytes) {
+    for( int dir = 0; dir < NQ; dir++ ) {
         CHECK_CUDA( cudaMemcpy( (void*)fd[dir], (void*)fh_p[dir], nBytes, cudaMemcpyHostToDevice ) );
         CHECK_CUDA( cudaMemcpy( (void*)ft[dir], (void*)fh_p[dir], nBytes, cudaMemcpyHostToDevice ) );
     }
 
     CHECK_CUDA( cudaDeviceSynchronize() );
-    va_end( args );
 }
 
-void SendSrcToCPU(double *f_new[19], const size_t nBytes, const int num_arrays, ...) {
-    va_list args;
-    va_start( args, num_arrays );
-
-    for( int i = 0; i < num_arrays; i++ ) {
-        const int dir = va_arg(args, int);
-        CHECK_CUDA( cudaMemcpy(fh_p[dir],f_new[dir],nBytes,cudaMemcpyDeviceToHost); )
+void SendSrcToCPU(double *f_new[NQ], const size_t nBytes) {
+    for( int dir = 0; dir < NQ; dir++ ) {
+        CHECK_CUDA( cudaMemcpy(fh_p[dir], f_new[dir], nBytes, cudaMemcpyDeviceToHost) );
     }
-
-    va_end( args );
 }
 
 void SendDataToGPU() {
@@ -250,14 +239,14 @@ void SendDataToGPU() {
     CHECK_CUDA( cudaMemcpy(v,     v_h_p,   nBytes, cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaMemcpy(w,     w_h_p,   nBytes, cudaMemcpyHostToDevice) );
 
-    SendSrcToGPU(nBytes, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18);
+    SendSrcToGPU(nBytes);
 
     CHECK_CUDA( cudaDeviceSynchronize() );
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
 }
 
-void SendDataToCPU(double *f_new[19]) {
+void SendDataToCPU(double *f_new[NQ]) {
     const size_t nBytes = NX6 * NYD6 * NZ6 * sizeof(double);
 
     CHECK_CUDA( cudaMemcpy(u_h_p,   u,     nBytes, cudaMemcpyDeviceToHost) );
@@ -265,7 +254,7 @@ void SendDataToCPU(double *f_new[19]) {
 	CHECK_CUDA( cudaMemcpy(w_h_p,   w,     nBytes, cudaMemcpyDeviceToHost) );
 	CHECK_CUDA( cudaMemcpy(rho_h_p, rho_d, nBytes, cudaMemcpyDeviceToHost) );
 
-    SendSrcToCPU(f_new, nBytes, 19, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18);
+    SendSrcToCPU(f_new, nBytes);
 
     CHECK_CUDA( cudaDeviceSynchronize() );
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );

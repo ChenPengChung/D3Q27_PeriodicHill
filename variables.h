@@ -46,7 +46,7 @@
 // ================================================================
 // 4. 物理參數
 // ================================================================
-#define     Re      700         // Reynolds number (基於 H_HILL 和 Uref)
+#define     Re      50         // Reynolds number (基於 H_HILL 和 Uref)
 #define     Uref    0.0583      // 參考速度 (bulk velocity)
                                 // Re700:0.0583, Re1400/2800:0.0776
                                 // Re5600:0.0464, Re10595:0.0878
@@ -88,16 +88,38 @@
 #define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
-// 外力控制器增益 (P controller, Phase 1: additive)
-// Re=100: alpha=10, Re=2800: alpha=3~14
-// 週期山丘需較高 gain 加速收斂
-#define     force_alpha 3
+// ====== Dual-Stage Force Controller ======
+// Phase 1: P-additive (cold start / far from target, |Re%| > SWITCH_THRESHOLD)
+//   F += beta × (Uref - Ub) × Uref / LY
+//   beta = FORCE_P_ALPHA / Re
+//   Cold start seed: F_Poiseuille = 8×niu×Uref/h_eff²
+//
+// Phase 2: Gehrke multiplicative (near target, |Re%| ≤ SWITCH_THRESHOLD)
+//   Reference: Gehrke & Rung (2020), parameterized cumulant LBM
+//   F *= (1 - GEHRKE_GAIN × Re%)    where Re% = (Ub - Uref)/Uref × 100
+//   Dead zone: |Re%| < GEHRKE_DEADZONE → no adjustment
+//   Floor: F ≥ GEHRKE_FLOOR_FRAC × F_Poiseuille (prevents multiplicative trap → 0)
+//   Correction clamp: multiplier ∈ [0.5, 2.0] (prevents single-step catastrophe)
+//
+// Transition: automatic based on |Re%| vs SWITCH_THRESHOLD
+//   Hysteresis: switch to Gehrke at ≤ SWITCH_THRESHOLD
+//               back to P-additive at > SWITCH_THRESHOLD
+// ====================================================================
 
-// Gehrke & Rung (2022) 雙階段外力控制器
-// Phase 1 (P-additive): |Re%| > THRESHOLD 或 FTT < FTT_GEHRKE
-// Phase 2 (Gehrke-mult): |Re%| ≤ THRESHOLD 且 FTT ≥ FTT_GEHRKE
-#define     FORCE_SWITCH_THRESHOLD  5.0    // Re% 切換門檻 (%)
-#define     FTT_GEHRKE_FORCE        30.0    // 最少跑幾個 FTT 才啟用 Gehrke
+// P-additive controller
+#define     FORCE_P_ALPHA           5.0     // aggressiveness (beta = alpha/Re)
+
+// Gehrke multiplicative controller
+#define     FORCE_GEHRKE_GAIN       0.01    // F *= (1 - gain × Re%)
+#define     FORCE_GEHRKE_DEADZONE   1.5     // |Re%| < 1.5% → hold (percentage, not fraction)
+#define     FORCE_GEHRKE_FLOOR      0.5     // minimum Force = floor × F_Poiseuille
+
+// Controller switching
+#define     FORCE_SWITCH_THRESHOLD  8     // |Re%| ≤ 8% → Gehrke; > 8% → P-additive
+
+// Legacy defines (kept for backward compatibility, unused by new controller)
+#define     FORCE_RE_DEADZONE       0.015   // (deprecated) was fractional dead zone
+#define     FORCE_RE_GAIN           0.1     // (deprecated) was multiplicative gain
 
 // ================================================================
 // 9. FTT 閾值與統計控制
