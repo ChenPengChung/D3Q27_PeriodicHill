@@ -295,6 +295,19 @@ int main(int argc, char *argv[])
     }
 #endif
 
+#if USE_CUMULANT
+    if (myid == 0) {
+#if USE_WP_CUMULANT
+        printf("D3Q27 Cumulant (WP mode): omega=%.6f, lambda=%.2e\n",
+               omega_global, (double)CUM_LAMBDA);
+        printf("  WP: omega3-5 parameterized (Eq.14-16), A/B coeffs (Eq.17-18), lambda-limiter (Eq.20-26)\n");
+#else
+        printf("D3Q27 Cumulant (AO mode): omega=%.6f\n", omega_global);
+        printf("  AO: omega2-10 = 1.0 (All-One, Geier 2015)\n");
+#endif
+    }
+#endif
+
     if (myid == 0) printf("GILBM: delta_zeta + __constant__(dt,eta,xi) + bk_precomp + dk copied to GPU.\n");
 
     if ( INIT == 0 ) {
@@ -529,6 +542,18 @@ int main(int argc, char *argv[])
         printf("| [Output] dt_global        = %.6e\n", dt_global);
         printf("|   -> omega_global         = 3*niu/dt_global + 0.5     = %.6f\n", omega_global);
         printf("|   -> omegadt_global       = omega*dt                  = %.6e\n", omegadt_global);
+        printf("+----------------------------------------------------------------+\n");
+#if USE_CUMULANT
+#if USE_WP_CUMULANT
+        printf("| Collision = Cumulant-WP (Gehrke 2022), lambda=%.2e      |\n", (double)CUM_LAMBDA);
+#else
+        printf("| Collision = Cumulant-AO (Geier 2015)                       |\n");
+#endif
+#elif USE_MRT
+        printf("| Collision = MRT (Suga 2015)                                |\n");
+#else
+        printf("| Collision = BGK/SRT                                        |\n");
+#endif
         printf("+================================================================+\n\n");
     }
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );

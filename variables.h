@@ -65,11 +65,39 @@
 #define     flow_through_time   (LY / Uref)
 
 // ================================================================
-// 6. 碰撞算子
+// 6. 碰撞算子選擇 (三擇一)
 // ================================================================
-// 0 = BGK/SRT (Single Relaxation Time)
-// 1 = MRT (Multi-Relaxation-Time)
-#define     USE_MRT             1
+//  模式         USE_MRT   USE_CUMULANT   說明
+//  ─────────────────────────────────────────────────────────────
+//  BGK/SRT        0          0           單鬆弛 (baseline, fastest)
+//  MRT            1          0           多鬆弛矩空間 (Suga 2015)
+//  Cumulant-AO    0          1           累積量 All-One (Geier 2015)
+//  Cumulant-WP    0          1           累積量 Well-Parameterized (Gehrke 2022)
+//                                        (由 USE_WP_CUMULANT 選擇 AO/WP)
+//
+//  ★ USE_MRT 與 USE_CUMULANT 不可同時為 1 ★
+// ================================================================
+#define     USE_MRT             0
+#define     USE_CUMULANT        1
+
+// ── Cumulant 子選項 (僅 USE_CUMULANT=1 時生效) ──────────────────
+//   USE_WP_CUMULANT = 0  →  AO: ω₂–ω₁₀ = 1, 全抑制, 穩定但耗散
+//   USE_WP_CUMULANT = 1  →  WP: ω₃–ω₅ 從 ω₁,ω₂ 優化 (Eq.14-16),
+//                             4 階平衡態 A,B (Eq.17-18),
+//                             λ-limiter 正則化 (Eq.20-26)
+//
+//   CUM_LAMBDA: WP 正則化參數 λ
+//     1e-6  → ≈AO (limiter 幾乎關閉)
+//     1e-2  → Gehrke 預設 (多數情況適用)
+//     1e-1  → Re≥10600 中等網格 (GR22 Table 7)
+// ================================================================
+#define     USE_WP_CUMULANT     0
+#define     CUM_LAMBDA          1.0e-2
+
+// ── 互斥檢查 ──
+#if USE_MRT && USE_CUMULANT
+#error "USE_MRT and USE_CUMULANT are mutually exclusive. Set only one to 1."
+#endif
 
 // ================================================================
 // 7. Kernel 策略

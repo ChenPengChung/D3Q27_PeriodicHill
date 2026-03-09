@@ -167,7 +167,7 @@ __constant__ double CUM_K[27] = {
 #define I_aca 24    // κ₀₂₀ (yy-stress)
 #define I_aac 22    // κ₀₀₂ (zz-stress)
 
-// 2nd order off-diagonal
+// 
 #define I_bba  6    // κ₁₁₀ (xy-stress)
 #define I_bab  4    // κ₁₀₁ (xz-stress)
 #define I_abb  2    // κ₀₁₁ (yz-stress)

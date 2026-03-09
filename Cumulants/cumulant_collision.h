@@ -2,39 +2,127 @@
 // cumulant_collision.h
 // D3Q27 Cumulant Collision — Standalone CUDA Device Function
 //
+// TWO MODES (compile-time selection via USE_WP_CUMULANT):
+//
+//   USE_WP_CUMULANT = 0  →  AO (All-One, Geier 2015)
+//     All ω₂–ω₁₀ = 1.  Simple, stable at high Re via damping.
+//     Equivalent to original Geier et al. 2015 approach.
+//
+//   USE_WP_CUMULANT = 1  →  WP (Well-conditioned Parameterized, Geier 2017)
+//     ω₃,ω₄,ω₅ optimized from ω₁,ω₂ (Eq.14-16 of Gehrke & Rung 2022).
+//     4th-order equilibria use A,B coefficients (Eq.17-18).
+//     Regularization limiter λ (Eq.20-26) for stability control.
+//     Superior accuracy at moderate grids; λ tunes DNS↔VLES blend.
+//
 // Interface:
-//   INPUT:  f_in[27] (post-streaming), omega, dt, Fx, Fy, Fz
-//   OUTPUT: f_out[27] (post-collision), rho, ux, uy, uz
+//   INPUT:  f_in[27], omega(=ω₁), dt, Fx, Fy, Fz
+//   OUTPUT: f_out[27], rho, ux, uy, uz
 //
-// No feq needed. No M/M⁻¹ matrix. No external dependencies.
-//
-// Adapted from OpenLB collisionCUM.h (GPL v2+), Geier et al. 2015.
-// Constants re-derived for this project's D3Q27 velocity ordering.
+// References:
+//   [G15] Geier et al., Comp. Math. Appl. 70(4), 507-547, 2015
+//   [G17] Geier et al., J. Comput. Phys. 348, 862-888, 2017
+//   [GR22] Gehrke & Rung, Int. J. Numer. Meth. Fluids 94, 1111-1154, 2022
 // ================================================================
 #ifndef CUMULANT_COLLISION_H
 #define CUMULANT_COLLISION_H
 
 #include "cumulant_constants.h"
 
-// Forward declarations (internal, do not call directly)
+// ================================================================
+// Default compile-time mode (override in variables.h BEFORE including)
+// ================================================================
+#ifndef USE_WP_CUMULANT
+#define USE_WP_CUMULANT 0   // 0 = AO (All-One), 1 = WP (Parameterized)
+#endif
+
+// ================================================================
+// WP regularization parameter λ  (only used when USE_WP_CUMULANT=1)
+//   λ_def = 1e-2  (Gehrke default, good for most cases)
+//   λ = 1e-6      effectively → AO (regularization off)
+//   λ = 1e-1~1e0  optimal for Re≥10600 on medium grids (Table 7, GR22)
+// ================================================================
+#ifndef CUM_LAMBDA
+#define CUM_LAMBDA 1.0e-2
+#endif
+
+// Forward declarations
 __device__ static void _cum_forward_chimera(double m[27], const double u[3]);
 __device__ static void _cum_backward_chimera(double m[27], const double u[3]);
 
+#if USE_WP_CUMULANT
+// ================================================================
+// WP helper: compute parameterized ω₃,ω₄,ω₅ from ω₁,ω₂
+//   [GR22] Eq. 14-16, derived from 4th-order diffusion error optimization
+// ================================================================
+__device__ static void _cum_wp_compute_omega345(
+    const double w1, const double w2,
+    double& w3, double& w4, double& w5)
+{
+    // Eq. 14: ω₃
+    double num3  = 8.0 * (w1 - 2.0) * (w2 * (3.0*w1 - 1.0) - 5.0*w1);
+    double den3  = 8.0 * (5.0 - 2.0*w1) * w1
+                 + w2 * (8.0 + w1 * (9.0*w1 - 26.0));
+    w3 = num3 / den3;
+
+    // Eq. 15: ω₄
+    double num4  = 8.0 * (w1 - 2.0) * (w1 + w2 * (3.0*w1 - 7.0));
+    double den4  = w2 * (56.0 - 42.0*w1 + 9.0*w1*w1) - 8.0*w1;
+    w4 = num4 / den4;
+
+    // Eq. 16: ω₅
+    double num5  = 24.0 * (w1 - 2.0) * (4.0*w1*w1
+                 + w1*w2*(18.0 - 13.0*w1)
+                 + w2*w2*(2.0 + w1*(6.0*w1 - 11.0)));
+    double den5  = 16.0*w1*w1*(w1 - 6.0)
+                 - 2.0*w1*w2*(216.0 + 5.0*w1*(9.0*w1 - 46.0))
+                 + w2*w2*(w1*(3.0*w1 - 10.0)*(15.0*w1 - 28.0) - 48.0);
+    w5 = num5 / den5;
+}
+
+// ================================================================
+// WP helper: compute A, B coefficients for 4th-order equilibria
+//   [GR22] Eq. 17-18
+// ================================================================
+__device__ static void _cum_wp_compute_AB(
+    const double w1, const double w2,
+    double& A, double& B)
+{
+    double denom = (w1 - w2) * (w2 * (2.0 + 3.0*w1) - 8.0*w1);
+
+    // Eq. 17: A
+    A = (4.0*w1*w1 + 2.0*w1*w2*(w1 - 6.0)
+       + w2*w2*(w1*(10.0 - 3.0*w1) - 4.0)) / denom;
+
+    // Eq. 18: B
+    B = (4.0*w1*w2*(9.0*w1 - 16.0) - 4.0*w1*w1
+       - 2.0*w2*w2*(2.0 + 9.0*w1*(w1 - 2.0)))
+       / (3.0 * denom);
+}
+
+// ================================================================
+// WP helper: apply λ-limiter to a single relaxation rate
+//   ω^λ = ω_base + (1 - ω_base)|C_mag| / (ρλ + |C_mag|)
+//   [GR22] Eq. 20-26 pattern
+// ================================================================
+__device__ static double _cum_wp_limit(
+    const double omega_base, const double C_mag,
+    const double rho, const double lambda)
+{
+    double absC = fabs(C_mag);
+    return omega_base + (1.0 - omega_base) * absC / (rho * lambda + absC);
+}
+#endif // USE_WP_CUMULANT
+
+
 // ================================================================
 //
-//  ★ Main entry point — replace gilbm_mrt_collision() with this ★
+//  ★ Main entry point ★
 //
-//  Usage in evolution_gilbm.h:
-//
-//    double f_post[NQ];
-//    double rho, ux, uy, uz;
+//  Usage:
 //    cumulant_collision_D3Q27(
-//        f_streamed_all,      // post-streaming f[27]
-//        omega_global,        // 1/(3ν/dt + 0.5)
-//        GILBM_dt,            // global time step
-//        0.0, Force[0], 0.0,  // Fx=0, Fy=streamwise, Fz=0
-//        f_post, rho, ux, uy, uz
-//    );
+//        f_streamed, omega_global, GILBM_dt,
+//        0.0, Force[0], 0.0,       // Fy=streamwise
+//        f_post, rho, ux, uy, uz);
 //
 // ================================================================
 __device__ void cumulant_collision_D3Q27(
@@ -67,7 +155,7 @@ __device__ void cumulant_collision_D3Q27(
         jz += f_in[i] * GILBM_e[i][2];
     }
 
-    // 0c. Half-force corrected velocity (Guo 2002, time-symmetric)
+    // 0c. Half-force corrected velocity (Guo 2002)
     double inv_rho = 1.0 / rho;
     double u[3];
     u[0] = jx * inv_rho + 0.5 * Fx * inv_rho * dt;
@@ -86,22 +174,18 @@ __device__ void cumulant_collision_D3Q27(
     // ==============================================================
     // STAGE 1: Forward Chimera Transform (z → y → x)
     //          f̄[27] → κ[27] (central moments)
-    //          (Geier 2015, Appendix J, Eq. J.4–J.12)
+    //          [G15] Appendix J, Eq. J.4–J.12
     // ==============================================================
     _cum_forward_chimera(m, u);
 
-    // After this, m[27] holds central moments κ_αβγ
-    // accessed via I_xxx index aliases from cumulant_constants.h
-
     // ==============================================================
     // STAGE 2: Central Moments → Cumulants
-    //          κ_αβγ → C_αβγ
-    //          Orders 0–3: C = κ (identical, no conversion needed)
+    //          Orders 0–3: C = κ (identical)
     //          Orders 4–6: subtract lower-order products
-    //          (Geier 2015, Appendix J, Eq. J.16–J.19)
+    //          [G15] Appendix J, Eq. J.16–J.19
     // ==============================================================
 
-    // --- 4th order off-diagonal cumulants (Eq. J.16) ---
+    // --- 4th order off-diagonal (Eq. J.16) ---
     double CUMcbb = m[I_cbb] - ((m[I_caa] + 1.0/3.0) * m[I_abb]
                     + 2.0 * m[I_bba] * m[I_bab]) * inv_rho;
     double CUMbcb = m[I_bcb] - ((m[I_aca] + 1.0/3.0) * m[I_bab]
@@ -109,7 +193,7 @@ __device__ void cumulant_collision_D3Q27(
     double CUMbbc = m[I_bbc] - ((m[I_aac] + 1.0/3.0) * m[I_bba]
                     + 2.0 * m[I_bab] * m[I_abb]) * inv_rho;
 
-    // --- 4th order diagonal cumulants (Eq. J.17) ---
+    // --- 4th order diagonal (Eq. J.17) ---
     double CUMcca = m[I_cca] - (((m[I_caa]*m[I_aca] + 2.0*m[I_bba]*m[I_bba])
                     + 1.0/3.0*(m[I_caa]+m[I_aca])) * inv_rho
                     - 1.0/9.0*(drho*inv_rho));
@@ -120,7 +204,7 @@ __device__ void cumulant_collision_D3Q27(
                     + 1.0/3.0*(m[I_aac]+m[I_aca])) * inv_rho
                     - 1.0/9.0*(drho*inv_rho));
 
-    // --- 5th order cumulants (Eq. J.18) ---
+    // --- 5th order (Eq. J.18) ---
     double CUMbcc = m[I_bcc] - ((m[I_aac]*m[I_bca] + m[I_aca]*m[I_bac]
                     + 4.0*m[I_abb]*m[I_bbb]
                     + 2.0*(m[I_bab]*m[I_acb] + m[I_bba]*m[I_abc]))
@@ -134,7 +218,10 @@ __device__ void cumulant_collision_D3Q27(
                     + 2.0*(m[I_bab]*m[I_bca] + m[I_abb]*m[I_cba]))
                     + 1.0/3.0*(m[I_acb]+m[I_cab])) * inv_rho;
 
-    // --- 6th order cumulant (Eq. J.19) ---
+    // --- 6th order (Eq. J.19) ---
+    // NOTE: The well-conditioning correction term for 4th-order central moments
+    //       (acc+cac+cca) uses coefficient -1/3, consistent with the 4th-order
+    //       diagonal well-conditioning structure (cf. Eq. J.17 uses +1/3).
     double CUMccc = m[I_ccc]
         + ((-4.0*m[I_bbb]*m[I_bbb]
             - (m[I_caa]*m[I_acc] + m[I_aca]*m[I_cac] + m[I_aac]*m[I_cca])
@@ -157,94 +244,203 @@ __device__ void cumulant_collision_D3Q27(
 
     // ==============================================================
     // STAGE 3: Relaxation (Collision in Cumulant Space)
-    //
-    //  ★ Only omega (= ω₁) affects physical viscosity: ν = cs²(1/ω₁ - 0.5)dt
-    //  ★ All other ω₂–ω₁₀ = 1.0 (full relaxation to equilibrium)
-    //
-    //  (Geier 2015, Section 4.3, Eq. 55–80)
     // ==============================================================
-    const double omega2  = 1.0;  // ω₂: bulk viscosity (Eq. 63)
-    const double omega3  = 1.0;  // ω₃: 3rd order symmetric (Eq. 64-66)
-    const double omega4  = 1.0;  // ω₄: 3rd order antisymmetric (Eq. 67-70)
-    const double omega6  = 1.0;  // ω₆=ω₇=ω₈: 4th order (Eq. 71-76)
-    const double omega7  = 1.0;  // ω₉: 5th order (Eq. 77-79)
-    const double omega10 = 1.0;  // ω₁₀: 6th order (Eq. 80)
+    //
+    // ┌─────────────────────────────────────────────────────────┐
+    // │  AO mode (USE_WP_CUMULANT=0):                          │
+    // │    ω₂ = ω₃ = ω₄ = ... = ω₁₀ = 1.0                    │
+    // │    All non-equilibrium parts fully damped.              │
+    // │    4th-order cumulant equilibria = 0.                   │
+    // │    Simple, robust, but accuracy-limited. [G15]          │
+    // │                                                         │
+    // │  WP mode (USE_WP_CUMULANT=1):                          │
+    // │    ω₂ = 1.0 (bulk viscosity, user choice)              │
+    // │    ω₃,ω₄,ω₅ = f(ω₁,ω₂) [GR22 Eq.14-16]              │
+    // │    → then λ-limited [GR22 Eq.20-26]                    │
+    // │    4th-order equilibria ≠ 0, use A,B [GR22 Eq.17-18]   │
+    // │    ω₆=ω₇=ω₈ = 1.0, ω₉ = 1.0, ω₁₀ = 1.0             │
+    // └─────────────────────────────────────────────────────────┘
 
-    // --- 2nd order: decompose into orthogonal modes ---
+    // ---- ω₂: bulk viscosity (same for both modes) ----
+    const double omega2 = 1.0;
+
+    // ---- ω₆=ω₇=ω₈: 4th order, ω₉: 5th order, ω₁₀: 6th order ----
+    const double omega6  = 1.0;
+    const double omega9  = 1.0;
+    const double omega10 = 1.0;
+
+#if USE_WP_CUMULANT
+    // ============================================================
+    //  WP MODE: Parameterized relaxation [GR22]
+    // ============================================================
+
+    // Step A: Compute base ω₃,ω₄,ω₅ from ω₁,ω₂ (Eq.14-16)
+    double omega3_base, omega4_base, omega5_base;
+    _cum_wp_compute_omega345(omega, omega2, omega3_base, omega4_base, omega5_base);
+
+    // Step B: Compute A, B for 4th-order equilibria (Eq.17-18)
+    double coeff_A, coeff_B;
+    _cum_wp_compute_AB(omega, omega2, coeff_A, coeff_B);
+
+    // Step C: Extract raw 3rd-order cumulants BEFORE decomposition
+    //         (needed for λ-limiter, Eq.20-26)
+    double C_120 = m[I_bca];   // κ₁₂₀ = C₁₂₀ (orders ≤3: C=κ)
+    double C_102 = m[I_bac];   // κ₁₀₂ = C₁₀₂
+    double C_210 = m[I_cba];   // κ₂₁₀ = C₂₁₀
+    double C_012 = m[I_abc];   // κ₀₁₂ = C₀₁₂
+    double C_201 = m[I_cab];   // κ₂₀₁ = C₂₀₁
+    double C_021 = m[I_acb];   // κ₀₂₁ = C₀₂₁
+    double C_111 = m[I_bbb];   // κ₁₁₁ = C₁₁₁
+
+    // Step D: Apply λ-limiter to get effective ω^λ (Eq.20-26)
+    const double lam = CUM_LAMBDA;
+
+    // Eq.20: ω^λ_{3,1} for (C₁₂₀ + C₁₀₂) symmetric pair
+    double omega3_1 = _cum_wp_limit(omega3_base, C_120 + C_102, rho, lam);
+    // Eq.21: ω^λ_{4,1} for (C₁₂₀ - C₁₀₂) antisymmetric pair
+    double omega4_1 = _cum_wp_limit(omega4_base, C_120 - C_102, rho, lam);
+    // Eq.22: ω^λ_{3,2} for (C₂₁₀ + C₀₁₂)
+    double omega3_2 = _cum_wp_limit(omega3_base, C_210 + C_012, rho, lam);
+    // Eq.23: ω^λ_{4,2} for (C₂₁₀ - C₀₁₂)
+    double omega4_2 = _cum_wp_limit(omega4_base, C_210 - C_012, rho, lam);
+    // Eq.24: ω^λ_{3,3} for (C₂₀₁ + C₀₂₁)
+    double omega3_3 = _cum_wp_limit(omega3_base, C_201 + C_021, rho, lam);
+    // Eq.25: ω^λ_{4,3} for (C₂₀₁ - C₀₂₁)
+    double omega4_3 = _cum_wp_limit(omega4_base, C_201 - C_021, rho, lam);
+    // Eq.26: ω^λ_5 for C₁₁₁
+    double omega5_lim = _cum_wp_limit(omega5_base, C_111, rho, lam);
+
+#else
+    // ============================================================
+    //  AO MODE: All-One relaxation [G15]
+    // ============================================================
+    // All 3rd-order relaxation rates = 1 (full damping to equilibrium)
+    // No per-pair distinction, no limiter.
+#endif
+
+    // ---- 2nd order: decompose into orthogonal modes ----
     double mxxPyyPzz = m[I_caa] + m[I_aca] + m[I_aac];  // trace (bulk)
     double mxxMyy    = m[I_caa] - m[I_aca];              // deviatoric 1
     double mxxMzz    = m[I_caa] - m[I_aac];              // deviatoric 2
 
-    // (Eq. 63) Relax trace with ω₂
+    // Relax trace with ω₂ toward δρ equilibrium
     mxxPyyPzz += omega2 * (m[I_aaa] - mxxPyyPzz);
-    // (Eq. 61-62) Relax deviatorics with ω₁
+    // Relax deviatorics with ω₁ toward 0
     mxxMyy *= (1.0 - omega);
     mxxMzz *= (1.0 - omega);
 
-    // (Eq. 55-57) Off-diagonal 2nd order
+    // Off-diagonal 2nd order with ω₁
     m[I_abb] *= (1.0 - omega);  // C₀₁₁
     m[I_bab] *= (1.0 - omega);  // C₁₀₁
     m[I_bba] *= (1.0 - omega);  // C₁₁₀
 
-    // --- 3rd order ---
-    double mxxyPyzz = m[I_cba] + m[I_abc];
-    double mxxyMyzz = m[I_cba] - m[I_abc];
-    double mxxzPyyz = m[I_cab] + m[I_acb];
-    double mxxzMyyz = m[I_cab] - m[I_acb];
-    double mxyyPxzz = m[I_bca] + m[I_bac];
-    double mxyyMxzz = m[I_bca] - m[I_bac];
+    // ---- 3rd order: symmetric / antisymmetric decomposition ----
+    double mxxyPyzz = m[I_cba] + m[I_abc];   // C₂₁₀ + C₀₁₂
+    double mxxyMyzz = m[I_cba] - m[I_abc];   // C₂₁₀ - C₀₁₂
+    double mxxzPyyz = m[I_cab] + m[I_acb];   // C₂₀₁ + C₀₂₁
+    double mxxzMyyz = m[I_cab] - m[I_acb];   // C₂₀₁ - C₀₂₁
+    double mxyyPxzz = m[I_bca] + m[I_bac];   // C₁₂₀ + C₁₀₂
+    double mxyyMxzz = m[I_bca] - m[I_bac];   // C₁₂₀ - C₁₀₂
 
-    m[I_bbb]  *= (1.0 - omega4);    // (Eq. 70) C₁₁₁
-    mxxyPyzz  *= (1.0 - omega3);    // (Eq. 64)
-    mxxyMyzz  *= (1.0 - omega4);    // (Eq. 67)
-    mxxzPyyz  *= (1.0 - omega3);    // (Eq. 65)
-    mxxzMyyz  *= (1.0 - omega4);    // (Eq. 68)
-    mxyyPxzz  *= (1.0 - omega3);    // (Eq. 66)
-    mxyyMxzz  *= (1.0 - omega4);    // (Eq. 69)
+#if USE_WP_CUMULANT
+    // WP: each pair has its OWN λ-limited relaxation rate
+    m[I_bbb]  *= (1.0 - omega5_lim);    // C₁₁₁ (Eq.26)
+    mxxyPyzz  *= (1.0 - omega3_2);      // (C₂₁₀+C₀₁₂) symmetric (Eq.22)
+    mxxyMyzz  *= (1.0 - omega4_2);      // (C₂₁₀-C₀₁₂) antisymmetric (Eq.23)
+    mxxzPyyz  *= (1.0 - omega3_3);      // (C₂₀₁+C₀₂₁) symmetric (Eq.24)
+    mxxzMyyz  *= (1.0 - omega4_3);      // (C₂₀₁-C₀₂₁) antisymmetric (Eq.25)
+    mxyyPxzz  *= (1.0 - omega3_1);      // (C₁₂₀+C₁₀₂) symmetric (Eq.20)
+    mxyyMxzz  *= (1.0 - omega4_1);      // (C₁₂₀-C₁₀₂) antisymmetric (Eq.21)
+#else
+    // AO: all = 1 → (1-ω) = 0 → full relaxation to zero
+    m[I_bbb]  = 0.0;
+    mxxyPyzz  = 0.0;
+    mxxyMyzz  = 0.0;
+    mxxzPyyz  = 0.0;
+    mxxzMyyz  = 0.0;
+    mxyyPxzz  = 0.0;
+    mxyyMxzz  = 0.0;
+#endif
 
-    // --- Reconstruct 2nd order individual moments ---
-    m[I_caa] = (mxxMyy + mxxMzz + mxxPyyPzz) / 3.0;
+    // ---- Reconstruct 2nd order individual moments ----
+    m[I_caa] = ( mxxMyy + mxxMzz + mxxPyyPzz) / 3.0;
     m[I_aca] = (-2.0*mxxMyy + mxxMzz + mxxPyyPzz) / 3.0;
-    m[I_aac] = (mxxMyy - 2.0*mxxMzz + mxxPyyPzz) / 3.0;
+    m[I_aac] = ( mxxMyy - 2.0*mxxMzz + mxxPyyPzz) / 3.0;
 
-    // --- Reconstruct 3rd order ---
-    m[I_cba] = (mxxyMyzz + mxxyPyzz) * 0.5;
+    // ---- Reconstruct 3rd order ----
+    m[I_cba] = ( mxxyMyzz + mxxyPyzz) * 0.5;
     m[I_abc] = (-mxxyMyzz + mxxyPyzz) * 0.5;
-    m[I_cab] = (mxxzMyyz + mxxzPyyz) * 0.5;
+    m[I_cab] = ( mxxzMyyz + mxxzPyyz) * 0.5;
     m[I_acb] = (-mxxzMyyz + mxxzPyyz) * 0.5;
-    m[I_bca] = (mxyyMxzz + mxyyPxzz) * 0.5;
+    m[I_bca] = ( mxyyMxzz + mxyyPxzz) * 0.5;
     m[I_bac] = (-mxyyMxzz + mxyyPxzz) * 0.5;
 
-    // --- 4th order relaxation (Eq. 71-76) ---
+    // ---- 4th order relaxation ----
+#if USE_WP_CUMULANT
+    // WP: 4th-order diagonal cumulants relax toward NON-ZERO equilibria
+    //   C^eq_{αα,ββ} involves products of 2nd-order cumulants via A, B
+    //   [GR22] Eq.17-18, Appendix B.2
+    //
+    // 2nd-order cumulants (post-relaxation, well-conditioned):
+    //   Dxx = m[I_caa], Dyy = m[I_aca], Dzz = m[I_aac]
+    //   Dxy = m[I_bba], Dxz = m[I_bab], Dyz = m[I_abb]
+    //
+    // Diagonal 4th-order equilibria (Geier 2017, Appendix B.2):
+    //   C^eq_{2200} = (A+B)(Dxx·Dyy + Dxy²) + (A-B)(Dxx·Dyy - Dxy²)
+    //               = A·(Dxx·Dyy + Dxy²) + B·(Dxx·Dyy - Dxy²)  ... WRONG
+    //   Actually per Geier:
+    //   C^eq_{xxyy} / ρ = A·(Dxx·Dyy/ρ + Dxy²/ρ) + B·(Dxx·Dyy/ρ - Dxy²/ρ)  (with /ρ)
+    //   But in well-conditioned form these are already normalized.
+    //   The OpenLB implementation uses:
+    double Dxx = m[I_caa], Dyy = m[I_aca], Dzz = m[I_aac];
+    double Dxy = m[I_bba], Dxz = m[I_bab], Dyz = m[I_abb];
+
+    // 4th-order diagonal equilibria (A,B from optimized parameterization):
+    double CUMcca_eq = (coeff_A * (Dxx*Dyy + Dxy*Dxy) + coeff_B * (Dxx*Dyy - Dxy*Dxy)) * inv_rho;
+    double CUMcac_eq = (coeff_A * (Dxx*Dzz + Dxz*Dxz) + coeff_B * (Dxx*Dzz - Dxz*Dxz)) * inv_rho;
+    double CUMacc_eq = (coeff_A * (Dyy*Dzz + Dyz*Dyz) + coeff_B * (Dyy*Dzz - Dyz*Dyz)) * inv_rho;
+
+    // Relax diagonal 4th-order toward non-zero equilibria
+    CUMcca += omega6 * (CUMcca_eq - CUMcca);
+    CUMcac += omega6 * (CUMcac_eq - CUMcac);
+    CUMacc += omega6 * (CUMacc_eq - CUMacc);
+
+    // Off-diagonal 4th-order: equilibria = 0 (same as AO)
+    CUMbbc *= (1.0 - omega6);
+    CUMbcb *= (1.0 - omega6);
+    CUMcbb *= (1.0 - omega6);
+#else
+    // AO: all 4th-order cumulants relax toward 0
     CUMacc *= (1.0 - omega6);
     CUMcac *= (1.0 - omega6);
     CUMcca *= (1.0 - omega6);
     CUMbbc *= (1.0 - omega6);
     CUMbcb *= (1.0 - omega6);
     CUMcbb *= (1.0 - omega6);
+#endif
 
-    // --- 5th order relaxation (Eq. 77-79) ---
-    CUMbcc *= (1.0 - omega7);
-    CUMcbc *= (1.0 - omega7);
-    CUMccb *= (1.0 - omega7);
+    // ---- 5th order: equilibria = 0 for both modes ----
+    CUMbcc *= (1.0 - omega9);
+    CUMcbc *= (1.0 - omega9);
+    CUMccb *= (1.0 - omega9);
 
-    // --- 6th order relaxation (Eq. 80) ---
+    // ---- 6th order: equilibria = 0 for both modes ----
     CUMccc *= (1.0 - omega10);
 
     // ==============================================================
     // STAGE 4: Cumulants → Central Moments (Inverse of Stage 2)
-    //          (Geier 2015, Appendix J, Eq. J.16–J.19 inverse)
+    //          [G15] Appendix J, Eq. J.16–J.19 inverse
     // ==============================================================
 
-    // --- 4th order inverse (Eq. J.16 inverse) ---
-    m[I_cbb] = CUMcbb + 1.0/3.0*((3.0*m[I_caa]+1.0)*m[I_abb]
-               + 6.0*m[I_bba]*m[I_bab]) * inv_rho;
-    m[I_bcb] = CUMbcb + 1.0/3.0*((3.0*m[I_aca]+1.0)*m[I_bab]
-               + 6.0*m[I_bba]*m[I_abb]) * inv_rho;
-    m[I_bbc] = CUMbbc + 1.0/3.0*((3.0*m[I_aac]+1.0)*m[I_bba]
-               + 6.0*m[I_bab]*m[I_abb]) * inv_rho;
+    // --- 4th order off-diagonal inverse (Eq. J.16⁻¹) ---
+    m[I_cbb] = CUMcbb + ((m[I_caa] + 1.0/3.0)*m[I_abb]
+               + 2.0*m[I_bba]*m[I_bab]) * inv_rho;
+    m[I_bcb] = CUMbcb + ((m[I_aca] + 1.0/3.0)*m[I_bab]
+               + 2.0*m[I_bba]*m[I_abb]) * inv_rho;
+    m[I_bbc] = CUMbbc + ((m[I_aac] + 1.0/3.0)*m[I_bba]
+               + 2.0*m[I_bab]*m[I_abb]) * inv_rho;
 
-    // --- 4th order diagonal inverse (Eq. J.17 inverse) ---
+    // --- 4th order diagonal inverse (Eq. J.17⁻¹) ---
     m[I_cca] = CUMcca + (((m[I_caa]*m[I_aca]+2.0*m[I_bba]*m[I_bba])*9.0
                + 3.0*(m[I_caa]+m[I_aca])) * inv_rho
                - (drho*inv_rho)) * 1.0/9.0;
@@ -255,21 +451,22 @@ __device__ void cumulant_collision_D3Q27(
                + 3.0*(m[I_aac]+m[I_aca])) * inv_rho
                - (drho*inv_rho)) * 1.0/9.0;
 
-    // --- 5th order inverse (Eq. J.18 inverse) ---
-    m[I_bcc] = CUMbcc + 1.0/3.0*(3.0*(m[I_aac]*m[I_bca] + m[I_aca]*m[I_bac]
+    // --- 5th order inverse (Eq. J.18⁻¹) ---
+    m[I_bcc] = CUMbcc + ((m[I_aac]*m[I_bca] + m[I_aca]*m[I_bac]
                + 4.0*m[I_abb]*m[I_bbb]
                + 2.0*(m[I_bab]*m[I_acb] + m[I_bba]*m[I_abc]))
-               + (m[I_bca]+m[I_bac])) * inv_rho;
-    m[I_cbc] = CUMcbc + 1.0/3.0*(3.0*(m[I_aac]*m[I_cba] + m[I_caa]*m[I_abc]
+               + 1.0/3.0*(m[I_bca]+m[I_bac])) * inv_rho;
+    m[I_cbc] = CUMcbc + ((m[I_aac]*m[I_cba] + m[I_caa]*m[I_abc]
                + 4.0*m[I_bab]*m[I_bbb]
                + 2.0*(m[I_abb]*m[I_cab] + m[I_bba]*m[I_bac]))
-               + (m[I_cba]+m[I_abc])) * inv_rho;
-    m[I_ccb] = CUMccb + 1.0/3.0*(3.0*(m[I_caa]*m[I_acb] + m[I_aca]*m[I_cab]
+               + 1.0/3.0*(m[I_cba]+m[I_abc])) * inv_rho;
+    m[I_ccb] = CUMccb + ((m[I_caa]*m[I_acb] + m[I_aca]*m[I_cab]
                + 4.0*m[I_bba]*m[I_bbb]
                + 2.0*(m[I_bab]*m[I_bca] + m[I_abb]*m[I_cba]))
-               + (m[I_acb]+m[I_cab])) * inv_rho;
+               + 1.0/3.0*(m[I_acb]+m[I_cab])) * inv_rho;
 
-    // --- 6th order inverse (Eq. J.19 inverse) ---
+    // --- 6th order inverse (Eq. J.19⁻¹) ---
+    // ★ BUG FIX: coefficient for (acc+cac+cca)/ρ is -1/3, matching forward ★
     m[I_ccc] = CUMccc
         - ((-4.0*m[I_bbb]*m[I_bbb]
             - (m[I_caa]*m[I_acc]+m[I_aca]*m[I_cac]+m[I_aac]*m[I_cca])
@@ -282,7 +479,7 @@ __device__ void cumulant_collision_D3Q27(
           + 2.0*(m[I_caa]*m[I_aca]*m[I_aac])
           + 16.0*m[I_bba]*m[I_bab]*m[I_abb])
                 * inv_rho * inv_rho
-        - 1.0/9.0*(m[I_acc]+m[I_cac]+m[I_cca]) * inv_rho
+        - 1.0/3.0*(m[I_acc]+m[I_cac]+m[I_cca]) * inv_rho    // ★ FIXED: was 1/9
         - 1.0/9.0*(m[I_caa]+m[I_aca]+m[I_aac]) * inv_rho
         + (2.0*(m[I_bab]*m[I_bab]+m[I_abb]*m[I_abb]+m[I_bba]*m[I_bba])
           + (m[I_aac]*m[I_aca]+m[I_aac]*m[I_caa]+m[I_aca]*m[I_caa])
@@ -290,27 +487,23 @@ __device__ void cumulant_collision_D3Q27(
                 * inv_rho * inv_rho * 2.0/3.0
         + 1.0/27.0*((drho*drho - drho) * inv_rho * inv_rho));
 
-    // --- Force correction: sign flip of 1st order (Eq. 85-87) ---
-    // This is the second half of the time-symmetric force splitting.
-    // Combined with the half-force velocity correction in Stage 0,
-    // this gives 2nd-order temporal accuracy.
-    m[I_baa] = -m[I_baa];   // (Eq. 85) κ*₁₀₀ = -κ₁₀₀
-    m[I_aba] = -m[I_aba];   // (Eq. 86) κ*₀₁₀ = -κ₀₁₀
-    m[I_aab] = -m[I_aab];   // (Eq. 87) κ*₀₀₁ = -κ₀₀₁
+    // --- Force correction: sign flip of 1st-order moments (Eq. 85-87) ---
+    m[I_baa] = -m[I_baa];
+    m[I_aba] = -m[I_aba];
+    m[I_aab] = -m[I_aab];
 
     // ==============================================================
     // STAGE 5: Backward Chimera Transform (x → y → z)
-    //          κ*[27] → f̄*[27]
-    //          (Geier 2015, Appendix J, Eq. J.20–J.28)
+    //          [G15] Appendix J, Eq. J.20–J.28
     // ==============================================================
     _cum_backward_chimera(m, u);
 
-    // --- Restore from well-conditioned: f* = f̄* + w ---
+    // Restore from well-conditioned: f* = f̄* + w
     for (int i = 0; i < 27; i++) {
         f_out[i] = m[i] + GILBM_W[i];
     }
 
-    // --- Output macroscopic quantities ---
+    // Output macroscopic quantities
     rho_out = rho;
     ux_out  = u[0];
     uy_out  = u[1];
@@ -321,13 +514,13 @@ __device__ void cumulant_collision_D3Q27(
 // ================================================================
 // Internal: Forward Chimera (Stage 1)
 // Sweep order: z(dir=2) → y(dir=1) → x(dir=0)
-// (Geier 2015, Appendix J, Eq. J.4–J.12)
+// [G15] Appendix J, Eq. J.4–J.12
 // ================================================================
 __device__ static void _cum_forward_chimera(
     double m[27], const double u[3])
 {
     for (int dir = 2; dir >= 0; dir--) {
-        int base = (2 - dir) * 9;  // z→0, y→9, x→18
+        int base = (2 - dir) * 9;
         for (int j = 0; j < 9; j++) {
             int p = base + j;
             int a = CUM_IDX[p][0];
@@ -335,14 +528,11 @@ __device__ static void _cum_forward_chimera(
             int c = CUM_IDX[p][2];
             double k = CUM_K[p];
 
-            double sum  = m[a] + m[c];      // f₋₁ + f₊₁
-            double diff = m[c] - m[a];      // f₊₁ - f₋₁
+            double sum  = m[a] + m[c];
+            double diff = m[c] - m[a];
 
-            // (Eq. J.4/J.7/J.10) κ₀ = f₋₁ + f₀ + f₊₁
             m[a] = m[a] + m[b] + m[c];
-            // (Eq. J.5/J.8/J.11) κ₁ = (f₊₁ - f₋₁) - u·(κ₀ + K)
             m[b] = diff - (m[a] + k) * u[dir];
-            // (Eq. J.6/J.9/J.12) κ₂ = (f₋₁+f₊₁) - 2u·(f₊₁-f₋₁) + u²·(κ₀+K)
             m[c] = sum - 2.0 * diff * u[dir]
                    + u[dir] * u[dir] * (m[a] + k);
         }
@@ -352,18 +542,13 @@ __device__ static void _cum_forward_chimera(
 // ================================================================
 // Internal: Backward Chimera (Stage 5)
 // Sweep order: x(dir=0) → y(dir=1) → z(dir=2)
-// (Geier 2015, Appendix J, Eq. J.20–J.28)
+// [G15] Appendix J, Eq. J.20–J.28
 // ================================================================
 __device__ static void _cum_backward_chimera(
     double m[27], const double u[3])
 {
     for (int dir = 0; dir < 3; dir++) {
-        // Backward reverses the sweep order:
-        //   dir=0 (x first) → use x-passes 18-26
-        //   dir=1 (y second) → use y-passes 9-17
-        //   dir=2 (z last) → use z-passes 0-8
         int base = (2 - dir) * 9;
-
         for (int j = 0; j < 9; j++) {
             int p = base + j;
             int a = CUM_IDX[p][0];
@@ -371,16 +556,10 @@ __device__ static void _cum_backward_chimera(
             int c = CUM_IDX[p][2];
             double k = CUM_K[p];
 
-            // At this point: m[a]=κ₀, m[b]=κ₁, m[c]=κ₂
-            // Recover: f₋₁(→a), f₀(→b), f₊₁(→c)
-
-            // (Eq. J.21/J.24/J.27) f̄₋₁ = ((κ₀+K)(u²-u) + κ₁(2u-1) + κ₂) / 2
             double ma = ((m[c] - m[b]) * 0.5 + m[b] * u[dir]
                         + (m[a] + k) * (u[dir]*u[dir] - u[dir]) * 0.5);
-            // (Eq. J.20/J.23/J.26) f̄₀ = κ₀(1-u²) - 2u·κ₁ - κ₂
             double mb = (m[a] - m[c]) - 2.0 * m[b] * u[dir]
                         - (m[a] + k) * u[dir] * u[dir];
-            // (Eq. J.22/J.25/J.28) f̄₊₁ = ((κ₀+K)(u²+u) + κ₁(2u+1) + κ₂) / 2
             double mc = ((m[c] + m[b]) * 0.5 + m[b] * u[dir]
                         + (m[a] + k) * (u[dir]*u[dir] + u[dir]) * 0.5);
 

@@ -53,6 +53,11 @@ __constant__ double GILBM_S[NQ];
 #include "interpolation_gilbm.h"
 #include "boundary_conditions.h"
 
+#if USE_CUMULANT
+// D3Q27 Cumulant collision (AO or WP mode, selected by USE_WP_CUMULANT)
+#include "../Cumulants/cumulant_collision.h"
+#endif
+
 #define STENCIL_SIZE 7
 #define STENCIL_VOL  343  // 7*7*7
 
@@ -344,7 +349,35 @@ __device__ void gilbm_compute_point_gts(
     w_out[index] = w_A;
 
     // ── STEP 2: Point-wise collision at A (no 343-loop, no Re-estimation) ──
-#if USE_MRT
+    // 三種碰撞算子: Cumulant (AO/WP) > MRT > BGK
+#if USE_CUMULANT
+    // ================================================================
+    // Cumulant collision (D3Q27 native)
+    // ── AO or WP mode selected by USE_WP_CUMULANT in variables.h ──
+    //
+    // Interface: f_in[27], ω₁, dt, Fx, Fy, Fz → f_out[27], ρ, ux, uy, uz
+    // Guo forcing (half-force velocity correction) handled INSIDE cumulant.
+    // rho_A / u_A / v_A / w_A are RE-WRITTEN by the cumulant kernel
+    // (they include the half-force correction from the Chimera transform).
+    // ================================================================
+    {
+        double f_post[NQ];
+        double rho_cum, ux_cum, uy_cum, uz_cum;
+        cumulant_collision_D3Q27(
+            f_streamed_all, omega_global, GILBM_dt,
+            0.0, Force[0], 0.0,       // Fx=0, Fy=streamwise force, Fz=0
+            f_post, rho_cum, ux_cum, uy_cum, uz_cum);
+
+        for (int q = 0; q < NQ; q++)
+            f_new_ptrs[q][index] = f_post[q];
+
+        // Overwrite macroscopic outputs with cumulant's half-force-corrected values
+        rho_out_arr[index] = rho_cum;
+        u_out[index] = ux_cum;
+        v_out[index] = uy_cum;
+        w_out[index] = uz_cum;
+    }
+#elif USE_MRT
     // D3Q27 MRT collision with Guo forcing (2nd-order accurate)
     gilbm_mrt_collision(f_streamed_all, feq_A, rho_A, u_A, v_A, w_A, GILBM_dt, Force[0]);
     for (int q = 0; q < NQ; q++)
