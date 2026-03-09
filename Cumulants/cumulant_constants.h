@@ -6,7 +6,7 @@
 // (MRT_Matrix_D3Q27.h: rest=0, faces=1-6, xy-edges=7-10,
 //  xz-edges=11-14, yz-edges=15-18, corners=19-26)
 //
-// Source: OpenLB cum.h (GPL v2+) — constants re-derived for our ordering
+// Source: OpenLB cum.h (GPL v2+)  constants re-derived for our ordering
 // Reference: Geier et al., Comp. Math. Appl. 70(4), 507-547, 2015
 // ================================================================
 #ifndef CUMULANT_CONSTANTS_H
@@ -19,7 +19,7 @@
 //
 // Each row {a, b, c} groups three populations (or intermediate values):
 //   Forward:  a = negative component, b = zero component, c = positive component
-//   After transform: a → κ₀ (sum), b → κ₁ (1st moment), c → κ₂ (2nd moment)
+//   After transform: a -> kappa0 (sum), b -> kappa1 (1st moment), c -> kappa2 (2nd moment)
 //
 // Z-sweep: group by (ex,ey), order by ez = {-1, 0, +1}
 // Y-sweep: group by (ex, z-order), order by ey = {-1, 0, +1}
@@ -94,10 +94,10 @@ __constant__ int CUM_IDX[27][3] = {
 // K constants for well-conditioned Chimera transform
 // ================================================================
 // Computed by applying the Chimera forward transform to the D3Q27
-// weight array W[27] with u=0. K[p] = κ₀ (sum of triplet) at pass p,
-// accounting for cascading through z → y → x sweeps.
+// weight array W[27] with u=0. K[p] = kappa0 (sum of triplet) at pass p,
+// accounting for cascading through z -> y -> x sweeps.
 //
-// These correct for the well-conditioned formulation f̄ = f - w.
+// These correct for the well-conditioned formulation f = f - w.
 // ================================================================
 __constant__ double CUM_K[27] = {
     // z-sweep (passes 0-8):
@@ -126,7 +126,7 @@ __constant__ double CUM_K[27] = {
 
     // x-sweep (passes 18-26):
     //   K = sum of 3 y-transformed values in each x-triplet
-    1.0,          // pass 18: (yord=0,zord=0) → total weight sum = 1
+    1.0,          // pass 18: (yord=0,zord=0) -> total weight sum = 1
     0.0,          // pass 19: (yord=1,zord=0)
     1.0/3.0,      // pass 20: (yord=2,zord=0)
     0.0,          // pass 21: (yord=0,zord=1)
@@ -140,61 +140,61 @@ __constant__ double CUM_K[27] = {
 // ================================================================
 // 27-element moment array index aliases
 // ================================================================
-// After the full Chimera forward transform (z→y→x), array position [p]
-// holds central moment κ_{αβγ} where α=x-order, β=y-order, γ=z-order.
+// After the full Chimera forward transform (z->y->x), array position [p]
+// holds central moment kappa_{alphabetagamma} where alpha=x-order, beta=y-order, gamma=z-order.
 //
-// Naming: I_{αβγ} where a=order 0, b=order 1, c=order 2
-//   maaa = κ₀₀₀ = δρ (density deviation)
-//   mbaa = κ₁₀₀ = 1st moment x (after well-conditioning + Chimera)
-//   mabb = κ₀₁₁ = off-diagonal stress yz
-//   mcaa = κ₂₀₀ = diagonal stress xx
-//   mbbb = κ₁₁₁ = 3rd order xyz
-//   mccc = κ₂₂₂ = 6th order
+// Naming: I_{alphabetagamma} where a=order 0, b=order 1, c=order 2
+//   maaa = kappa000 = rho (density deviation)
+//   mbaa = kappa100 = 1st moment x (after well-conditioning + Chimera)
+//   mabb = kappa011 = off-diagonal stress yz
+//   mcaa = kappa200 = diagonal stress xx
+//   mbbb = kappa111 = 3rd order xyz
+//   mccc = kappa222 = 6th order
 //
 // Derived from our velocity ordering by tracing through the Chimera sweeps.
 // ================================================================
 
 // 0th order
-#define I_aaa 26    // κ₀₀₀ = δρ
+#define I_aaa 26    // kappa000 = rho
 
 // 1st order
-#define I_baa 18    // κ₁₀₀ (x-momentum)
-#define I_aba 14    // κ₀₁₀ (y-momentum)
-#define I_aab 10    // κ₀₀₁ (z-momentum)
+#define I_baa 18    // kappa100 (x-momentum)
+#define I_aba 14    // kappa010 (y-momentum)
+#define I_aab 10    // kappa001 (z-momentum)
 
 // 2nd order diagonal
-#define I_caa 25    // κ₂₀₀ (xx-stress)
-#define I_aca 24    // κ₀₂₀ (yy-stress)
-#define I_aac 22    // κ₀₀₂ (zz-stress)
+#define I_caa 25    // kappa200 (xx-stress)
+#define I_aca 24    // kappa020 (yy-stress)
+#define I_aac 22    // kappa002 (zz-stress)
 
 // 
-#define I_bba  6    // κ₁₁₀ (xy-stress)
-#define I_bab  4    // κ₁₀₁ (xz-stress)
-#define I_abb  2    // κ₀₁₁ (yz-stress)
+#define I_bba  6    // kappa110 (xy-stress)
+#define I_bab  4    // kappa101 (xz-stress)
+#define I_abb  2    // kappa011 (yz-stress)
 
 // 3rd order
-#define I_bbb  0    // κ₁₁₁
-#define I_cba 13    // κ₂₁₀
-#define I_bca 17    // κ₁₂₀
-#define I_cab  9    // κ₂₀₁
-#define I_acb  8    // κ₀₂₁
-#define I_bac 16    // κ₁₀₂
-#define I_abc 12    // κ₀₁₂
+#define I_bbb  0    // kappa111
+#define I_cba 13    // kappa210
+#define I_bca 17    // kappa120
+#define I_cab  9    // kappa201
+#define I_acb  8    // kappa021
+#define I_bac 16    // kappa102
+#define I_abc 12    // kappa012
 
 // 4th order
-#define I_cbb  1    // κ₂₁₁
-#define I_bcb  3    // κ₁₂₁
-#define I_bbc  5    // κ₁₁₂
-#define I_cca 23    // κ₂₂₀
-#define I_cac 21    // κ₂₀₂
-#define I_acc 20    // κ₀₂₂
-#define I_ccb  7    // κ₂₂₁
+#define I_cbb  1    // kappa211
+#define I_bcb  3    // kappa121
+#define I_bbc  5    // kappa112
+#define I_cca 23    // kappa220
+#define I_cac 21    // kappa202
+#define I_acc 20    // kappa022
+#define I_ccb  7    // kappa221
 
 // 5th order
-#define I_bcc 15    // κ₁₂₂
-#define I_cbc 11    // κ₂₁₂
+#define I_bcc 15    // kappa122
+#define I_cbc 11    // kappa212
 
 // 6th order
-#define I_ccc 19    // κ₂₂₂
+#define I_ccc 19    // kappa222
 
 #endif // CUMULANT_CONSTANTS_H
