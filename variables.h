@@ -46,7 +46,7 @@
 // ================================================================
 // 4. 物理參數
 // ================================================================
-#define     Re      50         // Reynolds number (基於 H_HILL 和 Uref)
+#define     Re      100         // Reynolds number (基於 H_HILL 和 Uref)
 #define     Uref    0.0583      // 參考速度 (bulk velocity)
                                 // Re700:0.0583, Re1400/2800:0.0776
                                 // Re5600:0.0464, Re10595:0.0878
@@ -93,7 +93,7 @@
 // ================================================================
 #define     USE_WP_CUMULANT     1
 #define     CUM_LAMBDA          1.0e-2
-//正則化參數引入'
+//正則化參數引入
 // ── 互斥檢查 ──
 #if USE_MRT && USE_CUMULANT
 #error "USE_MRT and USE_CUMULANT are mutually exclusive. Set only one to 1."

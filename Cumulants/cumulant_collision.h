@@ -57,17 +57,23 @@ __device__ static void _cum_backward_chimera(double m[27], const double u[3]);
 __device__ static void _cum_wp_compute_omega345(
     const double w1, const double w2,
     double& w3, double& w4, double& w5)
-{   //缺失一的部分
+{
+    // 分母零點防護 (denominator singularity guard):
+    //   den4 = 0 at ω₁ = 14/9 ≈ 1.5556 (w2=1)  → ω₄ → ±∞
+    //   den3, den5 在 (0,2) 內無零點 (w2=1), 但保守加防護
+    //   當分母 |den| < ε 時, 對應 ω 退化為 1.0 (中性鬆弛)
+    const double DEN_EPS = 1.0e-10;
+
     // Eq. 14: ω₃
     double num3  = 8.0 * (w1 - 2.0) * (w2 * (3.0*w1 - 1.0) - 5.0*w1);
     double den3  = 8.0 * (5.0 - 2.0*w1) * w1
                  + w2 * (8.0 + w1 * (9.0*w1 - 26.0));
-    w3 = num3 / den3;
+    w3 = (fabs(den3) > DEN_EPS) ? num3 / den3 : 1.0;
 
-    // Eq. 15: ω₄
+    // Eq. 15: ω₄  ← den4=0 at ω₁=14/9
     double num4  = 8.0 * (w1 - 2.0) * (w1 + w2 * (3.0*w1 - 7.0));
     double den4  = w2 * (56.0 - 42.0*w1 + 9.0*w1*w1) - 8.0*w1;
-    w4 = num4 / den4;
+    w4 = (fabs(den4) > DEN_EPS) ? num4 / den4 : 1.0;
 
     // Eq. 16: ω₅
     double num5  = 24.0 * (w1 - 2.0) * (4.0*w1*w1
@@ -76,7 +82,7 @@ __device__ static void _cum_wp_compute_omega345(
     double den5  = 16.0*w1*w1*(w1 - 6.0)
                  - 2.0*w1*w2*(216.0 + 5.0*w1*(9.0*w1 - 46.0))
                  + w2*w2*(w1*(3.0*w1 - 10.0)*(15.0*w1 - 28.0) - 48.0);
-    w5 = num5 / den5;
+    w5 = (fabs(den5) > DEN_EPS) ? num5 / den5 : 1.0;
 }
 
 // ================================================================
@@ -87,16 +93,27 @@ __device__ static void _cum_wp_compute_AB(
     const double w1, const double w2,
     double& A, double& B)
 {
+    // 分母零點: denom = (ω₁-ω₂)·(ω₂·(2+3ω₁)-8ω₁)
+    //   零點 1: ω₁ = ω₂ (= 1.0 when ω₂=1)
+    //   零點 2: ω₁ = 2ω₂/(8-3ω₂) ≈ 0.4 (when ω₂=1)
+    //   退化時 A=B=0 (退化為 AO 模式, 4 階平衡態歸零)
+    const double DEN_EPS = 1.0e-10;
     double denom = (w1 - w2) * (w2 * (2.0 + 3.0*w1) - 8.0*w1);
 
-    // Eq. 17: A
-    A = (4.0*w1*w1 + 2.0*w1*w2*(w1 - 6.0)
-       + w2*w2*(w1*(10.0 - 3.0*w1) - 4.0)) / denom;
+    if (fabs(denom) > DEN_EPS) {
+        // Eq. 17: A
+        A = (4.0*w1*w1 + 2.0*w1*w2*(w1 - 6.0)
+           + w2*w2*(w1*(10.0 - 3.0*w1) - 4.0)) / denom;
 
-    // Eq. 18: B
-    B = (4.0*w1*w2*(9.0*w1 - 16.0) - 4.0*w1*w1
-       - 2.0*w2*w2*(2.0 + 9.0*w1*(w1 - 2.0)))
-       / (3.0 * denom);
+        // Eq. 18: B
+        B = (4.0*w1*w2*(9.0*w1 - 16.0) - 4.0*w1*w1
+           - 2.0*w2*w2*(2.0 + 9.0*w1*(w1 - 2.0)))
+           / (3.0 * denom);
+    } else {
+        // 退化: ω₁=ω₂ 或近奇異 → A=B=0 (4th-order eq = 0, same as AO)
+        A = 0.0;
+        B = 0.0;
+    }
 }
 
 // ================================================================
@@ -288,9 +305,14 @@ __device__ void cumulant_collision_D3Q27(
     double coeff_A, coeff_B;
     _cum_wp_compute_AB(omega, omega2, coeff_A, coeff_B);
 
-    // Step C: Extract raw 3rd-order cumulants BEFORE decomposition
-    //         (needed for λ-limiter, Eq.20-26)
-    double C_120 = m[I_bca];   // κ₁₂₀ = C₁₂₀ (orders ≤3: C=κ)
+    // Step C: Extract raw 3rd-order cumulants BEFORE symmetric/antisymmetric
+    //         decomposition (needed for λ-limiter magnitude, Eq.20-26)
+    //
+    //   ★ 重要: λ-limiter 的幅值參數必須用【原始】累積量值, 非對稱/反對稱分解後的值
+    //     三階矩在此提取後, 經二階鬆弛 (只修改二階矩) 不會被改動,
+    //     直到 line 360+ 才做 sym/antisym 分解。
+    //     Orders ≤ 3: cumulant = central moment (C = κ), 無需額外轉換。
+    double C_120 = m[I_bca];   // κ₁₂₀ = C₁₂₀
     double C_102 = m[I_bac];   // κ₁₀₂ = C₁₀₂
     double C_210 = m[I_cba];   // κ₂₁₀ = C₂₁₀
     double C_012 = m[I_abc];   // κ₀₁₂ = C₀₁₂
