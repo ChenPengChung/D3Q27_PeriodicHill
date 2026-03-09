@@ -57,7 +57,7 @@ __device__ static void _cum_backward_chimera(double m[27], const double u[3]);
 __device__ static void _cum_wp_compute_omega345(
     const double w1, const double w2,
     double& w3, double& w4, double& w5)
-{
+{   //缺失一的部分
     // Eq. 14: ω₃
     double num3  = 8.0 * (w1 - 2.0) * (w2 * (3.0*w1 - 1.0) - 5.0*w1);
     double den3  = 8.0 * (5.0 - 2.0*w1) * w1
@@ -277,6 +277,12 @@ __device__ void cumulant_collision_D3Q27(
     // Step A: Compute base ω₃,ω₄,ω₅ from ω₁,ω₂ (Eq.14-16)
     double omega3_base, omega4_base, omega5_base;
     _cum_wp_compute_omega345(omega, omega2, omega3_base, omega4_base, omega5_base);
+
+    // Safety clamp: Eq.15 分母在 ω₁≈1.45-1.75 區間穿零, 導致 ω₄ 發散
+    // 鉗位至 [0, 2] 保證基礎鬆弛率在穩定邊界內, λ-limiter 再從此基準微調
+    omega3_base = fmax(0.0, fmin(2.0, omega3_base));
+    omega4_base = fmax(0.0, fmin(2.0, omega4_base));
+    omega5_base = fmax(0.0, fmin(2.0, omega5_base));
 
     // Step B: Compute A, B for 4th-order equilibria (Eq.17-18)
     double coeff_A, coeff_B;
