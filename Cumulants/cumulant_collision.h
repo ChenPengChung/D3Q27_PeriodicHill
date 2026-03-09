@@ -15,7 +15,7 @@
 //     Superior accuracy at moderate grids; lambda tunes DNS<->VLES blend.
 //
 // Interface:
-//   INPUT:  f_in[27], omega(=w1), dt, Fx, Fy, Fz
+//   INPUT:  f_in[27], omega(=w1), delta_t, Fx, Fy, Fz
 //   OUTPUT: f_out[27], rho, ux, uy, uz
 //
 // References:
@@ -145,7 +145,7 @@ __device__ static double _cum_wp_limit(
 __device__ void cumulant_collision_D3Q27(
     const double f_in[27],   // INPUT:  post-streaming distributions
     const double omega,      // INPUT:  shear relaxation rate w1
-    const double dt,         // INPUT:  time step (for half-force correction)
+    const double delta_t,    // INPUT:  time step (for half-force correction) [avoid macro collision with #define dt]
     const double Fx,         // INPUT:  body force x
     const double Fy,         // INPUT:  body force y
     const double Fz,         // INPUT:  body force z
@@ -175,9 +175,9 @@ __device__ void cumulant_collision_D3Q27(
     // 0c. Half-force corrected velocity (Guo 2002)
     double inv_rho = 1.0 / rho;
     double u[3];
-    u[0] = jx * inv_rho + 0.5 * Fx * inv_rho * dt;
-    u[1] = jy * inv_rho + 0.5 * Fy * inv_rho * dt;
-    u[2] = jz * inv_rho + 0.5 * Fz * inv_rho * dt;
+    u[0] = jx * inv_rho + 0.5 * Fx * inv_rho * delta_t;
+    u[1] = jy * inv_rho + 0.5 * Fy * inv_rho * delta_t;
+    u[2] = jz * inv_rho + 0.5 * Fz * inv_rho * delta_t;
 
     // 0d. Well-conditioning: f = f - w
     double m[27];
