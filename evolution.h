@@ -383,7 +383,7 @@ void Launch_ModifyForcingTerm()
             // F *= (1 - 0.1 * Re%)
             // Re% < 0 → Ub too low → increase Force
             // Re% > 0 → Ub too high → decrease Force
-            double correction = 1.0 - 0.1 * Re_pct;
+            double correction = 1.0 - 0.05 * Re_pct;
             Force_h[0] *= correction;
             ctrl_mode = "Gehrke-MULT";
         }
