@@ -6,6 +6,7 @@
 #include <mpi.h>
 #include <stdarg.h>
 #include "variables.h"
+#include "MRT_Matrix_D3Q27.h"   // NQ=27, D3Q27_ex/ey/ez/W (needed by all host-side headers)
 using namespace std;
 /************************** Host Variables **************************/
 double  *fh_p[NQ]; //主機端一般態分佈函數 (D3Q27)
