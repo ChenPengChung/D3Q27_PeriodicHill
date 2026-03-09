@@ -124,7 +124,7 @@
 #define     RESTART_VTK_FILE    "result/velocity_merged_1800001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_1800001"
+#define     RESTART_BIN_DIR     "checkpoint/step_2070001"
 
 // 統計量讀取 (僅 INIT=1 時生效)
 // 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat
