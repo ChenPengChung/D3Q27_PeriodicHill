@@ -85,7 +85,6 @@
 #define     loop        500000  // 最大時間步數
 #define     NDTMIT      50      // 每 N 步輸出 monitor 資料
 #define     NDTFRC      1000     // 每 N 步更新外力項
-#define     NDTFTC      1000    // 每 N 步調整外力 (Force Controller check interval)
 #define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
@@ -108,7 +107,7 @@
 // ====================================================================
 
 // P-additive controller//P控制外力控制增益模式 
-#define     FORCE_P_ALPHA           10.0     // aggressiveness (beta = alpha/Re)
+#define     FORCE_P_ALPHA           15.0     // aggressiveness (beta = alpha/Re)
 
 // Gehrke multiplicative controller
 #define     FORCE_GEHRKE_GAIN       0.05    // F *= (1 - gain × Re%)
@@ -149,7 +148,7 @@
 #define     RESTART_VTK_FILE    "result/velocity_merged_31001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_31001"
+#define     RESTART_BIN_DIR     "checkpoint/step_300001"
 
 // 統計量讀取 (僅 INIT=1 時生效)
 // 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat

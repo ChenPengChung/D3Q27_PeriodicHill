@@ -254,19 +254,33 @@ void Launch_ModifyForcingTerm()
     bool use_gehrke = (fabs(Re_pct) <= (double)FORCE_SWITCH_THRESHOLD);
     const char *ctrl_mode;
 
-    // Phase transition logging
+    // Phase transition logging (stdout + force_control.dat)
     if (use_gehrke && !gehrke_activated) {
         gehrke_activated = true;
-        if (myid == 0)
+        if (myid == 0) {
             printf("\n=== [Step %d | FTT=%.2f] Gehrke controller ACTIVATED "
                    "(Re%%=%.2f%%, threshold=%.1f%%) ===\n\n",
                    step, FTT, Re_pct, (double)FORCE_SWITCH_THRESHOLD);
+            FILE *fswitch = fopen("force_control.dat", "a");
+            if (fswitch) {
+                fprintf(fswitch, "# [Step %d | FTT=%.4f] SWITCH: P-ADDITIVE -> GEHRKE (Re%%=%.2f%%, threshold=%.1f%%)\n",
+                        step, FTT, Re_pct, (double)FORCE_SWITCH_THRESHOLD);
+                fclose(fswitch);
+            }
+        }
     } else if (!use_gehrke && gehrke_activated) {
         gehrke_activated = false;
-        if (myid == 0)
+        if (myid == 0) {
             printf("\n=== [Step %d | FTT=%.2f] Gehrke controller DEACTIVATED, "
                    "back to P-additive (Re%%=%.2f%%) ===\n\n",
                    step, FTT, Re_pct);
+            FILE *fswitch = fopen("force_control.dat", "a");
+            if (fswitch) {
+                fprintf(fswitch, "# [Step %d | FTT=%.4f] SWITCH: GEHRKE -> P-ADDITIVE (Re%%=%.2f%%)\n",
+                        step, FTT, Re_pct);
+                fclose(fswitch);
+            }
+        }
     }
 
     if (use_gehrke) {

@@ -225,8 +225,8 @@ int main(int argc, char *argv[])
     omega_global = (3*niu/dt_global) + 0.5 ;
     omegadt_global = omega_global*dt_global;
 
-    // Force check interval: NDTFTC steps
-    force_check_interval = NDTFTC;
+    // Force check interval: NDTFRC steps
+    force_check_interval = NDTFRC;
 
     if (myid == 0) {
         printf("  ─────────────────────────────────────────────────────────\n");
@@ -235,7 +235,7 @@ int main(int argc, char *argv[])
         printf("  ratio dt_global / minSize = %.4f\n", dt_global / (double)minSize);
         printf("  Speedup cost: %.1fx more timesteps per physical time\n", (double)minSize / dt_global);
         printf("  omega_global = %.6f, 1/omega_global = %.6f\n", omega_global, 1.0/omega_global);
-        printf("  Force check interval = %d steps (NDTFTC)\n", force_check_interval);
+        printf("  Force check interval = %d steps (NDTFRC)\n", force_check_interval);
         printf("  =============================================================\n\n");
     }
 
@@ -757,8 +757,9 @@ int main(int argc, char *argv[])
             cudaEventRecord(start1,0);
         }
 
-        // ===== Force modification (every FT/10 steps, Re%-based adaptive) =====
-        if ( step > 0 && (step % force_check_interval == 0) ) {
+        // ===== Force modification (every NDTFRC steps, Re%-based adaptive) =====
+        // NOTE: step is always ODD here (after step+=1), so use == 1 like all other periodic checks
+        if ( step > 0 && (step % force_check_interval == 1) ) {
             Launch_ModifyForcingTerm();
         }
 
