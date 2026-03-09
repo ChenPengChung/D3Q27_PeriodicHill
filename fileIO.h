@@ -252,7 +252,7 @@ void SaveBinaryCheckpoint(int ckpt_step) {
         meta.close();
         printf("[CHECKPOINT] Saved: %s/ (FTT=%.2f, accu=%d, %d files)\n",
                dir_name.c_str(), FTT_ckpt, accu_count,
-               20 + ((accu_count > 0 && (int)TBSWITCH) ? 33 : 0));
+               (NQ + 1) + ((accu_count > 0 && (int)TBSWITCH) ? 33 : 0));
     }
 }
 
