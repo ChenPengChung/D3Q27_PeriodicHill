@@ -366,7 +366,7 @@ __device__ void gilbm_compute_point_gts(
         cumulant_collision_D3Q27(
             f_streamed_all, omega_global, GILBM_dt,
             0.0, Force[0], 0.0,       // Fx=0, Fy=streamwise force, Fz=0
-            f_post, rho_cum, ux_cum, uy_cum, uz_cum);
+            f_post, &rho_cum, &ux_cum, &uy_cum, &uz_cum);
 
         for (int q = 0; q < NQ; q++)
             f_new_ptrs[q][index] = f_post[q];

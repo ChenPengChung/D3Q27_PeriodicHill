@@ -56,7 +56,7 @@ __device__ static void _cum_backward_chimera(double m[27], const double u[3]);
 // ================================================================
 __device__ static void _cum_wp_compute_omega345(
     const double w1, const double w2,
-    double& w3, double& w4, double& w5)
+    double *w3, double *w4, double *w5)
 {
     // 分母零點防護 (denominator singularity guard):
     //   den4 = 0 at ω₁ = 14/9 ≈ 1.5556 (w2=1)  → ω₄ → ±∞
@@ -68,12 +68,12 @@ __device__ static void _cum_wp_compute_omega345(
     double num3  = 8.0 * (w1 - 2.0) * (w2 * (3.0*w1 - 1.0) - 5.0*w1);
     double den3  = 8.0 * (5.0 - 2.0*w1) * w1
                  + w2 * (8.0 + w1 * (9.0*w1 - 26.0));
-    w3 = (fabs(den3) > DEN_EPS) ? num3 / den3 : 1.0;
+    *w3 = (fabs(den3) > DEN_EPS) ? num3 / den3 : 1.0;
 
     // Eq. 15: ω₄  ← den4=0 at ω₁=14/9
     double num4  = 8.0 * (w1 - 2.0) * (w1 + w2 * (3.0*w1 - 7.0));
     double den4  = w2 * (56.0 - 42.0*w1 + 9.0*w1*w1) - 8.0*w1;
-    w4 = (fabs(den4) > DEN_EPS) ? num4 / den4 : 1.0;
+    *w4 = (fabs(den4) > DEN_EPS) ? num4 / den4 : 1.0;
 
     // Eq. 16: ω₅
     double num5  = 24.0 * (w1 - 2.0) * (4.0*w1*w1
@@ -82,7 +82,7 @@ __device__ static void _cum_wp_compute_omega345(
     double den5  = 16.0*w1*w1*(w1 - 6.0)
                  - 2.0*w1*w2*(216.0 + 5.0*w1*(9.0*w1 - 46.0))
                  + w2*w2*(w1*(3.0*w1 - 10.0)*(15.0*w1 - 28.0) - 48.0);
-    w5 = (fabs(den5) > DEN_EPS) ? num5 / den5 : 1.0;
+    *w5 = (fabs(den5) > DEN_EPS) ? num5 / den5 : 1.0;
 }
 
 // ================================================================
@@ -91,7 +91,7 @@ __device__ static void _cum_wp_compute_omega345(
 // ================================================================
 __device__ static void _cum_wp_compute_AB(
     const double w1, const double w2,
-    double& A, double& B)
+    double *A, double *B)
 {
     // 分母零點: denom = (ω₁-ω₂)·(ω₂·(2+3ω₁)-8ω₁)
     //   零點 1: ω₁ = ω₂ (= 1.0 when ω₂=1)
@@ -102,17 +102,17 @@ __device__ static void _cum_wp_compute_AB(
 
     if (fabs(denom) > DEN_EPS) {
         // Eq. 17: A
-        A = (4.0*w1*w1 + 2.0*w1*w2*(w1 - 6.0)
+        *A = (4.0*w1*w1 + 2.0*w1*w2*(w1 - 6.0)
            + w2*w2*(w1*(10.0 - 3.0*w1) - 4.0)) / denom;
 
         // Eq. 18: B
-        B = (4.0*w1*w2*(9.0*w1 - 16.0) - 4.0*w1*w1
+        *B = (4.0*w1*w2*(9.0*w1 - 16.0) - 4.0*w1*w1
            - 2.0*w2*w2*(2.0 + 9.0*w1*(w1 - 2.0)))
            / (3.0 * denom);
     } else {
         // 退化: ω₁=ω₂ 或近奇異 → A=B=0 (4th-order eq = 0, same as AO)
-        A = 0.0;
-        B = 0.0;
+        *A = 0.0;
+        *B = 0.0;
     }
 }
 
@@ -150,10 +150,10 @@ __device__ void cumulant_collision_D3Q27(
     const double Fy,         // INPUT:  body force y
     const double Fz,         // INPUT:  body force z
     double       f_out[27],  // OUTPUT: post-collision distributions
-    double&      rho_out,    // OUTPUT: density
-    double&      ux_out,     // OUTPUT: velocity x (half-force corrected)
-    double&      uy_out,     // OUTPUT: velocity y
-    double&      uz_out      // OUTPUT: velocity z
+    double      *rho_out,    // OUTPUT: density
+    double      *ux_out,     // OUTPUT: velocity x (half-force corrected)
+    double      *uy_out,     // OUTPUT: velocity y
+    double      *uz_out      // OUTPUT: velocity z
 )
 {
     // ==============================================================
@@ -293,7 +293,7 @@ __device__ void cumulant_collision_D3Q27(
 
     // Step A: Compute base ω₃,ω₄,ω₅ from ω₁,ω₂ (Eq.14-16)
     double omega3_base, omega4_base, omega5_base;
-    _cum_wp_compute_omega345(omega, omega2, omega3_base, omega4_base, omega5_base);
+    _cum_wp_compute_omega345(omega, omega2, &omega3_base, &omega4_base, &omega5_base);
 
     // Safety clamp: Eq.15 分母在 ω₁≈1.45-1.75 區間穿零, 導致 ω₄ 發散
     // 鉗位至 [0, 2] 保證基礎鬆弛率在穩定邊界內, λ-limiter 再從此基準微調
@@ -303,7 +303,7 @@ __device__ void cumulant_collision_D3Q27(
 
     // Step B: Compute A, B for 4th-order equilibria (Eq.17-18)
     double coeff_A, coeff_B;
-    _cum_wp_compute_AB(omega, omega2, coeff_A, coeff_B);
+    _cum_wp_compute_AB(omega, omega2, &coeff_A, &coeff_B);
 
     // Step C: Extract raw 3rd-order cumulants BEFORE symmetric/antisymmetric
     //         decomposition (needed for λ-limiter magnitude, Eq.20-26)
@@ -532,10 +532,10 @@ __device__ void cumulant_collision_D3Q27(
     }
 
     // Output macroscopic quantities
-    rho_out = rho;
-    ux_out  = u[0];
-    uy_out  = u[1];
-    uz_out  = u[2];
+    *rho_out = rho;
+    *ux_out  = u[0];
+    *uy_out  = u[1];
+    *uz_out  = u[2];
 }
 
 
