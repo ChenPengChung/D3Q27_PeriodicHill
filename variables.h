@@ -143,7 +143,7 @@
 #define     FORCE_GEHRKE_FLOOR      0.0     // minimum Force = floor × F_Poiseuille
 
 // Controller switching
-#define     FORCE_SWITCH_THRESHOLD   20     // |Re%| ≤ 20% → Gehrke; > 20% → P-additive 此數據為外力模式轉換條件 
+#define     FORCE_SWITCH_THRESHOLD   5     // |Re%| ≤ 20% → Gehrke; > 20% → P-additive 此數據為外力模式轉換條件 
 
 // Legacy defines (kept for backward compatibility, unused by new controller)
 #define     FORCE_RE_DEADZONE       0.015   // (deprecated) was fractional dead zone
