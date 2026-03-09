@@ -225,12 +225,8 @@ int main(int argc, char *argv[])
     omega_global = (3*niu/dt_global) + 0.5 ;
     omegadt_global = omega_global*dt_global;
 
-    // Force check interval: FT/10 (one flow-through time = LY/(Uref*dt_global) steps)
-    {
-        double FT_steps = (double)flow_through_time / dt_global;  // steps per FTT
-        force_check_interval = (int)(FT_steps / 10.0);
-        if (force_check_interval < 100) force_check_interval = 100;  // safety floor
-    }
+    // Force check interval: NDTFTC steps
+    force_check_interval = NDTFTC;
 
     if (myid == 0) {
         printf("  ─────────────────────────────────────────────────────────\n");
@@ -239,7 +235,7 @@ int main(int argc, char *argv[])
         printf("  ratio dt_global / minSize = %.4f\n", dt_global / (double)minSize);
         printf("  Speedup cost: %.1fx more timesteps per physical time\n", (double)minSize / dt_global);
         printf("  omega_global = %.6f, 1/omega_global = %.6f\n", omega_global, 1.0/omega_global);
-        printf("  Force check interval = %d steps (FT/10)\n", force_check_interval);
+        printf("  Force check interval = %d steps (NDTFTC)\n", force_check_interval);
         printf("  =============================================================\n\n");
     }
 

@@ -85,6 +85,7 @@
 #define     loop        500000  // 最大時間步數
 #define     NDTMIT      50      // 每 N 步輸出 monitor 資料
 #define     NDTFRC      1000     // 每 N 步更新外力項
+#define     NDTFTC      1000    // 每 N 步調整外力 (Force Controller check interval)
 #define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
@@ -106,16 +107,16 @@
 //               back to P-additive at > SWITCH_THRESHOLD
 // ====================================================================
 
-// P-additive controller
-#define     FORCE_P_ALPHA           5.0     // aggressiveness (beta = alpha/Re)
+// P-additive controller//P控制外力控制增益模式 
+#define     FORCE_P_ALPHA           10.0     // aggressiveness (beta = alpha/Re)
 
 // Gehrke multiplicative controller
-#define     FORCE_GEHRKE_GAIN       0.01    // F *= (1 - gain × Re%)
+#define     FORCE_GEHRKE_GAIN       0.05    // F *= (1 - gain × Re%)
 #define     FORCE_GEHRKE_DEADZONE   1.5     // |Re%| < 1.5% → hold (percentage, not fraction)
-#define     FORCE_GEHRKE_FLOOR      0.5     // minimum Force = floor × F_Poiseuille
+#define     FORCE_GEHRKE_FLOOR      0.0     // minimum Force = floor × F_Poiseuille
 
 // Controller switching
-#define     FORCE_SWITCH_THRESHOLD  8     // |Re%| ≤ 8% → Gehrke; > 8% → P-additive
+#define     FORCE_SWITCH_THRESHOLD   20     // |Re%| ≤ 20% → Gehrke; > 20% → P-additive 此數據為外力模式轉換條件 
 
 // Legacy defines (kept for backward compatibility, unused by new controller)
 #define     FORCE_RE_DEADZONE       0.015   // (deprecated) was fractional dead zone
@@ -142,13 +143,13 @@
 //   1 = 從 per-rank binary 續跑 (legacy, 只有瞬時場)
 //   2 = 從 merged VTK 續跑 (f=feq 近似, 統計量無法還原)
 //   3 = 從 binary checkpoint 續跑 (精確: f + 統計量累積和)
-#define     INIT                (0)
+#define     INIT                (3)
 
 // INIT=2 用: merged VTK 檔案路徑
-#define     RESTART_VTK_FILE    "result/velocity_merged_1380001.vtk"
+#define     RESTART_VTK_FILE    "result/velocity_merged_31001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_1380001"
+#define     RESTART_BIN_DIR     "checkpoint/step_31001"
 
 // 統計量讀取 (僅 INIT=1 時生效)
 // 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat
