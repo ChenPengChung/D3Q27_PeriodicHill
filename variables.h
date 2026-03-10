@@ -85,7 +85,7 @@
 #define     loop        500000  // 最大時間步數
 #define     NDTMIT      50      // 每 N 步輸出 monitor 資料
 #define     NDTFRC      100     // 每 N 步更新外力項
-#define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
+#define     NDTBIN      1000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
 // ====== Dual-Stage Force Controller ======
@@ -107,7 +107,7 @@
 // ====================================================================
 
 // P-additive controller
-#define     FORCE_P_ALPHA           3.0     // aggressiveness (beta = alpha/Re)
+#define     FORCE_P_ALPHA           20     // aggressiveness (beta = alpha/Re)
 
 // Gehrke multiplicative controller
 #define     FORCE_GEHRKE_GAIN       0.01    // F *= (1 - gain × Re%)
