@@ -19,9 +19,9 @@
 // 3. 網格設定
 // ================================================================
 // 全域格點數
-#define     NX      64          // 展向格點數
-#define     NY      256         // 流向格點數
-#define     NZ      128         // 法向格點數
+#define     NX      81          // 展向格點數
+#define     NY      384         // 流向格點數
+#define     NZ      192         // 法向格點數
 
 // MPI 分區
 #define     jp      8           // GPU 數量 (流向分割)
@@ -46,7 +46,7 @@
 // ================================================================
 // 4. 物理參數
 // ================================================================
-#define     Re      50         // Reynolds number (基於 H_HILL 和 Uref)
+#define     Re      100         // Reynolds number (基於 H_HILL 和 Uref)
 #define     Uref    0.0583      // 參考速度 (bulk velocity)
                                 // Re700:0.0583, Re1400/2800:0.0776
                                 // Re5600:0.0464, Re10595:0.0878
@@ -107,7 +107,7 @@
 // ====================================================================
 
 // P-additive controller
-#define     FORCE_P_ALPHA           5.0     // aggressiveness (beta = alpha/Re)
+#define     FORCE_P_ALPHA           3.0     // aggressiveness (beta = alpha/Re)
 
 // Gehrke multiplicative controller
 #define     FORCE_GEHRKE_GAIN       0.01    // F *= (1 - gain × Re%)
@@ -148,7 +148,7 @@
 #define     RESTART_VTK_FILE    "result/velocity_merged_1380001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_1380001"
+#define     RESTART_BIN_DIR     "checkpoint/step_80001"
 
 // 統計量讀取 (僅 INIT=1 時生效)
 // 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat
