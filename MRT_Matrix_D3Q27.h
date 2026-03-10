@@ -98,24 +98,23 @@ static const int MRT27_abc[NQ][3] = {
 // 1D polynomial norms squared: ||p0||²=1, ||p1||²=1/3, ||p2||²=2/9
 static const double poly_norm2[3] = { 1.0, 1.0/3.0, 2.0/9.0 };
 
+// 1D orthogonal polynomials evaluated at ξ ∈ {-1, 0, 1}
+// p0(ξ) = 1,  p1(ξ) = ξ,  p2(ξ) = ξ² - 1/3
+static double poly1D(int order, int xi) {
+    switch (order) {
+        case 0: return 1.0;
+        case 1: return (double)xi;
+        case 2: return (double)(xi * xi) - 1.0/3.0;
+        default: return 0.0;
+    }
+}
+
 // ============================================================================
 // Host-side function: compute M[27][27] and M_inv[27][27]
 // Call once at initialization, then copy to GPU constant memory.
 // ============================================================================
 static void ComputeD3Q27_MRT_Matrices(double M_out[NQ][NQ], double Mi_out[NQ][NQ])
 {
-    // 1D orthogonal polynomials evaluated at ξ ∈ {-1, 0, 1}
-    // p0(ξ) = 1
-    // p1(ξ) = ξ
-    // p2(ξ) = ξ² - 1/3
-    auto poly1D = [](int order, int xi) -> double {
-        switch (order) {
-            case 0: return 1.0;
-            case 1: return (double)xi;
-            case 2: return (double)(xi * xi) - 1.0/3.0;
-            default: return 0.0;
-        }
-    };
 
     // Build M[n][α] = p_a(ξx_α) × p_b(ξy_α) × p_c(ξz_α)
     for (int n = 0; n < NQ; n++) {
