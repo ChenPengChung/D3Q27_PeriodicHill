@@ -212,12 +212,16 @@ __device__ void cumulant_collision_D3Q27(
     // ==============================================================
 
     // --- 4th order off-diagonal (Eq. J.16) ---
+#if !USE_WP_CUMULANT
+    // AO mode: need cumulants for standard relaxation + back-conversion
     double CUMcbb = m[I_cbb] - ((m[I_caa] + 1.0/3.0) * m[I_abb]
                     + 2.0 * m[I_bba] * m[I_bab]) * inv_rho;
     double CUMbcb = m[I_bcb] - ((m[I_aca] + 1.0/3.0) * m[I_bab]
                     + 2.0 * m[I_bba] * m[I_abb]) * inv_rho;
     double CUMbbc = m[I_bbc] - ((m[I_aac] + 1.0/3.0) * m[I_bba]
                     + 2.0 * m[I_bab] * m[I_abb]) * inv_rho;
+#endif
+    // WP mode: off-diagonal 4th-order handled directly via B26-B28 (no cumulant needed)
 
     // --- 4th order diagonal (Eq. J.17) ---
     double CUMcca = m[I_cca] - (((m[I_caa]*m[I_aca] + 2.0*m[I_bba]*m[I_bba])
