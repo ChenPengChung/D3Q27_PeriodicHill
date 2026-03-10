@@ -122,6 +122,8 @@ else:
     except (ValueError, EOFError):
         Re = 700
 LAMINAR = (Re <= 100)
+if Re <= 100:
+    XH_STATIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8]  # No 0.05, 0.5 — 對應 LBM 分布
 print(f"[INFO] Re = {Re}  {'(laminar mode)' if LAMINAR else '(turbulent mode)'}")
 
 # ================================================================
@@ -195,14 +197,24 @@ def parse_vtk(filepath):
             continue
 
         elif line.startswith("VECTORS"):
+            if npts == 0 and npts_from_dims > 0:
+                npts = npts_from_dims
+            parts = line.split()
+            vec_name = parts[1] if len(parts) > 1 else "velocity"
             idx += 1
-            remaining = npts * 3
-            while remaining > 0 and idx < len(lines):
+            raw_vec = []
+            while len(raw_vec) < npts * 3 and idx < len(lines):
                 vals = lines[idx].strip().split()
                 if not vals or vals[0].startswith(("SCALARS", "VECTORS", "POINT_DATA")):
                     break
-                remaining -= len(vals)
+                raw_vec.extend(float(v) for v in vals)
                 idx += 1
+            raw_vec = raw_vec[:npts * 3]
+            if len(raw_vec) == npts * 3:
+                arr = np.array(raw_vec)
+                scalars[f"{vec_name}_x"] = arr[0::3]
+                scalars[f"{vec_name}_y"] = arr[1::3]
+                scalars[f"{vec_name}_z"] = arr[2::3]
             continue
 
         elif line.startswith("SCALARS"):
@@ -336,10 +348,12 @@ def load_station_file(filepath, delimiter=None, fmt=None, xh_station=0.0):
             data = np.loadtxt(filepath, skiprows=3)
             if data.ndim < 2 or data.shape[1] < 4:
                 return None
+            # LBM: z, uavg(col1), vavg(col2), wavg(col3)
+            # U=streamwise=vavg-offset, V=wall-normal=wavg-offset
             return {
                 "y":  data[:, 0],                         # z (abs wall-normal)
-                "U":  data[:, 2] - xh_station,             # vavg - offset = U/Ub
-                "V":  data[:, 3] - xh_station,             # wavg - offset = V/Ub
+                "U":  data[:, 2] - xh_station,             # vavg - offset = U/Ub (streamwise)
+                "V":  data[:, 3] - xh_station,             # wavg - offset = V/Ub (wall-normal)
                 "uu": None, "vv": None, "uv": None, "k": None,
             }
         else:
@@ -425,12 +439,20 @@ else:
     print(f"[INFO] Available scalars: {list(scalars.keys())}")
 
     # Determine which velocity fields to use
+    vel_u_key, vel_w_key = None, None
     if LAMINAR:
-        vel_u_key, vel_w_key = "u_inst", "w_inst"
+        for u_candidate, w_candidate in [
+            ("u_inst", "w_inst"),
+            ("velocity_y", "velocity_z"),   # VECTORS velocity → y=streamwise, z=wall-normal
+            ("U_mean", "W_mean"),
+        ]:
+            if u_candidate in scalars:
+                vel_u_key, vel_w_key = u_candidate, w_candidate
+                break
     else:
         vel_u_key, vel_w_key = "U_mean", "W_mean"
 
-    if vel_u_key in scalars:
+    if vel_u_key is not None and vel_u_key in scalars:
         HAS_VTK = True
         # Reshape to 3D: VTK order is (i fastest, j, k slowest)
         pts_3d    = points.reshape(nz, ny, nx, 3)
@@ -461,7 +483,10 @@ else:
         z_3d = pts_3d[:, :, :, 2]  # wall-normal
         y_stations = y_3d[0, :, 0]
     else:
-        print(f"[WARN] {vel_u_key} not found in VTK — benchmark-only mode.")
+        avail = list(scalars.keys())
+        print(f"[WARN] No usable velocity field found in VTK — benchmark-only mode.")
+        if not avail:
+            print(f"[WARN] VTK file contains 0 scalar/vector fields — file may be incomplete.")
 
 if not HAS_VTK:
     HAS_RS = False
@@ -651,9 +676,8 @@ def compute_offset_extent(field_sim, field_bench, scale, padding=0.3):
 # ================================================================
 # Figure 1: U offset profile
 # ================================================================
-u_extent = compute_offset_extent("U", "U", 0.8)
-u_x_range = u_extent[1] - u_extent[0]
-fig1_width = max(10.0, 10.0 * u_x_range / 9.0)
+xlim_plot = (-1, 10)
+fig1_width = max(10.0, 10.0 * (xlim_plot[1] - xlim_plot[0]) / 9.0)
 fig1, ax1 = plt.subplots(figsize=(fig1_width, 4.0))
 if LAMINAR:
     u_title = r"$U / U_{\mathrm{ref}}$  (Re = %d, laminar)" % Re
@@ -662,7 +686,7 @@ else:
     u_title = r"$\langle U \rangle / U_b$  (Re = %d)" % Re
     u_xlabel = r"$x\,/\,h$"
 plot_offset_panel(ax1, "U", "U", scale=0.8,
-                  title=u_title, xlabel=u_xlabel, xlim_range=u_extent)
+                  title=u_title, xlabel=u_xlabel, xlim_range=xlim_plot)
 ncol_leg = min(len(bench_sources) + 1, 4)
 ax1.legend(handles=make_legend_elements(), loc="lower center", frameon=True,
            edgecolor="0.7", fancybox=False, ncol=ncol_leg, fontsize=9,
@@ -674,7 +698,26 @@ print(f"\n[OK] Saved: {os.path.basename(out1)}")
 plt.close(fig1)
 
 # ================================================================
-# Figure 2: RS + k + V offset profiles (5 panels) — turbulent only
+# Figure 2: V (vertical/wall-normal) offset profile
+# ================================================================
+fig2, ax2 = plt.subplots(figsize=(fig1_width, 4.0))
+if LAMINAR:
+    v_title = r"$V / U_{\mathrm{ref}}$  (wall-normal, Re = %d, laminar)" % Re
+else:
+    v_title = r"$\langle V \rangle / U_b$  (wall-normal, Re = %d)" % Re
+plot_offset_panel(ax2, "W", "V", scale=0.8,
+                  title=v_title, xlabel=r"$x\,/\,h$", xlim_range=xlim_plot)
+ax2.legend(handles=make_legend_elements(), loc="lower center", frameon=True,
+           edgecolor="0.7", fancybox=False, ncol=ncol_leg, fontsize=9,
+           bbox_to_anchor=(0.5, -0.28))
+fig2.tight_layout()
+out2 = os.path.join(SCRIPT_DIR, f"benchmark_Vmean_Re{Re}.png")
+fig2.savefig(out2, bbox_inches="tight")
+print(f"[OK] Saved: {os.path.basename(out2)}")
+plt.close(fig2)
+
+# ================================================================
+# Figure 3: RS + k offset profiles (5 panels) — turbulent only
 # ================================================================
 if LAMINAR:
     print("[INFO] Laminar mode — skipping RS comparison plot.")
@@ -686,12 +729,11 @@ elif HAS_RS:
         ("k",  "k",  20, r"$k / U_b^2$  (TKE)"),
         ("W",  "V",   3, r"$\langle V \rangle / U_b$  (wall-normal mean)"),
     ]
-    # Fixed x-range for RS panels
     xlim_rs = (-1, 10)
     x_range_rs = xlim_rs[1] - xlim_rs[0]
-    fig2_width = max(18.0, 18.0 * x_range_rs / 9.0)
+    fig3_rs_width = max(18.0, 18.0 * x_range_rs / 9.0)
 
-    fig2, axes = plt.subplots(3, 2, figsize=(fig2_width, 12))
+    fig3_rs, axes = plt.subplots(3, 2, figsize=(fig3_rs_width, 12))
     axes_flat = axes.flatten()
     for idx, (fs, fb, sc, ttl) in enumerate(panels):
         plot_offset_panel(axes_flat[idx], fs, fb, scale=sc, title=ttl,
@@ -702,107 +744,13 @@ elif HAS_RS:
     ax_leg.legend(handles=make_legend_elements(), loc="center", frameon=True,
                   edgecolor="0.7", fancybox=False,
                   ncol=1, fontsize=11)
-    fig2.suptitle(f"Periodic Hill Re = {Re} \u2014 Reynolds Stress Comparison",
-                  fontsize=15, y=0.98)
-    fig2.tight_layout(rect=[0, 0, 1, 0.96])
-    out2 = os.path.join(SCRIPT_DIR, f"benchmark_RS_Re{Re}.png")
-    fig2.savefig(out2, bbox_inches="tight")
-    print(f"[OK] Saved: {os.path.basename(out2)}")
-    plt.close(fig2)
+    fig3_rs.suptitle(f"Periodic Hill Re = {Re} \u2014 Reynolds Stress Comparison",
+                     fontsize=15, y=0.98)
+    fig3_rs.tight_layout(rect=[0, 0, 1, 0.96])
+    out3_rs = os.path.join(SCRIPT_DIR, f"benchmark_RS_Re{Re}.png")
+    fig3_rs.savefig(out3_rs, bbox_inches="tight")
+    print(f"[OK] Saved: {os.path.basename(out3_rs)}")
+    plt.close(fig3_rs)
 else:
     print("[INFO] No RS data in VTK \u2014 skipping RS comparison plot.")
 
-# ================================================================
-# Figure 3: All-in-one (per-station profiles)
-# ================================================================
-#   Rows = quantities; Cols = N x/h stations (from ALL_XH_STATIONS)
-if LAMINAR:
-    QUANTITIES = [
-        ("U",  "U",  r"$U / U_{\mathrm{ref}}$"),
-        ("W",  "V",  r"$V / U_{\mathrm{ref}}$"),
-    ]
-else:
-    QUANTITIES = [
-        ("U",  "U",  r"$\langle U \rangle / U_b$"),
-        ("W",  "V",  r"$\langle V \rangle / U_b$"),
-        ("uu", "uu", r"$\langle u^\prime u^\prime \rangle / U_b^2$"),
-        ("ww", "vv", r"$\langle v^\prime v^\prime \rangle / U_b^2$"),
-        ("uw", "uv", r"$\langle u^\prime v^\prime \rangle / U_b^2$"),
-        ("k",  "k",  r"$k / U_b^2$"),
-    ]
-
-n_stations = len(ALL_XH_STATIONS)
-n_rows = len(QUANTITIES)
-fig3, axes3 = plt.subplots(n_rows, n_stations, figsize=(4.2 * n_stations, 4 * n_rows),
-                            sharex='row', sharey=True)
-if n_stations == 1:
-    axes3 = axes3.reshape(n_rows, 1)
-
-for row, (fs, fb, xlbl) in enumerate(QUANTITIES):
-    for col, xh in enumerate(ALL_XH_STATIONS):
-        ax = axes3[row, col]
-
-        # Simulation (red line) — only if VTK data available
-        if HAS_VTK and xh in profiles:
-            p = profiles[xh]
-            z_abs = p["z_abs"]
-            data_sim = p.get(fs)
-            if data_sim is not None:
-                z_wall_h = p["z_w"] / H_HILL
-                data_ext = np.concatenate([[0.0, 0.0], data_sim])
-                z_ext    = np.concatenate([[0.0, z_wall_h], z_abs])
-                ax.plot(data_ext, z_ext, '-', color=c_sim, lw=1.2, zorder=10)
-
-        # Benchmark scatter (all available sources)
-        for _, info, bdata in bench_sources:
-            if xh in bdata and fb in bdata[xh]:
-                d_b = bdata[xh][fb]
-                if d_b is None:
-                    continue
-                ax.plot(d_b, bdata[xh]["y"], marker=info['marker'],
-                        color=info['color'], ms=info['markersize'],
-                        mfc='none', mew=0.5, ls='none', alpha=0.7, zorder=5)
-
-        # Column title (top row only)
-        if row == 0:
-            ax.set_title(f"$x/h = {xh}$", fontsize=10)
-
-        # Y-axis label (leftmost column only)
-        if col == 0:
-            ax.set_ylabel(r"$y\,/\,h$", fontsize=10)
-
-        # X-axis label (bottom row only)
-        if row == n_rows - 1:
-            ax.set_xlabel(xlbl, fontsize=8)
-
-        ax.tick_params(labelsize=8)
-        ax.set_ylim(0, LZ / H_HILL)
-
-# Row labels on the left margin — large, positioned left of first column
-plt.subplots_adjust(hspace=0.3, wspace=0.15, left=0.06, right=0.99, top=0.95, bottom=0.04)
-for row, (_, _, xlbl) in enumerate(QUANTITIES):
-    pos = axes3[row, 0].get_position()
-    fig3.text(pos.x0 - 0.008, (pos.y0 + pos.y1) / 2, xlbl,
-              va='center', ha='right', fontsize=16, fontweight='bold', rotation=90)
-
-# Legend only in top-left subplot
-legend_handles = []
-if HAS_VTK:
-    legend_handles.append(Line2D([0], [0], color=c_sim, lw=1.5, label="GILBM (present)"))
-for _, info, _ in bench_sources:
-    legend_handles.append(
-        Line2D([0], [0], marker=info['marker'], color=info['color'],
-               ms=5, mfc='none', mew=0.8, ls='none', label=info['label'])
-    )
-axes3[0, 0].legend(handles=legend_handles, fontsize=7, loc='best')
-
-fig3.suptitle(f"Periodic Hill Flow — GILBM vs Benchmark (Re = {Re}{', laminar' if LAMINAR else ''})",
-              fontsize=18, y=0.99)
-
-out3_pdf = os.path.join(SCRIPT_DIR, f"benchmark_all_Re{Re}.pdf")
-out3_png = os.path.join(SCRIPT_DIR, f"benchmark_all_Re{Re}.png")
-fig3.savefig(out3_pdf, dpi=150, bbox_inches="tight")
-fig3.savefig(out3_png, dpi=200, bbox_inches="tight")
-print(f"[OK] Saved: {os.path.basename(out3_pdf)}")
-print(f"[OK] Saved: {os.path.basename(out3_png)}")
-plt.close(fig3)
