@@ -144,7 +144,7 @@ __device__ static double _cum_wp_limit(
 // ================================================================
 __device__ void cumulant_collision_D3Q27(
     const double f_in[27],   // INPUT:  post-streaming distributions
-    const double omega,      // INPUT:  shear relaxation rate w1
+    const double omega_tau,  // INPUT:  relaxation TIME τ = 3ν/dt + 0.5 (convention: same as BGK's omega_global)
     const double delta_t,    // INPUT:  time step (for half-force correction) [avoid macro collision with #define dt]
     const double Fx,         // INPUT:  body force x
     const double Fy,         // INPUT:  body force y
@@ -156,6 +156,15 @@ __device__ void cumulant_collision_D3Q27(
     double      *uz_out      // OUTPUT: velocity z
 )
 {
+    // ==============================================================
+    // CONVENTION FIX: omega_global from main.cu is τ (relaxation TIME),
+    //   τ = 3ν/dt + 0.5.  BGK uses 1/τ; cumulant needs ω₁ = 1/τ.
+    //   Before this fix, code used τ directly as ω₁, giving:
+    //     (1-τ) ≈ 0.28 instead of (1-1/τ) ≈ -0.39
+    //     → ν_eff ≈ 4×ν → Re_eff ≈ Re/4  (wrong physics, but stable)
+    // ==============================================================
+    const double omega = 1.0 / omega_tau;   // ω₁ = 1/τ (shear relaxation RATE)
+
     // ==============================================================
     // STAGE 0: Macroscopic Quantities + Well-Conditioning
     // ==============================================================
@@ -410,23 +419,29 @@ __device__ void cumulant_collision_D3Q27(
     //   [GR22] Eq.17-18, Appendix B.2
     //
     // 2nd-order cumulants (post-relaxation, well-conditioned):
-    //   Dxx = m[I_caa], Dyy = m[I_aca], Dzz = m[I_aac]
-    //   Dxy = m[I_bba], Dxz = m[I_bab], Dyz = m[I_abb]
+    //   Dxx = m[I_caa], Dyy = m[I_aca], Dzz = m[I_aac]  (well-conditioned = standard - 1/3)
+    //   Dxy = m[I_bba], Dxz = m[I_bab], Dyz = m[I_abb]  (off-diagonal: same in both forms)
     //
-    // Diagonal 4th-order equilibria (Geier 2017, Appendix B.2):
-    //   C^eq_{2200} = (A+B)(DxxDyy + Dxy^2) + (A-B)(DxxDyy - Dxy^2)
-    //               = A(DxxDyy + Dxy^2) + B(DxxDyy - Dxy^2)  ... WRONG
-    //   Actually per Geier:
-    //   C^eq_{xxyy} / rho = A(DxxDyy/rho + Dxy^2/rho) + B(DxxDyy/rho - Dxy^2/rho)  (with /rho)
-    //   But in well-conditioned form these are already normalized.
-    //   The OpenLB implementation uses:
+    // [GR22] Eq.17-18: 4th-order equilibria use STANDARD 2nd-order cumulants:
+    //   sigma_xx = Dxx + 1/3,  sigma_yy = Dyy + 1/3,  sigma_zz = Dzz + 1/3
+    //   C^eq_{xxyy} / rho = A(sigma_xx*sigma_yy + sigma_xy^2)/rho
+    //                      + B(sigma_xx*sigma_yy - sigma_xy^2)/rho
+    //
+    // BUG FIX: previous version used Dxx*Dyy (well-conditioned, ~0 at rho=1)
+    //          instead of (Dxx+1/3)*(Dyy+1/3) (standard, ~rho/9 at equilibrium).
+    //          This made WP mode degenerate to AO (4th-order eq = 0).
     double Dxx = m[I_caa], Dyy = m[I_aca], Dzz = m[I_aac];
     double Dxy = m[I_bba], Dxz = m[I_bab], Dyz = m[I_abb];
 
-    // 4th-order diagonal equilibria (A,B from optimized parameterization):
-    double CUMcca_eq = (coeff_A * (Dxx*Dyy + Dxy*Dxy) + coeff_B * (Dxx*Dyy - Dxy*Dxy)) * inv_rho;
-    double CUMcac_eq = (coeff_A * (Dxx*Dzz + Dxz*Dxz) + coeff_B * (Dxx*Dzz - Dxz*Dxz)) * inv_rho;
-    double CUMacc_eq = (coeff_A * (Dyy*Dzz + Dyz*Dyz) + coeff_B * (Dyy*Dzz - Dyz*Dyz)) * inv_rho;
+    // Restore standard 2nd-order cumulants for the equilibrium formula
+    double Sxx = Dxx + 1.0/3.0;   // sigma_xx (standard)
+    double Syy = Dyy + 1.0/3.0;   // sigma_yy
+    double Szz = Dzz + 1.0/3.0;   // sigma_zz
+
+    // 4th-order diagonal equilibria [GR22 Eq.17-18]:
+    double CUMcca_eq = (coeff_A * (Sxx*Syy + Dxy*Dxy) + coeff_B * (Sxx*Syy - Dxy*Dxy)) * inv_rho;
+    double CUMcac_eq = (coeff_A * (Sxx*Szz + Dxz*Dxz) + coeff_B * (Sxx*Szz - Dxz*Dxz)) * inv_rho;
+    double CUMacc_eq = (coeff_A * (Syy*Szz + Dyz*Dyz) + coeff_B * (Syy*Szz - Dyz*Dyz)) * inv_rho;
 
     // Relax diagonal 4th-order toward non-zero equilibria
     CUMcca += omega6 * (CUMcca_eq - CUMcca);

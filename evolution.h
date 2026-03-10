@@ -345,6 +345,17 @@ void Launch_ModifyForcingTerm()
             printf("[WARNING] Ma_max=%.4f > 0.3, Force halved to %.5E\n", Ma_max, Force_h[0]);
     }
 
+    // Re-apply floor AFTER Ma safety check (prevents Ma-triggered reduction from killing Force → 0 → NaN)
+    {
+        double F_floor_final = (double)FORCE_GEHRKE_FLOOR * F_Poiseuille;
+        if (Force_h[0] < F_floor_final && Force_h[0] >= 0.0) {
+            Force_h[0] = F_floor_final;
+            if (myid == 0)
+                printf("[FLOOR-POST-MA] Force re-clamped to %.1f%% Poiseuille = %.5E after Ma safety\n",
+                       (double)FORCE_GEHRKE_FLOOR * 100.0, F_floor_final);
+        }
+    }
+
     // Broadcast updated Force to all ranks
     CHECK_MPI( MPI_Bcast(Force_h, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD) );
 

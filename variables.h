@@ -91,7 +91,7 @@
 //     1e-2  → Gehrke 預設 (多數情況適用)
 //     1e-1  → Re≥10600 中等網格 (GR22 Table 7)
 // ================================================================
-#define     USE_WP_CUMULANT     1
+#define     USE_WP_CUMULANT     0   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
 #define     CUM_LAMBDA          1.0e-2
 //正則化參數引入
 // ── 互斥檢查 ──
@@ -140,7 +140,7 @@
 // Gehrke multiplicative controller
 #define     FORCE_GEHRKE_GAIN       0.05    // F *= (1 - gain × Re%)
 #define     FORCE_GEHRKE_DEADZONE   1.5     // |Re%| < 1.5% → hold (percentage, not fraction)
-#define     FORCE_GEHRKE_FLOOR      0.0     // minimum Force = floor × F_Poiseuille
+#define     FORCE_GEHRKE_FLOOR      0.5     // minimum Force = floor x F_Poiseuille (>0 prevents multiplicative trap to 0)
 
 // Controller switching
 #define     FORCE_SWITCH_THRESHOLD   5     // |Re%| ≤ 20% → Gehrke; > 20% → P-additive 此數據為外力模式轉換條件 
@@ -170,7 +170,7 @@
 //   1 = 從 per-rank binary 續跑 (legacy, 只有瞬時場)
 //   2 = 從 merged VTK 續跑 (f=feq 近似, 統計量無法還原)
 //   3 = 從 binary checkpoint 續跑 (精確: f + 統計量累積和)
-#define     INIT                (3)
+#define     INIT                (0)     // Cold start for Cumulant test (switch back to 3 after verified stable)
 
 // INIT=2 用: merged VTK 檔案路徑
 #define     RESTART_VTK_FILE    "result/velocity_merged_31001.vtk"
