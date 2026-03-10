@@ -14,11 +14,11 @@
 //   c=1, c_s²=1/3 → 1/c_s² = 3 → tensor coeff: 3·c_{iα}·c_{iβ} - δ_{αβ}
 //   α = 1~3 (x,y,z 速度分量),  β = 2~3 (ξ,ζ 方向; β=1(η) 因 dk/dx=0 消去)
 //
-//   C_i = -(omega_local - 0.5)·Δt · Σ_α Σ_{β=y,z} [3·c_{iα}·c_{iβ} - δ_{αβ}] · (∂u_α/∂x_β)
+//   C_i = -(omega_local)·Δt · Σ_α Σ_{β=y,z} [3·c_{iα}·c_{iβ} - δ_{αβ}] · (∂u_α/∂x_β)
 //
 //   壁面 chain rule: ∂u_α/∂x_β = (du_α/dk)·(dk/dx_β)，展開 3α × 2β = 6 項：
 //
-//   C_i = -(omega_local - 0.5)·Δt × {               [= -3ν, 常數]
+//   C_i = -(omega_local)·Δt × {               [= -3ν, 常數]
 //     ① 9·c_{ix}·c_{iy} · (du/dk)·(dk/dy)        α=x, β=y  (δ_{xy}=0)
 //   + ② 9·c_{ix}·c_{iz} · (du/dk)·(dk/dz)        α=x, β=z  (δ_{xz}=0)
 //   + ③ (9·c_{iy}²−1)   · (dv/dk)·(dk/dy)        α=y, β=y  (δ_{yy}=1)
@@ -90,7 +90,7 @@ __device__ double ChapmanEnskogBC(
     );
 
     
-    C_alpha *= -(omega_local - 0.5) * localtimestep; // (τ-0.5)·Δt = 3ν  (Imamura Eq. A.9)
+    C_alpha *= -(omega_local) * localtimestep; 
     // equilibrium distribution function = GILBM_W[alpha] * rho_wall
     // f_alpha = f_eq * (1 + C_alpha)   (Imamura Eq. A.9)
     double f_eq_atwall = GILBM_W[alpha] * rho_wall;

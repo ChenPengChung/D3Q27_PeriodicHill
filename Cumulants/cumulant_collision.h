@@ -318,6 +318,15 @@ __device__ void cumulant_collision_D3Q27(
     double coeff_A, coeff_B;
     _cum_wp_compute_AB(omega, omega2, &coeff_A, &coeff_B);
 
+    // Cold-start ramp: gradually increase A,B from 0 to full value.
+    // At cold start (u=0, rho=1), WP 4th-order equilibria (A+B)/9 ≈ 0.36
+    // exceeds W[face] = 0.074 → negative face PDFs → Lagrange oscillation → diverge.
+    // CUM_WP_RAMP is updated each step from main.cu (0 → 1 over CUM_WP_RAMP_STEPS).
+#if CUM_WP_RAMP_STEPS > 0
+    coeff_A *= CUM_WP_RAMP;
+    coeff_B *= CUM_WP_RAMP;
+#endif
+
     // Step C: Extract raw 3rd-order cumulants BEFORE symmetric/antisymmetric
     //         decomposition (needed for lambda-limiter magnitude, Eq.20-26)
     //
@@ -364,11 +373,36 @@ __device__ void cumulant_collision_D3Q27(
     double mxxMyy    = m[I_caa] - m[I_aca];              // deviatoric 1
     double mxxMzz    = m[I_caa] - m[I_aac];              // deviatoric 2
 
+#if USE_WP_CUMULANT
+    // ---- B7-B9: Velocity derivative proxies [GR22 Appendix B.2] ----
+    // D_α ≈ -ω₁/(2ρ) · C^{ne}_{αα}
+    // C^{ne}_{αα} = κ_{αα} - ρ/3 = m_{αα,WC} + 1/3 - ρ/3 = m_{αα,WC} - (ρ-1)/3
+    const double Cne_xx = m[I_caa] - drho / 3.0;
+    const double Cne_yy = m[I_aca] - drho / 3.0;
+    const double Cne_zz = m[I_aac] - drho / 3.0;
+    const double Dxu = -omega * 0.5 * inv_rho * Cne_xx;
+    const double Dyv = -omega * 0.5 * inv_rho * Cne_yy;
+    const double Dzw = -omega * 0.5 * inv_rho * Cne_zz;
+#endif
+
     // Relax trace with w2 toward rho equilibrium
     mxxPyyPzz += omega2 * (m[I_aaa] - mxxPyyPzz);
+
     // Relax deviatorics with w1 toward 0
+#if USE_WP_CUMULANT
+    // B13-B15: WP Galilean invariance correction [GR22 Appendix B.2]
+    // D_i* = (1-ω₁)·D_i - 3ρ(1-ω₁/2)(u_α²·D_αu_α - u_β²·D_βu_β)
+    {
+        const double wp_corr = 3.0 * rho * (1.0 - omega * 0.5);
+        mxxMyy = (1.0 - omega) * mxxMyy
+               - wp_corr * (u[0]*u[0]*Dxu - u[1]*u[1]*Dyv);
+        mxxMzz = (1.0 - omega) * mxxMzz
+               - wp_corr * (u[0]*u[0]*Dxu - u[2]*u[2]*Dzw);
+    }
+#else
     mxxMyy *= (1.0 - omega);
     mxxMzz *= (1.0 - omega);
+#endif
 
     // Off-diagonal 2nd order with w1
 #if USE_WP_CUMULANT
