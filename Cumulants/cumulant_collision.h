@@ -367,6 +367,13 @@ __device__ void cumulant_collision_D3Q27(
     mxxMzz *= (1.0 - omega);
 
     // Off-diagonal 2nd order with w1
+#if USE_WP_CUMULANT
+    // [GR22 B26-B28 FIX] Save pre-relaxation off-diagonal 2nd-order values.
+    // Paper B26: C*_{211} = (1-w1/2)*B*C_{011}  uses PRE-relaxation C_{011}.
+    const double saved_C011 = m[I_abb];  // pre-relaxation C_{yz}
+    const double saved_C101 = m[I_bab];  // pre-relaxation C_{xz}
+    const double saved_C110 = m[I_bba];  // pre-relaxation C_{xy}
+#endif
     m[I_abb] *= (1.0 - omega);  // C011
     m[I_bab] *= (1.0 - omega);  // C101
     m[I_bba] *= (1.0 - omega);  // C110
@@ -448,10 +455,24 @@ __device__ void cumulant_collision_D3Q27(
     CUMcac += omega6 * (CUMcac_eq - CUMcac);
     CUMacc += omega6 * (CUMacc_eq - CUMacc);
 
-    // Off-diagonal 4th-order: equilibria = 0 (same as AO)
-    CUMbbc *= (1.0 - omega6);
-    CUMbcb *= (1.0 - omega6);
-    CUMcbb *= (1.0 - omega6);
+    // Off-diagonal 4th-order: [GR22 B26-B28]
+    //   Paper gives post-collision CENTRAL MOMENT directly:
+    //     C*_{211} = (1-w1/2)*B * C_{011,pre}   (B26)
+    //     C*_{121} = (1-w1/2)*B * C_{101,pre}   (B27)
+    //     C*_{112} = (1-w1/2)*B * C_{110,pre}   (B28)
+    //   These are NON-ZERO even though the CUMULANT equilibrium involves
+    //   the back-conversion product terms. The simplest correct implementation
+    //   is to set the post-collision central moment directly from B26-B28,
+    //   bypassing the cumulant relaxation + back-conversion for these 3 moments.
+    //   The saved_C0XX values were captured before 2nd-order relaxation.
+    const double wp_offdiag_coeff = (1.0 - omega * 0.5) * coeff_B;
+    // These will be written directly to m[] after Stage 4 header,
+    // replacing the normal cumulant back-conversion for off-diagonal 4th order.
+    const double wp_C211_star = wp_offdiag_coeff * saved_C011;  // B26
+    const double wp_C121_star = wp_offdiag_coeff * saved_C101;  // B27
+    const double wp_C112_star = wp_offdiag_coeff * saved_C110;  // B28
+    // Note: CUMcbb/CUMbcb/CUMbbc are no longer needed for off-diagonal;
+    //       we skip their relaxation and override the back-conversion below.
 #else
     // AO: all 4th-order cumulants relax toward 0
     CUMacc *= (1.0 - omega6);
@@ -476,12 +497,19 @@ __device__ void cumulant_collision_D3Q27(
     // ==============================================================
 
     // --- 4th order off-diagonal inverse (Eq. J.16) ---
+#if USE_WP_CUMULANT
+    // [GR22 B26-B28] Direct central moment assignment (bypasses cumulant back-conversion)
+    m[I_cbb] = wp_C211_star;  // B26: (1-w1/2)*B*C011_pre
+    m[I_bcb] = wp_C121_star;  // B27: (1-w1/2)*B*C101_pre
+    m[I_bbc] = wp_C112_star;  // B28: (1-w1/2)*B*C110_pre
+#else
     m[I_cbb] = CUMcbb + ((m[I_caa] + 1.0/3.0)*m[I_abb]
                + 2.0*m[I_bba]*m[I_bab]) * inv_rho;
     m[I_bcb] = CUMbcb + ((m[I_aca] + 1.0/3.0)*m[I_bab]
                + 2.0*m[I_bba]*m[I_abb]) * inv_rho;
     m[I_bbc] = CUMbbc + ((m[I_aac] + 1.0/3.0)*m[I_bba]
                + 2.0*m[I_bab]*m[I_abb]) * inv_rho;
+#endif
 
     // --- 4th order diagonal inverse (Eq. J.17) ---
     m[I_cca] = CUMcca + (((m[I_caa]*m[I_aca]+2.0*m[I_bba]*m[I_bba])*9.0
