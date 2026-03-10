@@ -90,7 +90,7 @@ __device__ double ChapmanEnskogBC(
     );
 
     
-    C_alpha *= -(omega_local ) * localtimestep; //根據Imamura公式 
+    C_alpha *= -(omega_local) * localtimestep; // (τ)·ΔtImamura Eq.(A.9)
     // equilibrium distribution function = GILBM_W[alpha] * rho_wall
     // f_alpha = f_eq * (1 + C_alpha)   (Imamura Eq. A.9)
     double f_eq_atwall = GILBM_W[alpha] * rho_wall;
