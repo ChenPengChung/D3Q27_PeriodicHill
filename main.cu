@@ -301,26 +301,11 @@ int main(int argc, char *argv[])
         printf("D3Q27 Cumulant (WP mode): omega=%.6f, lambda=%.2e\n",
                omega_global, (double)CUM_LAMBDA);
         printf("  WP: omega3-5 parameterized (Eq.14-16), A/B coeffs (Eq.17-18), lambda-limiter (Eq.20-26)\n");
-#if CUM_WP_RAMP_STEPS > 0
-        printf("  WP cold-start ramp: A,B × ramp (0→1 over %d steps)\n", CUM_WP_RAMP_STEPS);
-        {
-            double ramp_init = (INIT == 0) ? 0.0 : 1.0;  // only ramp on cold start
-            CHECK_CUDA( cudaMemcpyToSymbol(CUM_WP_RAMP, &ramp_init, sizeof(double)) );
-            printf("  WP ramp initial value: %.2f (INIT=%d)\n", ramp_init, INIT);
-        }
-#endif
 #else
         printf("D3Q27 Cumulant (AO mode): omega=%.6f\n", omega_global);
         printf("  AO: omega2-10 = 1.0 (All-One, Geier 2015)\n");
 #endif
     }
-#if USE_WP_CUMULANT && CUM_WP_RAMP_STEPS > 0
-    // Non-rank-0 also needs the initial ramp upload
-    if (myid != 0) {
-        double ramp_init = (INIT == 0) ? 0.0 : 1.0;
-        CHECK_CUDA( cudaMemcpyToSymbol(CUM_WP_RAMP, &ramp_init, sizeof(double)) );
-    }
-#endif
 #endif
 
     if (myid == 0) printf("GILBM: delta_zeta + __constant__(dt,eta,xi) + bk_precomp + dk copied to GPU.\n");
@@ -716,20 +701,6 @@ int main(int argc, char *argv[])
     for( step = loop_start ; step < loop_start + loop ; step++, accu_num++ ) {
         double FTT_now = step * dt_global / (double)flow_through_time;
 
-#if USE_CUMULANT && USE_WP_CUMULANT && CUM_WP_RAMP_STEPS > 0
-        // WP cold-start ramp: update A,B scaling factor (0→1 over RAMP_STEPS)
-        if (INIT == 0 && step - loop_start < CUM_WP_RAMP_STEPS) {
-            double ramp = (double)(step - loop_start + 1) / (double)CUM_WP_RAMP_STEPS;
-            if (ramp > 1.0) ramp = 1.0;
-            CHECK_CUDA( cudaMemcpyToSymbol(CUM_WP_RAMP, &ramp, sizeof(double)) );
-        } else if (INIT == 0 && step - loop_start == CUM_WP_RAMP_STEPS) {
-            // Final: ensure ramp = 1.0 exactly
-            double ramp = 1.0;
-            CHECK_CUDA( cudaMemcpyToSymbol(CUM_WP_RAMP, &ramp, sizeof(double)) );
-            if (myid == 0) printf("[Step %d] WP cold-start ramp complete (A,B at full value)\n", step);
-        }
-#endif
-
         // ===== Sub-step 1: even step (ft → fd) =====
         Launch_CollisionStreaming( ft, fd );
 
@@ -812,9 +783,8 @@ int main(int argc, char *argv[])
         }
 
         // ===== Force modification (every NDTFRC steps, Re%-based adaptive) =====
-        // 使用 == 0 避免 step=1 就觸發 (此時流場尚未發展，Re%巨大會導致外力過度修正)
-        // 首次觸發在 step=NDTFRC (e.g. 1000)，讓流場有足夠時間發展
-        if ( step > 0 && (step % force_check_interval == 0) ) {
+        // NOTE: step is always ODD here (after step+=1), so use == 1 like all other periodic checks
+        if ( step > 0 && (step % force_check_interval == 1) ) {
             Launch_ModifyForcingTerm();
         }
 

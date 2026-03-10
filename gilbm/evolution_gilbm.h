@@ -40,15 +40,6 @@ __constant__ double GILBM_dt;             // global time step
 __constant__ double GILBM_delta_eta[NQ];  // η displacements (precomputed with dt_global)
 __constant__ double GILBM_delta_xi[NQ];   // ξ displacements (precomputed with dt_global)
 
-#if USE_CUMULANT && USE_WP_CUMULANT
-// WP cold-start ramp: coeff_A *= ramp, coeff_B *= ramp
-// At step 0: ramp=0 (AO-like), increases to 1.0 over CUM_WP_RAMP_STEPS steps.
-// Reason: WP 4th-order equilibria (A+B)/9 > W[face] at cold start → negative
-// face distributions → Lagrange interpolation oscillation → divergence.
-// Updated each step from main.cu via cudaMemcpyToSymbol.
-__constant__ double CUM_WP_RAMP;
-#endif
-
 #if USE_MRT
 // D3Q27 MRT transformation matrix M[27][27] and inverse M⁻¹[27][27]
 // Computed at initialization via Gram-Schmidt (MRT_Matrix_D3Q27.h)
@@ -235,28 +226,17 @@ __device__ void gilbm_compute_point_gts(
 
     double rho_wall = 0.0, du_dk = 0.0, dv_dk = 0.0, dw_dk = 0.0;
     if (is_bottom) {
-        // 1st-order one-sided FD at wall (no-slip u[wall]=0):
-        //   du/dk|wall ≈ u[k=4] / Δk   (k=4 is first interior point AWAY from wall k=3)
-        // NOTE: 不使用 k=3 因為 k=3 本身就是壁面點，其 f 由 CE BC 填充，
-        //       若用 k=3 速度計算梯度會產生循環依賴 (chicken-and-egg problem)
-        int idx_k4 = j * nface + 4 * NX6 + i;   // k=4 (first safe interior point)
-        double rho4, u4, v4, w4;
-        compute_macroscopic_at(f_old_ptrs, idx_k4, rho4, u4, v4, w4);
-        du_dk = u4;
-        dv_dk = v4;
-        dw_dk = w4;
-        rho_wall = rho4;  // zero normal pressure gradient (Imamura S3.2)
+        int idx3 = j * nface + 4 * NX6 + i;
+        double rho3, u3, v3, w3;
+        compute_macroscopic_at(f_old_ptrs, idx3, rho3, u3, v3, w3);
+        du_dk = u3;  dv_dk = v3;  dw_dk = w3;
+        rho_wall = rho3;
     } else if (is_top) {
-        // 1st-order one-sided FD at top wall (no-slip u[wall]=0):
-        //   du/dk|wall ≈ -u[k=NZ6-5] / Δk  (NZ6-5 is first safe interior from top)
-        // NOTE: 不使用 k=NZ6-4 因為它是頂壁點，同理避免循環依賴
-        int idx_km1 = j * nface + (NZ6 - 5) * NX6 + i;  // k=NZ6-5 (first safe interior from top)
+        int idxm1 = j * nface + (NZ6 - 5) * NX6 + i;
         double rhom1, um1, vm1, wm1;
-        compute_macroscopic_at(f_old_ptrs, idx_km1, rhom1, um1, vm1, wm1);
-        du_dk = -(um1);
-        dv_dk = -(vm1);
-        dw_dk = -(wm1);
-        rho_wall = rhom1;  // zero normal pressure gradient (Imamura S3.2)
+        compute_macroscopic_at(f_old_ptrs, idxm1, rhom1, um1, vm1, wm1);
+        du_dk = -(um1);  dv_dk = -(vm1);  dw_dk = -(wm1);
+        rho_wall = rhom1;
     }
 
     // ── STEP 1: Interpolation + Streaming (from f_old, no a_local scaling) ──
@@ -419,7 +399,7 @@ __device__ void gilbm_compute_point_gts(
 // ============================================================================
 __device__ void gilbm_compute_point(
     int i, int j, int k,//計算空間座標點
-    double *f_new_ptrs[19],
+    double *f_new_ptrs[NQ],
     double *f_pc,
     double *feq_d,
     double *omegadt_local_d,
@@ -664,64 +644,61 @@ __device__ void gilbm_compute_point(
     // ==================================================================
 
 #if USE_MRT
-    // ========== MRT collision: loop structure = for B { all 19 q } ==========
-    // MRT requires all 19 f values at each stencil node B for moment transformation.
+    // ========== MRT collision: loop structure = for B { all NQ q } ==========
+    // MRT requires all NQ(=27) f values at each stencil node B for moment transformation.
     // Re-estimation stays in distribution space (same R_AB as BGK).
-    // Collision uses M⁻¹ S (m - meq) with local s_visc for viscosity moments.
+    // Collision uses M⁻¹ S (m - meq) with Guo forcing at stencil node B.
 
-    // Pre-check BC directions for all 19 q
-    bool need_bc_arr[19];
+    // Pre-check BC directions for all NQ q
+    bool need_bc_arr[NQ];
     need_bc_arr[0] = false;  // q=0 (rest) is never BC
-    for (int q = 1; q < 19; q++) {
+    for (int q = 1; q < NQ; q++) {
         need_bc_arr[q] = false;
         if (is_bottom) need_bc_arr[q] = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
         else if (is_top) need_bc_arr[q] = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
     }
 
-    double s_visc = 1.0 / omega_A ; //omega_A 作為 relaxation time 直接使用在碰撞矩陣中，作為分佈函數與平衡態分佈函數的前綴
+    double s_visc = 1.0 / omega_A ; //omega_A 作為 relaxation time 直接使用在碰撞矩陣中
 
     for (int si = 0; si < 7; si++) {
-        int gi = bi + si; //計算內插成員座標點具體位置 
+        int gi = bi + si; //計算內插成員座標點具體位置
         for (int sj = 0; sj < 7; sj++) {
-            int gj = bj + sj; //計算內插成員座標點具體位置 
+            int gj = bj + sj; //計算內插成員座標點具體位置
             for (int sk = 0; sk < 7; sk++) {
-                int gk = bk + sk;//計算內插成員座標點具體位置  
-                //==========for each interpolation node position 
-                //==========便歷每一個內插成員座標點位置 
+                int gk = bk + sk;//計算內插成員座標點具體位置
+                //==========for each interpolation node position
+                //==========便歷每一個內插成員座標點位置
 
                 int idx_B = gj * nface + gk * NX6 + gi;
                 int flat  = si * 49 + sj * 7 + sk;
 
-                // ---- Gather all 19 f_B and feq_B at stencil node B ----
-                double f_re_mrt[19], feq_B_arr[19];
-                //在stencil 內部的每點，先寫入19個編號的分布佈函數與平衡態分佈函數 
-                bool ghost_j = (gj < 3 || gj >= NYD6 - 3);
-                     
-                // Ghost zone: compute macroscopic once for all 19 feq
-                double rho_B_g, u_B_g, v_B_g, w_B_g;
-                //若為buffer layer,  則有一個 時序缺陷 | f_new 在 ghost zone 是舊值（MPI 還沒交換）→ feq 滯後一步 |
-                if (ghost_j)
-                    compute_macroscopic_at(f_new_ptrs, idx_B, rho_B_g, u_B_g, v_B_g, w_B_g);
-                //如果是buffer layer 則重新計算，若為interrior ，則直接讀取 
-                for (int q = 0; q < 19; q++) {
+                // ---- Gather all NQ f_B and feq_B at stencil node B ----
+                double f_re_mrt[NQ], feq_B_arr[NQ];
+                //在stencil 內部的每點，先寫入NQ(27)個編號的分布函數與平衡態分佈函數
+
+                // Compute macroscopic at stencil node B (needed for Guo forcing + feq)
+                double rho_B, ux_B, uy_B, uz_B;
+                compute_macroscopic_at(f_new_ptrs, idx_B, rho_B, ux_B, uy_B, uz_B);
+                // Half-force velocity correction at B
+                uy_B = (uy_B * rho_B + 0.5 * Force[0] * dt_A) / rho_B;
+
+                for (int q = 0; q < NQ; q++) {
                     f_re_mrt[q] = f_new_ptrs[q][idx_B];
-                    feq_B_arr[q] = ghost_j
-                        ? compute_feq_alpha(q, rho_B_g, u_B_g, v_B_g, w_B_g)
-                        : feq_d[q * GRID_SIZE + idx_B];
+                    feq_B_arr[q] = compute_feq_alpha(q, rho_B, ux_B, uy_B, uz_B);
                 }
                 //===========此區為逐點操作，但是是所有編號同時一起操作===========
                 // ---- Step 2: Re-estimation (distribution space, same as BGK) ----
                 double omegadt_B = omegadt_local_d[idx_B];
                 double R_AB = omegadt_A / omegadt_B;
-                for (int q = 0; q < 19; q++)
+                for (int q = 0; q < NQ; q++)
                     f_re_mrt[q] = feq_B_arr[q] + (f_re_mrt[q] - feq_B_arr[q]) * R_AB;
 
-                // ---- Step 3: MRT collision ----
-                gilbm_mrt_collision(f_re_mrt, feq_B_arr, s_visc, dt_A, Force[0]);
+                // ---- Step 3: MRT collision with Guo forcing (8-arg signature) ----
+                gilbm_mrt_collision(f_re_mrt, feq_B_arr, rho_B, ux_B, uy_B, uz_B, dt_A, Force[0]);
                 //===========此區為逐點操作，但是是所有編號同時一起操作===========
                 // ---- Write back to A's PRIVATE f_pc (skip BC directions) ----
-                //同一個內插成員點要寫回19筆資料 
-                for (int q = 0; q < 19; q++) {
+                //同一個內插成員點要寫回NQ筆資料
+                for (int q = 0; q < NQ; q++) {
                     if (!need_bc_arr[q])
                         f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index] = f_re_mrt[q];
                 }
@@ -796,17 +773,17 @@ __device__ void gilbm_step23_point(
     double omega_A, double omegadt_A, double dt_A,
     double dk_dy_val, double dk_dz_val,
     bool is_bottom, bool is_top,
-    double *f_new_ptrs[19],
+    double *f_new_ptrs[NQ],
     double *f_pc,
     double *feq_d,
     double *omegadt_local_d,
     double Force0
 ) {
 #if USE_MRT
-    // ========== MRT collision: for B { all 19 q } ==========
-    bool need_bc_arr[19];
+    // ========== MRT collision: for B { all NQ q } ==========
+    bool need_bc_arr[NQ];
     need_bc_arr[0] = false;
-    for (int q = 1; q < 19; q++) {
+    for (int q = 1; q < NQ; q++) {
         need_bc_arr[q] = false;
         if (is_bottom) need_bc_arr[q] = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
         else if (is_top) need_bc_arr[q] = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
@@ -822,28 +799,27 @@ __device__ void gilbm_step23_point(
                 int idx_B = gj * nface + gk * NX6 + gi;
                 int flat  = si * 49 + sj * 7 + sk;
 
-                double f_re_mrt[19], feq_B_arr[19];
-                bool ghost_j = (gj < 3 || gj >= NYD6 - 3);
+                double f_re_mrt[NQ], feq_B_arr[NQ];
 
-                double rho_B_g, u_B_g, v_B_g, w_B_g;
-                if (ghost_j)
-                    compute_macroscopic_at(f_new_ptrs, idx_B, rho_B_g, u_B_g, v_B_g, w_B_g);
+                // Compute macroscopic at stencil node B (for Guo forcing + feq)
+                double rho_B, ux_B, uy_B, uz_B;
+                compute_macroscopic_at(f_new_ptrs, idx_B, rho_B, ux_B, uy_B, uz_B);
+                // Half-force velocity correction at B
+                uy_B = (uy_B * rho_B + 0.5 * Force0 * dt_A) / rho_B;
 
-                for (int q = 0; q < 19; q++) {
+                for (int q = 0; q < NQ; q++) {
                     f_re_mrt[q] = f_new_ptrs[q][idx_B];
-                    feq_B_arr[q] = ghost_j
-                        ? compute_feq_alpha(q, rho_B_g, u_B_g, v_B_g, w_B_g)
-                        : feq_d[q * GRID_SIZE + idx_B];
+                    feq_B_arr[q] = compute_feq_alpha(q, rho_B, ux_B, uy_B, uz_B);
                 }
 
                 double omegadt_B = omegadt_local_d[idx_B];
                 double R_AB = omegadt_A / omegadt_B;
-                for (int q = 0; q < 19; q++)
+                for (int q = 0; q < NQ; q++)
                     f_re_mrt[q] = feq_B_arr[q] + (f_re_mrt[q] - feq_B_arr[q]) * R_AB;
 
-                gilbm_mrt_collision(f_re_mrt, feq_B_arr, s_visc, dt_A, Force0);
+                gilbm_mrt_collision(f_re_mrt, feq_B_arr, rho_B, ux_B, uy_B, uz_B, dt_A, Force0);
 
-                for (int q = 0; q < 19; q++) {
+                for (int q = 0; q < NQ; q++) {
                     if (!need_bc_arr[q])
                         f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index] = f_re_mrt[q];
                 }
@@ -909,25 +885,25 @@ __device__ void gilbm_step23_combined(
     double omegadt_A, double dt_A,
     double dk_dy_val, double dk_dz_val,
     bool is_bottom, bool is_top,
-    double *f_new_ptrs[19],
+    double *f_new_ptrs[NQ],
     double *f_pc,
     double *feq_d,
     double *omegadt_local_d,
     double Force0,
-    const double *C_eff   // 19×19 combined operator from shared memory (row-major)
+    const double *C_eff   // NQ×NQ combined operator from shared memory (row-major)
 ) {
     // BC detection
-    bool need_bc_arr[19];
+    bool need_bc_arr[NQ];
     need_bc_arr[0] = false;
-    for (int q = 1; q < 19; q++) {
+    for (int q = 1; q < NQ; q++) {
         need_bc_arr[q] = false;
         if (is_bottom) need_bc_arr[q] = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, true);
         else if (is_top) need_bc_arr[q] = NeedsBoundaryCondition(q, dk_dy_val, dk_dz_val, false);
     }
 
     // Precompute body force per direction (constant for all 343 stencil points)
-    double force_q[19];
-    for (int q = 0; q < 19; q++)
+    double force_q[NQ];
+    for (int q = 0; q < NQ; q++)
         force_q[q] = GILBM_W[q] * 3.0 * GILBM_e[q][1] * Force0 * dt_A;
 
     // Triple loop over 7×7×7 stencil points
@@ -940,18 +916,16 @@ __device__ void gilbm_step23_combined(
                 int idx_B = gj * nface + gk * NX6 + gi;
                 int flat  = si * 49 + sj * 7 + sk;
 
-                // Load all 19 f_B and feq_B, compute δ = f_B - feq_B
-                double delta[19], feq_B_arr[19];
-                bool ghost_j = (gj < 3 || gj >= NYD6 - 3);
-                double rho_B_g, u_B_g, v_B_g, w_B_g;
-                if (ghost_j)
-                    compute_macroscopic_at(f_new_ptrs, idx_B, rho_B_g, u_B_g, v_B_g, w_B_g);
+                // Load all NQ f_B and feq_B, compute δ = f_B - feq_B
+                double delta[NQ], feq_B_arr[NQ];
 
-                for (int q = 0; q < 19; q++) {
+                // Compute macroscopic at stencil node B
+                double rho_B, ux_B, uy_B, uz_B;
+                compute_macroscopic_at(f_new_ptrs, idx_B, rho_B, ux_B, uy_B, uz_B);
+
+                for (int q = 0; q < NQ; q++) {
                     double f_B = f_new_ptrs[q][idx_B];
-                    feq_B_arr[q] = ghost_j
-                        ? compute_feq_alpha(q, rho_B_g, u_B_g, v_B_g, w_B_g)
-                        : feq_d[q * GRID_SIZE + idx_B];
+                    feq_B_arr[q] = compute_feq_alpha(q, rho_B, ux_B, uy_B, uz_B);
                     delta[q] = f_B - feq_B_arr[q];
                 }
 
@@ -960,11 +934,11 @@ __device__ void gilbm_step23_combined(
                 double R_AB = omegadt_A / omegadt_B;
 
                 // Combined: f*[q] = feq_B[q] + R_AB × (C_eff × δ)[q] + force[q]
-                for (int q = 0; q < 19; q++) {
+                for (int q = 0; q < NQ; q++) {
                     if (need_bc_arr[q]) continue;
                     double Cdelta = 0.0;
-                    for (int qp = 0; qp < 19; qp++)
-                        Cdelta += C_eff[q * 19 + qp] * delta[qp];
+                    for (int qp = 0; qp < NQ; qp++)
+                        Cdelta += C_eff[q * NQ + qp] * delta[qp];
                     f_pc[(q * STENCIL_VOL + flat) * GRID_SIZE + index] =
                         feq_B_arr[q] + R_AB * Cdelta + force_q[q];
                 }
@@ -981,7 +955,7 @@ __device__ void gilbm_step23_combined(
 // ============================================================================
 __device__ void gilbm_step1_point(
     int i, int j, int k,
-    double *f_new_ptrs[19],
+    double *f_new_ptrs[NQ],
     double *f_pc,
     double *feq_d,
     double *dk_dz_d, double *dk_dy_d,
@@ -1154,7 +1128,7 @@ __global__ void GILBM_Correction_Kernel(
     if (i <= 2 || i >= NX6 - 3 || k <= 2 || k >= NZ6 - 3) return;
     if (j < 3 || j >= NYD6 - 3) return;  // safety guard
 
-    double *f_new_ptrs[19] = {
+    double *f_new_ptrs[NQ] = {
         f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
         f7_new, f8_new, f9_new, f10_new, f11_new, f12_new,
         f13_new, f14_new, f15_new, f16_new, f17_new, f18_new
@@ -1210,7 +1184,7 @@ __global__ void GILBM_StreamCollide_Kernel(
     // Buffer=3: 計算範圍 k=3..NZ6-4
     if (i <= 2 || i >= NX6 - 3 || j <= 6 || j >= NYD6 - 7 || k <= 2 || k >= NZ6 - 3) return;
 
-    double *f_new_ptrs[19] = {
+    double *f_new_ptrs[NQ] = {
         f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
         f7_new, f8_new, f9_new, f10_new, f11_new, f12_new,
         f13_new, f14_new, f15_new, f16_new, f17_new, f18_new
@@ -1249,7 +1223,7 @@ __global__ void GILBM_StreamCollide_Buffer_Kernel(
     // Buffer=3: 計算範圍 k=3..NZ6-4
     if (i <= 2 || i >= NX6 - 3 || k <= 2 || k >= NZ6 - 3) return;
 
-    double *f_new_ptrs[19] = {
+    double *f_new_ptrs[NQ] = {
         f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
         f7_new, f8_new, f9_new, f10_new, f11_new, f12_new,
         f13_new, f14_new, f15_new, f16_new, f17_new, f18_new
@@ -1288,7 +1262,7 @@ __global__ void GILBM_Step1_Kernel(
 
     if (i <= 2 || i >= NX6 - 3 || j < 3 || j >= NYD6 - 3 || k <= 2 || k >= NZ6 - 3) return;
 
-    double *f_new_ptrs[19] = {
+    double *f_new_ptrs[NQ] = {
         f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
         f7_new, f8_new, f9_new, f10_new, f11_new, f12_new,
         f13_new, f14_new, f15_new, f16_new, f17_new, f18_new
@@ -1347,7 +1321,7 @@ __global__ void GILBM_Step23_Full_Kernel(
     // ── Boundary guard (after syncthreads to avoid deadlock) ──
     if (i <= 2 || i >= NX6 - 3 || j < 3 || j >= NYD6 - 3 || k <= 2 || k >= NZ6 - 3) return;
 
-    double *f_new_ptrs[19] = {
+    double *f_new_ptrs[NQ] = {
         f0_new, f1_new, f2_new, f3_new, f4_new, f5_new, f6_new,
         f7_new, f8_new, f9_new, f10_new, f11_new, f12_new,
         f13_new, f14_new, f15_new, f16_new, f17_new, f18_new

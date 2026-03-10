@@ -18,7 +18,7 @@
 //
 //   壁面 chain rule: ∂u_α/∂x_β = (du_α/dk)·(dk/dx_β)，展開 3α × 2β = 6 項：
 //
-//   C_i = -(omega_local)·Δt × {               [= -3ν, 常數]
+//   C_i = -(omega_local)·Δt × {                     [= -3ν, 常數]
 //     ① 9·c_{ix}·c_{iy} · (du/dk)·(dk/dy)        α=x, β=y  (δ_{xy}=0)
 //   + ② 9·c_{ix}·c_{iz} · (du/dk)·(dk/dz)        α=x, β=z  (δ_{xz}=0)
 //   + ③ (9·c_{iy}²−1)   · (dv/dk)·(dk/dy)        α=y, β=y  (δ_{yy}=1)
@@ -90,7 +90,7 @@ __device__ double ChapmanEnskogBC(
     );
 
     
-    C_alpha *= -(omega_local) * localtimestep; 
+    C_alpha *= -(omega_local ) * localtimestep; //根據Imamura公式 
     // equilibrium distribution function = GILBM_W[alpha] * rho_wall
     // f_alpha = f_eq * (1 + C_alpha)   (Imamura Eq. A.9)
     double f_eq_atwall = GILBM_W[alpha] * rho_wall;

@@ -19,9 +19,9 @@
 // 3. 網格設定
 // ================================================================
 // 全域格點數
-#define     NX      64          // 展向格點數
-#define     NY      256         // 流向格點數
-#define     NZ      128         // 法向格點數
+#define     NX      81          // 展向格點數
+#define     NY      384         // 流向格點數
+#define     NZ      192         // 法向格點數
 
 // MPI 分區
 #define     jp      8           // GPU 數量 (流向分割)
@@ -46,7 +46,7 @@
 // ================================================================
 // 4. 物理參數
 // ================================================================
-#define     Re      100         // Reynolds number (基於 H_HILL 和 Uref)
+#define     Re      50         // Reynolds number (基於 H_HILL 和 Uref)
 #define     Uref    0.0583      // 參考速度 (bulk velocity)
                                 // Re700:0.0583, Re1400/2800:0.0776
                                 // Re5600:0.0464, Re10595:0.0878
@@ -91,13 +91,8 @@
 //     1e-2  → Gehrke 預設 (多數情況適用)
 //     1e-1  → Re≥10600 中等網格 (GR22 Table 7)
 // ================================================================
-#define     USE_WP_CUMULANT     0   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
+#define     USE_WP_CUMULANT     1   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
 #define     CUM_LAMBDA          1.0e-2
-// WP cold-start ramp: A,B coefficients linearly increase from 0 to full value
-// over this many steps. Prevents negative face distributions at cold start.
-// Critical threshold: ramp > W[face]*9/(A+B) ≈ 0.20 for typical tau.
-// Set 0 to disable ramp (instant full WP from step 0).
-#define     CUM_WP_RAMP_STEPS  200
 //正則化參數引入
 // ── 互斥檢查 ──
 #if USE_MRT && USE_CUMULANT
@@ -118,7 +113,7 @@
 #define     loop        500000  // 最大時間步數
 #define     NDTMIT      50      // 每 N 步輸出 monitor 資料
 #define     NDTFRC      1000     // 每 N 步更新外力項
-#define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
+#define     NDTBIN      1000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
 // ====== Dual-Stage Force Controller ======
@@ -140,7 +135,7 @@
 // ====================================================================
 
 // P-additive controller//P控制外力控制增益模式 
-#define     FORCE_P_ALPHA           15.0     // aggressiveness (beta = alpha/Re)
+#define     FORCE_P_ALPHA           10.0     // aggressiveness (beta = alpha/Re)
 
 // Gehrke multiplicative controller
 #define     FORCE_GEHRKE_GAIN       0.05    // F *= (1 - gain × Re%)
@@ -148,7 +143,7 @@
 #define     FORCE_GEHRKE_FLOOR      0.5     // minimum Force = floor x F_Poiseuille (>0 prevents multiplicative trap to 0)
 
 // Controller switching
-#define     FORCE_SWITCH_THRESHOLD   5     // |Re%| ≤ 20% → Gehrke; > 20% → P-additive 此數據為外力模式轉換條件 
+#define     FORCE_SWITCH_THRESHOLD   8     // |Re%| ≤ 8% → Gehrke; > 8% → P-additive 此數據為外力模式轉換條件 
 
 // Legacy defines (kept for backward compatibility, unused by new controller)
 #define     FORCE_RE_DEADZONE       0.015   // (deprecated) was fractional dead zone

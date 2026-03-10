@@ -161,63 +161,58 @@ static double VerifyMRT27_Identity(const double M[NQ][NQ], const double Mi[NQ][N
 }
 
 // ============================================================================
-// Setup relaxation rates S_diag[27] per Suga et al. (2015) / Kuwata & Suga (2017)
+// Setup relaxation rates S_diag[27]
 //
-// s_visc = 1/tau where tau = 3nu/dt + 0.5
-// For tensor-product basis:
-//   - Moments 0-3 (conserved): s = 0
-//   - Moments 4-9 (stress): s = s_visc = 1/tau
-//   - Moments 10-15 (energy flux): s = s_q = 1.5
-//   - Moment 16 (xixxiyxiz): s = 1.4
-//   - Moments 17-19 (4th order): s = 1.54
-//   - Moments 20-22 (mixed 4th): s = 1.83
-//   - Moments 23-25 (5th order): s = 1.98
-//   - Moment 26 (6th order): s = 1.74
+// Strategy: TRT with magic parameter Lambda = 1/4 (Ginzburg 2008)
+//
+//   s+ = s_visc = 1/tau       (physical viscosity, determined by Re)
+//   s- = 1 / (Lambda/(tau+-0.5) + 0.5)   (ghost mode damping, auto-adaptive)
+//
+// Why Lambda = 1/4?
+//   - Bounce-back wall location error = 0 (exact halfway)
+//   - Critical for wall-bounded flows (Periodic Hill)
+//   - s- adapts to Re automatically: never exceeds 2.0
+//
+// Previous: Suga et al. (2015) fixed rates (S[23-25]=1.98 -> |G|=0.98)
+// Current:  TRT Lambda=1/4 adaptive  (s- ~ 1.20 @Re100 -> |G|=0.20)
+//           Ghost decay: 100x faster, no sign-alternating oscillation
+//
+// Moment groups:
+//   0-3  (conserved): s = 0
+//   4-9  (stress):    s = s+ = s_visc  (viscosity)
+//   10-26 (ghost):    s = s-            (TRT Lambda=1/4)
 // ============================================================================
 static void SetupD3Q27_Relaxation(double S_diag[NQ], double s_visc)
 {
-    // Conserved moments (density + momentum)
+    // ---- s+: physical viscosity rate (unchanged) ----
+    double s_plus = s_visc;
+
+    // ---- s-: ghost mode rate from TRT magic parameter Lambda = 1/4 ----
+    //   Lambda = (tau+ - 1/2)(tau- - 1/2)
+    //   tau+ = 1/s+,  tau- = Lambda/(tau+ - 1/2) + 1/2
+    //   s- = 1/tau-
+    double tau_plus  = 1.0 / s_plus;
+    double Lambda    = 0.25;  // magic parameter
+    double tau_minus = Lambda / (tau_plus - 0.5) + 0.5;
+    double s_minus   = 1.0 / tau_minus;
+
+    // Conserved moments (density + momentum): s = 0
     S_diag[0]  = 0.0;
     S_diag[1]  = 0.0;
     S_diag[2]  = 0.0;
     S_diag[3]  = 0.0;
 
-    // Stress tensor moments (viscosity-related)
-    S_diag[4]  = s_visc;  // sigmaxx
-    S_diag[5]  = s_visc;  // sigmayy
-    S_diag[6]  = s_visc;  // sigmazz
-    S_diag[7]  = s_visc;  // sigmaxy
-    S_diag[8]  = s_visc;  // sigmaxz
-    S_diag[9]  = s_visc;  // sigmayz
+    // Stress tensor moments: s = s+ (determines kinematic viscosity nu)
+    S_diag[4]  = s_plus;   // sigmaxx
+    S_diag[5]  = s_plus;   // sigmayy
+    S_diag[6]  = s_plus;   // sigmazz
+    S_diag[7]  = s_plus;   // sigmaxy
+    S_diag[8]  = s_plus;   // sigmaxz
+    S_diag[9]  = s_plus;   // sigmayz
 
-    // Energy flux moments (3rd order)
-    S_diag[10] = 1.5;
-    S_diag[11] = 1.5;
-    S_diag[12] = 1.5;
-    S_diag[13] = 1.5;
-    S_diag[14] = 1.5;
-    S_diag[15] = 1.5;
-
-    // xixxiyxiz (3rd order)
-    S_diag[16] = 1.4;
-
-    // 4th order ghost moments
-    S_diag[17] = 1.54;
-    S_diag[18] = 1.54;
-    S_diag[19] = 1.54;
-
-    // Mixed 4th order
-    S_diag[20] = 1.83;
-    S_diag[21] = 1.83;
-    S_diag[22] = 1.83;
-
-    // 5th order
-    S_diag[23] = 1.98;
-    S_diag[24] = 1.98;
-    S_diag[25] = 1.98;
-
-    // 6th order
-    S_diag[26] = 1.74;
+    // All ghost moments (3rd-6th order): s = s- (TRT Lambda=1/4)
+    for (int n = 10; n < NQ; n++)
+        S_diag[n] = s_minus;
 }
 
 #endif // MRT_MATRIX_D3Q27_FILE

@@ -156,11 +156,6 @@ void PrecomputeGILBM_DeltaAll(
 
     PrecomputeGILBM_DeltaEta(delta_eta_h, dx_val, dt_val);
     PrecomputeGILBM_DeltaXi(delta_xi_h, dy_val, dt_val);
-    // Zero-initialize delta_zeta: PrecomputeGILBM_DeltaZeta skips alpha=1,2
-    // (pure x-directions with ey=ez=0 → δζ=0) and ghost zones.
-    // cudaMallocHost does NOT zero memory, so uninitialized garbage at q=1,2
-    // corrupts Lagrange interpolation → Ma_max=6.534 at cold start → NaN.
-    memset(delta_zeta_h, 0, (size_t)NQ * NYD6_local * NZ6_local * sizeof(double));
     PrecomputeGILBM_DeltaZeta(delta_zeta_h, dk_dz_h, dk_dy_h, NYD6_local, NZ6_local, dt_val);
 }
 
