@@ -226,17 +226,31 @@ __device__ void gilbm_compute_point_gts(
 
     double rho_wall = 0.0, du_dk = 0.0, dv_dk = 0.0, dw_dk = 0.0;
     if (is_bottom) {
-        int idx3 = j * nface + 4 * NX6 + i;
+        // 2nd-order one-sided FD at wall k=2 (no-slip u[wall]=0):
+        //   du/dk|wall = (4*u[k=3] - u[k=4]) / 2   (Imamura Eq. A.9)
+        int idx_k3 = j * nface + 3 * NX6 + i;   // k=3 (first interior)
+        int idx_k4 = j * nface + 4 * NX6 + i;   // k=4 (second interior)
         double rho3, u3, v3, w3;
-        compute_macroscopic_at(f_old_ptrs, idx3, rho3, u3, v3, w3);
-        du_dk = u3;  dv_dk = v3;  dw_dk = w3;
-        rho_wall = rho3;
+        double rho4, u4, v4, w4;
+        compute_macroscopic_at(f_old_ptrs, idx_k3, rho3, u3, v3, w3);
+        compute_macroscopic_at(f_old_ptrs, idx_k4, rho4, u4, v4, w4);
+        du_dk = (4.0 * u3 - u4) * 0.5;
+        dv_dk = (4.0 * v3 - v4) * 0.5;
+        dw_dk = (4.0 * w3 - w4) * 0.5;
+        rho_wall = rho3;  // zero normal pressure gradient (Imamura S3.2)
     } else if (is_top) {
-        int idxm1 = j * nface + (NZ6 - 5) * NX6 + i;
+        // 2nd-order one-sided FD at wall k=NZ6-3 (no-slip u[wall]=0):
+        //   du/dk|wall = -(4*u[k=NZ6-4] - u[k=NZ6-5]) / 2
+        int idx_km1 = j * nface + (NZ6 - 4) * NX6 + i;  // k=NZ6-4 (first interior from top)
+        int idx_km2 = j * nface + (NZ6 - 5) * NX6 + i;  // k=NZ6-5 (second interior from top)
         double rhom1, um1, vm1, wm1;
-        compute_macroscopic_at(f_old_ptrs, idxm1, rhom1, um1, vm1, wm1);
-        du_dk = -(um1);  dv_dk = -(vm1);  dw_dk = -(wm1);
-        rho_wall = rhom1;
+        double rhom2, um2, vm2, wm2;
+        compute_macroscopic_at(f_old_ptrs, idx_km1, rhom1, um1, vm1, wm1);
+        compute_macroscopic_at(f_old_ptrs, idx_km2, rhom2, um2, vm2, wm2);
+        du_dk = -(4.0 * um1 - um2) * 0.5;
+        dv_dk = -(4.0 * vm1 - vm2) * 0.5;
+        dw_dk = -(4.0 * wm1 - wm2) * 0.5;
+        rho_wall = rhom1;  // zero normal pressure gradient (Imamura S3.2)
     }
 
     // ── STEP 1: Interpolation + Streaming (from f_old, no a_local scaling) ──
