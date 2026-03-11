@@ -142,17 +142,15 @@
 //   1 = 從 per-rank binary 續跑 (legacy, 只有瞬時場)
 //   2 = 從 merged VTK 續跑 (f=feq 近似, 統計量無法還原)
 //   3 = 從 binary checkpoint 續跑 (精確: f + 統計量累積和)
-#define     INIT                (0)
+#define     INIT                (3)
 
 // INIT=2 用: merged VTK 檔案路徑
 #define     RESTART_VTK_FILE    "result/velocity_merged_1380001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_80001"
+#define     RESTART_BIN_DIR     "checkpoint/step_73001"
 
-// 統計量讀取 (僅 INIT=1 時生效)
-// 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat
-// 0 = 不讀取，FTT ≥ FTT_STATS_START 後從零累積
+
 #define     TBINIT              (0)
 
 // ================================================================
@@ -176,22 +174,20 @@
 
 #endif
 
-/*
-備註: 座標系對應關係
-
-  Code 方向    物理方向        Benchmark 符號
-  ──────────────────────────────────────────
-  x (i)       展向 spanwise    V (benchmark)
-  y (j)       流向 streamwise  U (benchmark)
-  z (k)       法向 wall-normal W (benchmark)
-
-  VTK 輸出時需做映射:
-    VTK U_mean ← code sum_v / N / Uref
-    VTK V_mean ← code sum_u / N / Uref
-    VTK W_mean ← code sum_w / N / Uref
-
-鬆弛時間:
-  直角坐標系: τ = 3ν/dt + 0.5          (dt = minSize)
-  曲線坐標系: ω_global = 3ν/dt_global + 0.5
-  [GTS] 全域時間步: ω_global 處處相同, 無局部時間步
-*/
+// 備註: 座標系對應關係
+//
+//   Code 方向    物理方向        Benchmark 符號
+//   ──────────────────────────────────────────
+//   x (i)       展向 spanwise    V (benchmark)
+//   y (j)       流向 streamwise  U (benchmark)
+//   z (k)       法向 wall-normal W (benchmark)
+//
+//   VTK 輸出時需做映射:
+//     VTK U_mean <- code sum_v / N / Uref
+//     VTK V_mean <- code sum_u / N / Uref
+//     VTK W_mean <- code sum_w / N / Uref
+//
+// 鬆弛時間:
+//   直角坐標系: tau = 3*niu/dt + 0.5          (dt = minSize)
+//   曲線坐標系: omega_global = 3*niu/dt_global + 0.5
+//   [GTS] 全域時間步: omega_global 處處相同, 無局部時間步
