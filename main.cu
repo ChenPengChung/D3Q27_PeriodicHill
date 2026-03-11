@@ -670,7 +670,7 @@ int main(int argc, char *argv[])
             printf("+----------------------------------------------------------------+\n");
             printf("| Step = %d    FTT = %.2f\n", restart_step, FTT_init);
             printf("|%s running with %4dx%4dx%4d grids\n", argv[0], (int)NX6, (int)NY6, (int)NZ6);
-            printf("| Loop %d more steps, end at step %d\n", (int)loop, restart_step + 1 + (int)loop);
+            printf("| Simulation will run until FTT >= %.1f\n", (double)FTT_STOP);
             printf("+----------------------------------------------------------------+\n");
             printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Force=%.5E  F*=%.4f  Re(now)=%.1f  Ma=%.4f  Ma_max=%.4f\n",
                    restart_step, FTT_init, Ub_init, Ustar, Force_h[0], Fstar, Re_now, Ma_init, Ma_max_init);
@@ -706,7 +706,7 @@ int main(int argc, char *argv[])
 
 
     //從此開始進入迴圈 (FTT-gated two-stage time averaging)
-    for( step = loop_start ; step < loop_start + loop ; step++, accu_num++ ) {
+    for( step = loop_start ; ; step++, accu_num++ ) {  // 無上限，以 FTT_STOP break 為終止
         double FTT_now = step * dt_global / (double)flow_through_time;
 
         // ===== Sub-step 1: even step (ft → fd) =====
