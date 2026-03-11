@@ -205,7 +205,10 @@ def parse_vtk(filepath):
             raw_vec = []
             while len(raw_vec) < npts * 3 and idx < len(lines):
                 vals = lines[idx].strip().split()
-                if not vals or vals[0].startswith(("SCALARS", "VECTORS", "POINT_DATA")):
+                if not vals:
+                    idx += 1
+                    continue
+                if vals[0].startswith(("SCALARS", "VECTORS", "POINT_DATA")):
                     break
                 raw_vec.extend(float(v) for v in vals)
                 idx += 1
@@ -223,12 +226,17 @@ def parse_vtk(filepath):
             parts = line.split()
             current_scalar = parts[1]
             scalars[current_scalar] = []
-            idx += 1  # skip LOOKUP_TABLE line
             idx += 1
+            # skip LOOKUP_TABLE line if present
+            if idx < len(lines) and lines[idx].strip().startswith("LOOKUP_TABLE"):
+                idx += 1
             count = 0
             while count < npts and idx < len(lines):
                 vals = lines[idx].strip().split()
-                if not vals or vals[0].startswith("SCALARS") or vals[0].startswith("VECTORS"):
+                if not vals:
+                    idx += 1
+                    continue
+                if vals[0].startswith("SCALARS") or vals[0].startswith("VECTORS") or vals[0].startswith("POINT_DATA"):
                     break
                 for v in vals:
                     if count < npts:

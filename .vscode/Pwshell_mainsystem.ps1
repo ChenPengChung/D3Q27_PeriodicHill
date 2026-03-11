@@ -2702,7 +2702,7 @@ switch ($Command) {
         Write-Color "[RUN] Compiling and running on .$serverKey ib$nodeNum with $gpuCount GPUs..." "Magenta"
 
         $buildCmd = "nvcc main.cu -arch=$($Config.NvccArch) -I$($Config.MpiInclude) -L$($Config.MpiLib) -lmpi -o a.out"
-        $runCmd = "nohup mpirun -np $gpuCount /usr/local/cuda-10.2/bin/nsys profile -t cuda,nvtx -o /home/chenpengchung/D3Q27_PeriodicHill_D3Q27/nsys_rank%q{OMPI_COMM_WORLD_RANK} --duration=600 -f true ./a.out > log`$(date +%Y%m%d) 2>&1 &"
+        $runCmd = "nohup mpirun -np $gpuCount /usr/local/cuda-10.2/bin/nsys profile -t cuda,nvtx -o /home/chenpengchung/D3Q27_PeriodicHill/nsys_rank%q{OMPI_COMM_WORLD_RANK} --duration=600 -f true ./a.out > log`$(date +%Y%m%d) 2>&1 &"
         $fullCmd = "$buildCmd && $runCmd"
 
         Run-RemoteCommand $serverKey $nodeNum $fullCmd
