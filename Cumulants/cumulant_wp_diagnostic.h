@@ -48,6 +48,15 @@
 #include <cmath>
 #include <cstdlib>
 
+// ── Prevent macro collision with variables.h #defines ──
+// Save + undef for this header, restore at end via push/pop_macro
+#pragma push_macro("Re")
+#pragma push_macro("Uref")
+#pragma push_macro("niu")
+#undef Re
+#undef Uref
+#undef niu
+
 // ================================================================
 // Core computation: given w1, w2, compute all relaxation rates + singularity info
 // ================================================================
@@ -390,5 +399,10 @@ static void CumulantWP_DiagnoseOmega(
     CumWP_OmegaReport rep = CumulantWP_ComputeReport(Re_in, Uref_in, dt_global_in, omega2_in);
     CumulantWP_PrintReport(rep);
 }
+
+// ── Restore macros from variables.h ──
+#pragma pop_macro("niu")
+#pragma pop_macro("Uref")
+#pragma pop_macro("Re")
 
 #endif // CUMULANT_WP_DIAGNOSTIC_H
