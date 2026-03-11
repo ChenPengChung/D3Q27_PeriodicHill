@@ -2,6 +2,22 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Build & Run (Active File, Integrated Terminal)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${fileDirname}/${fileBasenameNoExtension}.exe",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${fileDirname}",
+      "environment": [
+        { "name": "PATH", "value": "C:\\Strawberry\\c\\bin;${env:PATH}" }
+      ],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "miDebuggerPath": "C:\\Strawberry\\c\\bin\\gdb.exe",
+      "preLaunchTask": "Build C++ (Active File)"
+    },
+    {
       "name": "MinGW (Strawberry) - Build & Debug",
       "type": "cppdbg",
       "request": "launch",
