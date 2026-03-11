@@ -337,7 +337,7 @@ __device__ void cumulant_collision_D3Q27(
     // 
 
     // ---- w2: bulk viscosity (same for both modes) ----
-    const double omega2 = 1.0;   //設置omega2在這裡
+    const double omega2 = 0.5 ;   //設置omega2在這裡
 
     // ---- w6=w7=w8: 4th order, w9: 5th order, w10: 6th order ----
     const double omega6  = 1.0;

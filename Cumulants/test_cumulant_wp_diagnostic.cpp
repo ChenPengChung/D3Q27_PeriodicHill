@@ -10,9 +10,10 @@
 //       Re, Uref required; omega2 default 1.0; dt_global default estimated from grid
 //
 // dt_global note:
-//   dt_global is computed by Imamura GTS from Jacobian metric terms.
-//   If not provided, the program estimates from variables.h grid parameters (minSize).
-//   If you have run a simulation, find "dt_global = X.XXXe-XX" in the log.
+//   dt_global is computed by Imamura GTS from Jacobian metric terms:
+//     dt_global = CFL / max_{α,j,k} |c̃_{α}(j,k)|
+//   Default value = 1.593689e-03 (current grid: NZ=192, CFL=0.5).
+//   If grid changes, update estimate_dt_global() or pass as 4th argument.
 //
 // Compile: g++ -O2 -std=c++17 -o test_cumulant_wp_diagnostic test_cumulant_wp_diagnostic.cpp -lm
 // ================================================================
@@ -38,12 +39,14 @@ static const double GRID_CFL    = 0.5;
 
 static double estimate_dt_global()
 {
-    // minSize = (LZ - H_HILL) / (NZ6 - 6) * CFL
-    // dt_global ~ minSize (Cartesian) or smaller (curvilinear due to Jacobian)
-    double minSize = (GRID_LZ - GRID_H_HILL) / (double)(GRID_NZ6 - 6) * GRID_CFL;
-    // For curvilinear coordinates, dt_global is typically 2~5x smaller than minSize
-    // Return minSize as upper-bound estimate; actual value from simulation log
-    return minSize;
+    // 曲線座標系下的 dt_global 由 CFL 公式決定：
+    //   dt_global = CFL / max_{α,j,k} |c̃_{α}(j,k)|
+    // 此值由 main.cu 中 ComputeGlobalTimeStep() 在 runtime 計算得出。
+    // 以下為目前網格參數 (NZ=192, LZ=3.036, H=1.0, CFL=0.5) 下的精確值：
+    return 1.593689e-03;
+
+    // [舊估計] minSize = (LZ - H_HILL) / (NZ6 - 6) * CFL = ~5.3e-03
+    // minSize 僅為直角座標下的參考值，實際 dt_global 因 Jacobian 度量項而更小。
 }
 
 // ================================================================
@@ -145,10 +148,10 @@ int main(int argc, char *argv[])
     // dt_global estimation
     if (!dt_from_user || dt_global <= 0.0) {
         dt_global = estimate_dt_global();
-        printf("\n  [NOTE] dt_global not provided. Using grid estimate: %.6e\n", dt_global);
-        printf("         (= minSize from variables.h; actual dt_global from Imamura GTS\n");
-        printf("          may be smaller due to curvilinear Jacobian.)\n");
-        printf("         For exact value, check simulation log: 'dt_global = X.XXXe-XX'\n");
+        printf("\n  [NOTE] dt_global not provided. Using CFL-based default: %.6e\n", dt_global);
+        printf("         (= CFL / max|c_tilde|, from Imamura GTS with current grid)\n");
+        printf("         If grid parameters changed, update estimate_dt_global() or\n");
+        printf("         pass dt_global as 4th argument from simulation log.\n");
     }
 
     // -- Main report (current omega2) --

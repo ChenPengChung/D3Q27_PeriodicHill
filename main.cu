@@ -7,6 +7,9 @@
 #include <stdarg.h>
 #include "variables.h"
 #include "MRT_Matrix_D3Q27.h"   // NQ=27, D3Q27_ex/ey/ez/W (needed by all host-side headers)
+#if USE_WP_CUMULANT
+#include "Cumulants/cumulant_wp_diagnostic.h"
+#endif
 using namespace std;
 /************************** Host Variables **************************/
 double  *fh_p[NQ]; //主機端一般態分佈函數 (D3Q27)
@@ -311,7 +314,6 @@ int main(int argc, char *argv[])
     // ── 預計算奇異點診斷 (host-side, rank 0 only) ──
     // 自動從 {Re, Uref, dt_global} 計算所有鬆弛率並檢查是否接近奇異點
     // omega2 = 1.0 (與 cumulant_collision.h 中硬編碼一致)
-    #include "Cumulants/cumulant_wp_diagnostic.h"
     CumulantWP_DiagnoseOmega((int)Re, (double)Uref, dt_global, 1.0, myid);
 #endif
 #endif
