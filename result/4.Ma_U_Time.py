@@ -130,7 +130,7 @@ def convergence_analysis(ax, ftt, values, label_name):
 # ── Helper: draw FTT=20 dark vertical marker ─────────────
 def mark_ftt_start(ax, ftt_val=20.0):
     ax.axvline(ftt_val, color='black', ls='-', lw=1.2, alpha=0.8)
-    ax.text(ftt_val, 0.92, f' FTT={ftt_val:.0f}\n accumulate start',
+    ax.text(ftt_val, 0.55, f' FTT={ftt_val:.0f}\n accumulate start',
             fontsize=9, color='black', fontweight='bold', va='top', ha='left',
             transform=ax.get_xaxis_transform(),
             bbox=dict(facecolor='white', alpha=0.8, edgecolor='black', pad=2, boxstyle='round,pad=0.3'))
@@ -139,7 +139,7 @@ def mark_ftt_start(ax, ftt_val=20.0):
 ftt_stats_start = 20.0  # accumulation start
 
 n_rows = 2 if has_rs else 1
-fig, all_axes = plt.subplots(n_rows, 1, figsize=(10, 4 * n_rows), sharex=True)
+fig, all_axes = plt.subplots(n_rows, 1, figsize=(10, 4.5 * n_rows), sharex=True)
 if n_rows == 1:
     all_axes = [all_axes]
 
@@ -162,8 +162,8 @@ ax1b.tick_params(axis='y', labelcolor=color_ma)
 
 mark_ftt_start(ax1, ftt_stats_start)
 lns = ln1 + ln2
-ax1.legend(lns, [l.get_label() for l in lns], loc='upper right', fontsize=9)
-ax1.set_title("Bulk Velocity & Mach Number", fontsize=12)
+ax1.legend(lns, [l.get_label() for l in lns], loc='upper left', fontsize=9)
+ax1.set_title("Bulk Velocity & Mach Number", fontsize=12, pad=10)
 
 # --- Bottom panel: RS + TKE (only if data exists) ---
 if has_rs:
@@ -196,12 +196,12 @@ if has_rs:
 
     mark_ftt_start(ax3, ftt_stats_start)
     lns2 = ln3 + ln4
-    ax3.legend(lns2, [l.get_label() for l in lns2], loc='upper right', fontsize=9)
-    ax3.set_title(r"RS & TKE Convergence at check point ($x/h\approx 2,\, y/h\approx 1$)", fontsize=12)
+    ax3.legend(lns2, [l.get_label() for l in lns2], loc='upper left', fontsize=9)
+    ax3.set_title(r"RS & TKE Convergence at check point ($x/h\approx 2,\, y/h\approx 1$)", fontsize=12, pad=10)
 
 all_axes[-1].set_xlabel(r"FTT (Flow-Through Time)")
-fig.suptitle(f"Periodic Hill Flow Monitor — Re = {Re}", fontsize=15)
-fig.tight_layout()
+fig.suptitle(f"Periodic Hill Flow Monitor — Re = {Re}", fontsize=15, y=0.99)
+fig.tight_layout(rect=[0, 0.03, 1, 0.95])
 
 # ── Explanation note (2 lines) ────────────────
 note = (
