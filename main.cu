@@ -784,7 +784,7 @@ int main(int argc, char *argv[])
 
         // ===== Force modification (every NDTFRC steps, Re%-based adaptive) =====
         // NOTE: step is always ODD here (after step+=1), so use == 1 like all other periodic checks
-        if ( step > 0 && (step % force_check_interval == 1) ) {
+        if ( step > 0 && (step % NDTFRC == 1) ) { //根據文獻每一格FTT/10更新一次外力 
             Launch_ModifyForcingTerm();
         }
 
