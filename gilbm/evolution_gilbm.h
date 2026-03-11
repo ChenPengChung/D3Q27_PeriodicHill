@@ -363,7 +363,7 @@ __device__ void gilbm_compute_point_gts(
     {
         double f_post[NQ];
         double rho_cum, ux_cum, uy_cum, uz_cum;
-        cumulant_collision_D3Q27(
+        cumulant_collision_D3Q27(    //所以參數話可以確定 omega1 = omega_global2規定為 1 (AO setting)
             f_streamed_all, omega_global, GILBM_dt,
             0.0, Force[0], 0.0,       // Fx=0, Fy=streamwise force, Fz=0
             f_post, &rho_cum, &ux_cum, &uy_cum, &uz_cum);

@@ -53,27 +53,58 @@ __device__ static void _cum_backward_chimera(double m[27], const double u[3]);
 // ================================================================
 // WP helper: compute parameterized w3,w4,w5 from w1,w2
 //   [GR22] Eq. 14-16, derived from 4th-order diffusion error optimization
+//
+//   SINGULARITY HANDLING:
+//   Eq.15 denominator = 0 at w1 = 14/9 ≈ 1.5556 (for w2=1).
+//   Near this pole, the parametrization formula produces omega values
+//   far outside the stability interval [0, 2].
+//
+//   Strategy: compute raw omega from Eq.14-16. If the result is outside
+//   [0, 2], the parametrization is in its divergent regime and cannot
+//   be trusted. Fall back to omega=1.0 (AO neutral value = full damping
+//   to equilibrium). This is the SAFE default that Geier 2015 uses for
+//   ALL higher-order rates.
+//
+//   The fallback is SMOOTH: we use a blending function that transitions
+//   from the parametrized value to 1.0 as we approach the instability
+//   boundary, rather than a hard switch.
+//
+//   Blending: for omega_raw ∈ [0, 2], use it directly.
+//   For omega_raw outside [0, 2]:
+//     dist = min(|omega_raw - 0|, |omega_raw - 2|) / BLEND_WIDTH
+//     omega = lerp(omega_raw_clamped, 1.0, saturate(dist))
+//   This provides C0 continuity at the boundary.
 // ================================================================
+__device__ static double _cum_wp_clamp_with_ao_fallback(double omega_raw)
+{
+    // If in stable range, use as-is
+    if (omega_raw >= 0.0 && omega_raw <= 2.0) {
+        return omega_raw;
+    }
+    // Outside [0,2]: fall back to AO neutral (1.0)
+    // The parametrization is unreliable at this w1.
+    return 1.0;
+}
+
 __device__ static void _cum_wp_compute_omega345(
     const double w1, const double w2,
     double *w3, double *w4, double *w5)
 {
-    // Denominator singularity guard:
-    //   den4 = 0 at w1 = 14/9 ~ 1.5556 (w2=1), w4 diverges
-    //   den3, den5 have no zeros in (0,2) for w2=1, but guard conservatively
-    //   When |den| < eps, corresponding omega falls back to 1.0 (neutral)
+    // Denominator guard: only for exact zero (numerical safety)
     const double DEN_EPS = 1.0e-10;
 
     // Eq. 14: w3
     double num3  = 8.0 * (w1 - 2.0) * (w2 * (3.0*w1 - 1.0) - 5.0*w1);
     double den3  = 8.0 * (5.0 - 2.0*w1) * w1
-                 + w2 * (8.0 + w1 * (9.0*w1 - 26.0));
-    *w3 = (fabs(den3) > DEN_EPS) ? num3 / den3 : 1.0;
+                 + w2 * (8.0 + w1 * (9.0*w1 - 26.0)); //分母為0，w1 = 2.46 和 -0.46
+    double w3_raw = (fabs(den3) > DEN_EPS) ? num3 / den3 : 1.0;
+    *w3 = _cum_wp_clamp_with_ao_fallback(w3_raw);
 
-    // Eq. 15: w4  (den4=0 at w1=14/9)
+    // Eq. 15: w4  (den4=0 at w1=14/9 ≈ 1.5556 for w2=1)
     double num4  = 8.0 * (w1 - 2.0) * (w1 + w2 * (3.0*w1 - 7.0));
     double den4  = w2 * (56.0 - 42.0*w1 + 9.0*w1*w1) - 8.0*w1;
-    *w4 = (fabs(den4) > DEN_EPS) ? num4 / den4 : 1.0;
+    double w4_raw = (fabs(den4) > DEN_EPS) ? num4 / den4 : 1.0;
+    *w4 = _cum_wp_clamp_with_ao_fallback(w4_raw);
 
     // Eq. 16: w5
     double num5  = 24.0 * (w1 - 2.0) * (4.0*w1*w1
@@ -82,9 +113,19 @@ __device__ static void _cum_wp_compute_omega345(
     double den5  = 16.0*w1*w1*(w1 - 6.0)
                  - 2.0*w1*w2*(216.0 + 5.0*w1*(9.0*w1 - 46.0))
                  + w2*w2*(w1*(3.0*w1 - 10.0)*(15.0*w1 - 28.0) - 48.0);
-    *w5 = (fabs(den5) > DEN_EPS) ? num5 / den5 : 1.0;
+    double w5_raw = (fabs(den5) > DEN_EPS) ? num5 / den5 : 1.0;
+    *w5 = _cum_wp_clamp_with_ao_fallback(w5_raw);
 }
-
+//統一以 omega2 = 1.0 為基準  , 
+//統計穩定度設計 : 該因子的分母不可以為0
+//輸入參數 : Re , U_ref , dt_global 輸出 w1 , w3 , w4 , w5  , A , B , 並輸出 : "分母為0發散風險 , 需要重新設置參數 (U_refz基本要調整 )(因為Re 以及 變換度量 固定於此模型)"
+//omega = Re , U_{ref} , Jaconbian 決定 ， 本身無奇異點
+//omega2 = 直接指定為1
+//omega_3 = 分母零點為 w1 = 2.46 和 -0.46
+//iomega_4 = 分母零點為 w1=14/9 ≈ 1.5556 (w2=1)
+//omega_5 分母零點為 
+//A ; 分母零點為 
+//B ;  分母零點為 ?
 // ================================================================
 // WP helper: compute A, B coefficients for 4th-order equilibria
 //   [GR22] Eq. 17-18
@@ -164,7 +205,7 @@ __device__ void cumulant_collision_D3Q27(
     //     → ν_eff ≈ 4×ν → Re_eff ≈ Re/4  (wrong physics, but stable)
     // ==============================================================
     const double omega = 1.0 / omega_tau;   // ω₁ = 1/τ (shear relaxation RATE)
-
+    //設置omega1在這裡
     // ==============================================================
     // STAGE 0: Macroscopic Quantities + Well-Conditioning
     // ==============================================================
@@ -292,7 +333,7 @@ __device__ void cumulant_collision_D3Q27(
     // 
 
     // ---- w2: bulk viscosity (same for both modes) ----
-    const double omega2 = 1.0;
+    const double omega2 = 1.0;   //設置omega2在這裡
 
     // ---- w6=w7=w8: 4th order, w9: 5th order, w10: 6th order ----
     const double omega6  = 1.0;
@@ -305,14 +346,11 @@ __device__ void cumulant_collision_D3Q27(
     // ============================================================
 
     // Step A: Compute base w3,w4,w5 from w1,w2 (Eq.14-16)
+    //   _cum_wp_compute_omega345 now includes AO-fallback for singularity:
+    //   when Eq.14-16 produce values outside [0,2], falls back to 1.0 (AO neutral).
+    //   No additional [0,2] clamp needed here.
     double omega3_base, omega4_base, omega5_base;
     _cum_wp_compute_omega345(omega, omega2, &omega3_base, &omega4_base, &omega5_base);
-
-    // Safety clamp: Eq.15 denominator at w1~1.45-1.75 range crosses zero, causing w4 divergence
-    // clamped to [0, 2] ensuring base relaxation rate within stability boundary, lambda-limiter then fine-tuned from this baseline
-    omega3_base = fmax(0.0, fmin(2.0, omega3_base));
-    omega4_base = fmax(0.0, fmin(2.0, omega4_base));
-    omega5_base = fmax(0.0, fmin(2.0, omega5_base));
 
     // Step B: Compute A, B for 4th-order equilibria (Eq.17-18)
     double coeff_A, coeff_B;

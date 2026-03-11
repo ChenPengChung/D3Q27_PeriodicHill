@@ -301,6 +301,167 @@ int main(int argc, char *argv[])
         printf("D3Q27 Cumulant (WP mode): omega=%.6f, lambda=%.2e\n",
                omega_global, (double)CUM_LAMBDA);
         printf("  WP: omega3-5 parameterized (Eq.14-16), A/B coeffs (Eq.17-18), lambda-limiter (Eq.20-26)\n");
+
+        // ================================================================
+        // WP Singularity Diagnostic (host-side, mirrors GPU computation)
+        //   在預計算階段檢查所有鬆弛率的奇異點與穩定性
+        //   Re, Uref, Jacobian (dt_global) → τ → ω₁ → ω₃,ω₄,ω₅,A,B
+        // ================================================================
+        {
+            const double tau_val  = omega_global;          // τ = 3ν/dt + 0.5
+            const double w1       = 1.0 / tau_val;         // ω₁ = 1/τ
+            const double w2       = 1.0;                   // ω₂ (bulk, hardcoded)
+            const double DEN_EPS  = 1.0e-10;
+            const double SAFE_MARGIN = 0.15;               // 距奇異點 < 0.15 視為危險
+
+            printf("\n  ┌──────────────────────────────────────────────────────────────┐\n");
+            printf("  │  Cumulant-WP Singularity Diagnostic                          │\n");
+            printf("  ├──────────────────────────────────────────────────────────────┤\n");
+            printf("  │  Input:  Re=%d, Uref=%.4f, dt_global=%.6e            │\n", (int)Re, (double)Uref, dt_global);
+            printf("  │          tau=%.6f, omega1=1/tau=%.6f, omega2=%.2f        │\n", tau_val, w1, w2);
+            printf("  ├──────────────────────────────────────────────────────────────┤\n");
+
+            // --- ω₃ (Eq.14) ---
+            double num3 = 8.0*(w1-2.0)*(w2*(3.0*w1-1.0)-5.0*w1);
+            double den3 = 8.0*(5.0-2.0*w1)*w1 + w2*(8.0+w1*(9.0*w1-26.0));
+            double w3_raw = (fabs(den3) > DEN_EPS) ? num3/den3 : 1.0;
+            double w3 = (w3_raw >= 0.0 && w3_raw <= 2.0) ? w3_raw : 1.0;
+            // ω₃ singularity: (9ω₂-16)ω₁² + (40-26ω₂)ω₁ + 8ω₂ = 0
+            double a3 = 9.0*w2-16.0, b3 = 40.0-26.0*w2, c3 = 8.0*w2;
+            double disc3 = b3*b3 - 4.0*a3*c3;
+            double w3_sing = -1.0;  // no singularity in [0,2] by default
+            if (disc3 >= 0.0 && fabs(a3) > DEN_EPS) {
+                double r3a = (-b3 - sqrt(disc3))/(2.0*a3);
+                double r3b = (-b3 + sqrt(disc3))/(2.0*a3);
+                if (r3a > 0.0 && r3a < 2.0) w3_sing = r3a;
+                else if (r3b > 0.0 && r3b < 2.0) w3_sing = r3b;
+            }
+            int w3_danger = (w3_sing > 0.0 && fabs(w1 - w3_sing) < SAFE_MARGIN);
+            int w3_fallback = (w3_raw < 0.0 || w3_raw > 2.0);
+            printf("  │  omega3 (Eq.14, symmetric 3rd):                              │\n");
+            printf("  │    raw=%.4f, used=%.4f, den=%.4f                       │\n", w3_raw, w3, den3);
+            if (w3_sing > 0.0)
+                printf("  │    singularity at omega1=%.4f (dist=%.4f)  %s            │\n",
+                       w3_sing, fabs(w1-w3_sing), w3_danger ? "DANGER!" : "OK");
+            else
+                printf("  │    no singularity in [0,2]  OK                              │\n");
+            if (w3_fallback)
+                printf("  │    [FALLBACK] omega3 out of [0,2] -> AO fallback = 1.0      │\n");
+
+            // --- ω₄ (Eq.15) ---
+            double num4 = 8.0*(w1-2.0)*(w1+w2*(3.0*w1-7.0));
+            double den4 = w2*(56.0-42.0*w1+9.0*w1*w1) - 8.0*w1;
+            double w4_raw = (fabs(den4) > DEN_EPS) ? num4/den4 : 1.0;
+            double w4 = (w4_raw >= 0.0 && w4_raw <= 2.0) ? w4_raw : 1.0;
+            // ω₄ singularity: 9ω₂·ω₁² - (42ω₂+8)ω₁ + 56ω₂ = 0
+            double a4 = 9.0*w2, b4 = -(42.0*w2+8.0), c4 = 56.0*w2;
+            double disc4 = b4*b4 - 4.0*a4*c4;
+            double w4_sing = -1.0;
+            if (disc4 >= 0.0) {
+                double r4a = (-b4 - sqrt(disc4))/(2.0*a4);
+                double r4b = (-b4 + sqrt(disc4))/(2.0*a4);
+                if (r4a > 0.0 && r4a < 2.0) w4_sing = r4a;
+                else if (r4b > 0.0 && r4b < 2.0) w4_sing = r4b;
+            }
+            int w4_danger = (w4_sing > 0.0 && fabs(w1 - w4_sing) < SAFE_MARGIN);
+            int w4_fallback = (w4_raw < 0.0 || w4_raw > 2.0);
+            printf("  │  omega4 (Eq.15, antisymmetric 3rd):                          │\n");
+            printf("  │    raw=%.4f, used=%.4f, den=%.4f                       │\n", w4_raw, w4, den4);
+            if (w4_sing > 0.0)
+                printf("  │    singularity at omega1=%.4f (dist=%.4f)  %s            │\n",
+                       w4_sing, fabs(w1-w4_sing), w4_danger ? "DANGER!" : "OK");
+            else
+                printf("  │    no singularity in [0,2]  OK                              │\n");
+            if (w4_fallback)
+                printf("  │    [FALLBACK] omega4 out of [0,2] -> AO fallback = 1.0      │\n");
+            if (w4_danger)
+                printf("  │    [WARNING] omega1=%.4f is near omega4 singularity!         │\n", w1);
+
+            // --- ω₅ (Eq.16) ---
+            double num5 = 24.0*(w1-2.0)*(4.0*w1*w1
+                        + w1*w2*(18.0-13.0*w1)
+                        + w2*w2*(2.0+w1*(6.0*w1-11.0)));
+            double den5 = 16.0*w1*w1*(w1-6.0)
+                        - 2.0*w1*w2*(216.0+5.0*w1*(9.0*w1-46.0))
+                        + w2*w2*(w1*(3.0*w1-10.0)*(15.0*w1-28.0)-48.0);
+            double w5_raw = (fabs(den5) > DEN_EPS) ? num5/den5 : 1.0;
+            double w5 = (w5_raw >= 0.0 && w5_raw <= 2.0) ? w5_raw : 1.0;
+            int w5_fallback = (w5_raw < 0.0 || w5_raw > 2.0);
+            printf("  │  omega5 (Eq.16, C111):                                       │\n");
+            printf("  │    raw=%.4f, used=%.4f, den=%.4f                     │\n", w5_raw, w5, den5);
+            if (w5_fallback)
+                printf("  │    [FALLBACK] omega5 out of [0,2] -> AO fallback = 1.0      │\n");
+            else
+                printf("  │    no singularity issue  OK                                  │\n");
+
+            // --- A, B (Eq.17-18) ---
+            double denom_AB = (w1-w2) * (w2*(2.0+3.0*w1) - 8.0*w1);
+            double AB_sing1 = w2;                                     // ω₁ = ω₂
+            double AB_sing2 = 2.0*w2 / (8.0 - 3.0*w2);              // ω₁ = 2ω₂/(8-3ω₂)
+            int AB_fallback = (fabs(denom_AB) <= DEN_EPS);
+            int AB_danger = (fabs(w1 - AB_sing1) < SAFE_MARGIN)
+                         || (AB_sing2 > 0.0 && AB_sing2 < 2.0 && fabs(w1 - AB_sing2) < SAFE_MARGIN);
+            printf("  │  A,B (Eq.17-18, 4th-order equilibria):                       │\n");
+            printf("  │    denom=%.6f                                              │\n", denom_AB);
+            printf("  │    singularity 1: omega1=omega2=%.2f (dist=%.4f)           │\n",
+                   AB_sing1, fabs(w1-AB_sing1));
+            if (AB_sing2 > 0.0 && AB_sing2 < 2.0)
+                printf("  │    singularity 2: omega1=%.4f (dist=%.4f)  %s            │\n",
+                       AB_sing2, fabs(w1-AB_sing2),
+                       fabs(w1-AB_sing2) < SAFE_MARGIN ? "DANGER!" : "OK");
+            if (AB_fallback)
+                printf("  │    [FALLBACK] A=B=0 (degenerate to AO 4th-order eq)         │\n");
+
+            // --- 綜合判定 ---
+            printf("  ├──────────────────────────────────────────────────────────────┤\n");
+            int any_danger   = w3_danger || w4_danger || AB_danger;
+            int any_fallback = w3_fallback || w4_fallback || w5_fallback || AB_fallback;
+            if (!any_danger && !any_fallback) {
+                printf("  │  VERDICT: ALL omega in stable range. WP fully active.        │\n");
+            } else if (any_fallback && !any_danger) {
+                printf("  │  VERDICT: Fallback triggered (AO substitute).                │\n");
+                printf("  │  WP accuracy degraded but simulation STABLE.                 │\n");
+                printf("  │  Cause: {Re=%d, Uref=%.4f, Jacobian->dt=%.4e}          │\n",
+                       (int)Re, (double)Uref, dt_global);
+                printf("  │  -> tau=%.4f -> omega1=%.4f near singularity              │\n", tau_val, w1);
+            } else {
+                printf("  │  VERDICT: DANGER - omega1=%.4f near singularity!             │\n", w1);
+                printf("  │  Cause: {Re=%d, Uref=%.4f, Jacobian->dt=%.4e}          │\n",
+                       (int)Re, (double)Uref, dt_global);
+                printf("  │  -> tau=%.4f -> omega1=%.4f                               │\n", tau_val, w1);
+                if (w4_danger)
+                    printf("  │  omega4 singularity at %.4f (Eq.15 den=0)                 │\n", w4_sing);
+                if (w3_danger)
+                    printf("  │  omega3 singularity at %.4f (Eq.14 den=0)                 │\n", w3_sing);
+                if (AB_danger)
+                    printf("  │  A/B singularity (Eq.17-18 denom=0)                        │\n");
+            }
+
+            // --- 建議 ---
+            if (any_danger || any_fallback) {
+                // 計算安全的 τ 區間 (避開所有奇異點)
+                printf("  │                                                              │\n");
+                printf("  │  Suggestions to avoid singularity:                           │\n");
+                if (w4_sing > 0.0) {
+                    double tau_at_sing = 1.0 / w4_sing;
+                    double tau_safe_hi = 1.0 / (w4_sing - SAFE_MARGIN);  // τ > this
+                    double tau_safe_lo = 1.0 / (w4_sing + SAFE_MARGIN);  // τ < this
+                    printf("  │  (a) Change CFL: target tau > %.4f or tau < %.4f        │\n",
+                           tau_safe_hi, tau_safe_lo);
+                    // 對應的 dt_global
+                    double dt_safe_hi = 3.0*(double)niu / (tau_safe_hi - 0.5);
+                    double dt_safe_lo = 3.0*(double)niu / (tau_safe_lo - 0.5);
+                    printf("  │      -> dt_global < %.4e or > %.4e              │\n",
+                           dt_safe_hi, dt_safe_lo);
+                }
+                printf("  │  (b) Change omega2 to shift singularity away               │\n");
+                printf("  │      omega2=0.5 -> sing at %.4f (dist=%.4f)              │\n",
+                       (50.0-sqrt(2500.0-4.0*9.0*0.5*56.0*0.5))/(2.0*9.0*0.5),
+                       fabs(w1-(50.0-sqrt(2500.0-4.0*9.0*0.5*56.0*0.5))/(2.0*9.0*0.5)));
+                printf("  │  (c) Add smooth blending in _cum_wp_compute_omega345        │\n");
+            }
+            printf("  └──────────────────────────────────────────────────────────────┘\n\n");
+        }
 #else
         printf("D3Q27 Cumulant (AO mode): omega=%.6f\n", omega_global);
         printf("  AO: omega2-10 = 1.0 (All-One, Geier 2015)\n");

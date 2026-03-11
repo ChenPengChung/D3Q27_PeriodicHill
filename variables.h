@@ -77,8 +77,8 @@
 //
 //  ★ USE_MRT 與 USE_CUMULANT 不可同時為 1 ★
 // ================================================================
-#define     USE_MRT             1
-#define     USE_CUMULANT        0
+#define     USE_MRT             0
+#define     USE_CUMULANT        1
 
 // ── Cumulant 子選項 (僅 USE_CUMULANT=1 時生效) ──────────────────
 //   USE_WP_CUMULANT = 0  →  AO: ω₂–ω₁₀ = 1, 全抑制, 穩定但耗散
@@ -91,7 +91,7 @@
 //     1e-2  → Gehrke 預設 (多數情況適用)
 //     1e-1  → Re≥10600 中等網格 (GR22 Table 7)
 // ================================================================
-#define     USE_WP_CUMULANT     0   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
+#define     USE_WP_CUMULANT     1   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
 #define     CUM_LAMBDA          1.0e-2
 //正則化參數引入
 // ── 互斥檢查 ──
@@ -135,7 +135,7 @@
 // ====================================================================
 
 // P-additive controller//P控制外力控制增益模式 
-#define     FORCE_P_ALPHA           10.0     // aggressiveness (beta = alpha/Re)
+#define     FORCE_P_ALPHA           20.0     // aggressiveness (beta = alpha/Re)
 
 // Gehrke multiplicative controller
 #define     FORCE_GEHRKE_GAIN       0.05    // F *= (1 - gain × Re%)
