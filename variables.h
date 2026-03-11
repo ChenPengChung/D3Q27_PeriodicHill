@@ -84,9 +84,9 @@
 // ================================================================
 #define     loop        500000  // 最大時間步數
 #define     NDTMIT      50      // 每 N 步輸出 monitor 資料
-#define     NDTFRC      100     // 每 N 步更新外力項
-#define     NDTBIN      1000   // 每 N 步輸出 binary checkpoint
-#define     NDTVTK      1000    // 每 N 步輸出 VTK
+#define     NDTFRC      50     // 每 N 步更新外力項
+#define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
+#define     NDTVTK      10000    // 每 N 步輸出 VTK
 
 // ====== Dual-Stage Force Controller ======
 // Phase 1: P-additive (cold start / far from target, |Re%| > SWITCH_THRESHOLD)
@@ -107,15 +107,15 @@
 // ====================================================================
 
 // P-additive controller
-#define     FORCE_P_ALPHA           20     // aggressiveness (beta = alpha/Re)
+#define     FORCE_P_ALPHA           10     // aggressiveness (beta = alpha/Re)
 
 // Gehrke multiplicative controller
 #define     FORCE_GEHRKE_GAIN       0.01    // F *= (1 - gain × Re%)
 #define     FORCE_GEHRKE_DEADZONE   1.5     // |Re%| < 1.5% → hold (percentage, not fraction)
-#define     FORCE_GEHRKE_FLOOR      0.5     // minimum Force = floor × F_Poiseuille
+#define     FORCE_GEHRKE_FLOOR      0.0     // minimum Force = floor × F_Poiseuille
 
 // Controller switching
-#define     FORCE_SWITCH_THRESHOLD  8     // |Re%| ≤ 8% → Gehrke; > 8% → P-additive
+#define     FORCE_SWITCH_THRESHOLD  10     // |Re%| ≤ 10% → Gehrke; > 10% → P-additive
 
 // Legacy defines (kept for backward compatibility, unused by new controller)
 #define     FORCE_RE_DEADZONE       0.015   // (deprecated) was fractional dead zone
@@ -148,7 +148,7 @@
 #define     RESTART_VTK_FILE    "result/velocity_merged_1380001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_73001"
+#define     RESTART_BIN_DIR     "checkpoint/step_128001"
 
 
 #define     TBINIT              (0)
