@@ -762,7 +762,7 @@ int main(int argc, char *argv[])
         }
 
         // ===== Force modification (every FT/10 steps, Re%-based adaptive) =====
-        if ( step > 0 && (step % force_check_interval == 1) ) {
+        if ( step > 0 && (step % NDTFRC == 1) ) {
             Launch_ModifyForcingTerm(); //觸發 外力控制系統
         }
 
