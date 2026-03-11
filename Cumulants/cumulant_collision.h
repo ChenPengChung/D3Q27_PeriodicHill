@@ -638,6 +638,36 @@ __device__ void cumulant_collision_D3Q27(
         f_out[i] = m[i] + GILBM_W[i];
     }
 
+    // ==============================================================
+    // STAGE 6: Guo Forcing Source Term (Guo et al. 2002)
+    // ==============================================================
+    // Cumulant 碰撞的半力速度修正 (Stage 0c) 只修改了 Chimera 變換的
+    // 速度基底，使平衡態包含力的效果，但分佈函數本身仍缺少 source term。
+    // 必須加上 Guo forcing 使動量方程正確恢復 Navier-Stokes：
+    //
+    //   f*_α += (1 - ω₁/2) × S_α × Δt
+    //
+    // 其中 S_α = w_α × ρ × [3(ξ_α·a)(1 + 3(ξ_α·u)) - 3(a·u)]
+    //       a = F/ρ (加速度), u = 半力修正速度
+    //
+    // 對照: MRT (gilbm_mrt_collision) 第 141-171 行使用完全相同的公式
+    //       BGK (evolution_gilbm.h:390) 使用簡化版 (忽略速度相關項)
+    // ==============================================================
+    {
+        double ax = Fx * inv_rho;
+        double ay = Fy * inv_rho;
+        double az = Fz * inv_rho;
+        double a_dot_u = ax*u[0] + ay*u[1] + az*u[2];
+        double prefactor = 1.0 - 0.5 * omega;  // (1 - ω₁/2)
+
+        for (int i = 0; i < 27; i++) {
+            double e_dot_a = GILBM_e[i][0]*ax + GILBM_e[i][1]*ay + GILBM_e[i][2]*az;
+            double e_dot_u = GILBM_e[i][0]*u[0] + GILBM_e[i][1]*u[1] + GILBM_e[i][2]*u[2];
+            double S_i = GILBM_W[i] * rho * (3.0*e_dot_a*(1.0 + 3.0*e_dot_u) - 3.0*a_dot_u);
+            f_out[i] += prefactor * S_i * delta_t;
+        }
+    }
+
     // Output macroscopic quantities
     *rho_out = rho;
     *ux_out  = u[0];
