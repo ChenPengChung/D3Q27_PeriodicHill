@@ -116,11 +116,11 @@ __device__ static void _cum_wp_compute_omega345(
     double w5_raw = (fabs(den5) > DEN_EPS) ? num5 / den5 : 1.0;
     *w5 = _cum_wp_clamp_with_ao_fallback(w5_raw);
 }
-//統一以 omega2 = 1.0 為基準  ,
+//統一以 omega2 = 1.0 為基準 (預設值，用於零點分析)
 //統計穩定度設計 : 該因子的分母不可以為0
 //輸入參數 : Re , U_ref , dt_global 輸出 w1 , w3 , w4 , w5  , A , B , 並輸出 : "分母為0發散風險 , 需要重新設置參數 (U_ref基本要調整 )(因為Re 以及 變換度量 固定於此模型)"
 //omega1 = Re , U_{ref} , Jacobian 決定 ， 本身無奇異點, 物理保證 w1 ∈ (0,2)
-//omega2 = 直接指定為1 
+//omega2 = CUM_OMEGA2 (由 variables.h 統一指定), 以下零點以 w2=1.0 為基準列出
 //omega_3 = 分母零點為 w1 = 2.46 和 -0.46        → 皆在 (0,2) 外, ★安全★
 //omega_4 = 分母零點為 w1 = 14/9 ≈ 1.5556 (w2=1)  → 在 (0,2) 內, ★★危險★★ 唯一需注意的奇異點
 //omega_5 = 分母零點為 w1 = -0.256 (實根) 和兩個共軛複數根 → 皆在 (0,2) 外, ★安全★
@@ -128,6 +128,7 @@ __device__ static void _cum_wp_compute_omega345(
 //A,B 共用分母 = (w1 - w2)*(w2*(2+3*w1) - 8*w1)
 //  A ; 分母零點為 w1 = w2 = 1.0  和  w1 = 2*w2/(8-3*w2) = 0.4 (w2=1)  → 皆在 (0,2) 內, ★需注意★
 //  B ; 分母零點同 A (共用分母), 額外除以 3 不影響零點位置
+//  ► 實際 omega2 由 CUM_OMEGA2 決定，零點位置會偏移，詳見 test_cumulant_wp_diagnostic 診斷輸出
 //  ► A,B 奇異點距離: |w1 - 1.0| 和 |w1 - 0.4|, 目前 w1≈0.63 → 距 0.4 僅 0.23, 距 1.0 為 0.37
 //  ► fallback: denom < DEN_EPS 時 A=B=0 (退化為 AO 模式, 4 階平衡態為零)
 // ================================================================
@@ -337,7 +338,13 @@ __device__ void cumulant_collision_D3Q27(
     // 
 
     // ---- w2: bulk viscosity (same for both modes) ----
-    const double omega2 = 0.5 ;   //設置omega2在這裡
+    // 使用 variables.h 中的全域巨集 CUM_OMEGA2
+    // (預設 0.5，可在 variables.h 統一修改)
+#ifdef CUM_OMEGA2
+    const double omega2 = CUM_OMEGA2;
+#else
+    const double omega2 = 0.5;   // fallback: verify/ 測試檔未 include variables.h 時
+#endif
 
     // ---- w6=w7=w8: 4th order, w9: 5th order, w10: 6th order ----
     const double omega6  = 1.0;
@@ -604,10 +611,21 @@ __device__ void cumulant_collision_D3Q27(
                 * inv_rho * inv_rho * 2.0/3.0
         + 1.0/27.0*((drho*drho - drho) * inv_rho * inv_rho));
 
-    // --- Force correction: sign flip of 1st-order moments (Eq. 85-87) ---
-    m[I_baa] = -m[I_baa];
-    m[I_aba] = -m[I_aba];
-    m[I_aab] = -m[I_aab];
+    // --- 1st-order moments: NO sign flip for GILBM pull-streaming ---
+    // [BUG FIX] Geier 2015 Eq.85-87 的符號翻轉是為 push-streaming / AA-pattern 設計的，
+    // 將碰撞後動量方向反轉以配合 f_q(x+e_q) = f*_q(x) 的 streaming 步驟。
+    // 但 GILBM 使用 pull-style interpolation (從出發點讀取 f_old 到抵達點)，
+    // streaming 已在插值步驟完成，碰撞應產生「就地」碰撞後分佈函數。
+    //
+    // 對照：BGK (line 386-392) 和 MRT (gilbm_mrt_collision) 碰撞算子
+    // 均不含符號翻轉，Cumulant 碰撞也不應該有。
+    //
+    // 原始錯誤效果：每步碰撞後非平衡動量分量被翻轉 → 動量振盪累積 → Ma_max 指數增長 → 發散
+    // (t=0 冷啟動 u=0 時翻轉無效，所以初始化測試全部通過，流場發展後才爆炸)
+    //
+    // m[I_baa] = -m[I_baa];  // REMOVED: kappa100 (x-momentum)
+    // m[I_aba] = -m[I_aba];  // REMOVED: kappa010 (y-momentum)
+    // m[I_aab] = -m[I_aab];  // REMOVED: kappa001 (z-momentum)
 
     // ==============================================================
     // STAGE 5: Backward Chimera Transform (x -> y -> z)

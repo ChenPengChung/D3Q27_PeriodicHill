@@ -94,6 +94,15 @@
 #define     USE_WP_CUMULANT     1   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
 #define     CUM_LAMBDA          1.0e-2
 //正則化參數引入
+
+// ── Cumulant omega2 (bulk viscosity relaxation rate) ──────────────
+//   omega2 控制體積黏度 (bulk viscosity) 的鬆弛速率
+//   Geier 2015 / Gehrke 2022 常見選擇:
+//     0.5  → 最大化 omega4 奇異點距離 (推薦，本 GILBM 預設)
+//     1.0  → 原始 Geier 2015 設定 (AO 模式常用)
+//   影響: omega3-5 (Eq.14-16) 和 A,B (Eq.17-18) 的奇異點位置
+//   ★ 此全域變數同時控制 cumulant_collision.h 和 main.cu 診斷 ★
+#define     CUM_OMEGA2          0.5
 // ── 互斥檢查 ──
 #if USE_MRT && USE_CUMULANT
 #error "USE_MRT and USE_CUMULANT are mutually exclusive. Set only one to 1."

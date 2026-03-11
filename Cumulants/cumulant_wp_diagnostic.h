@@ -3,7 +3,7 @@
 // D3Q27 Cumulant-WP Pre-computation Singularity Diagnostic (HOST-SIDE)
 //
 // Purpose: Before simulation, compute all relaxation rates and check singularities
-//   INPUT:  Re, Uref, dt_global, omega2 (from main.cu)
+//   INPUT:  Re, Uref, dt_global, omega2 (from main.cu, omega2 = CUM_OMEGA2 全域巨集)
 //   OUTPUT: Full diagnostic report (printf)
 //
 // Usage:
@@ -14,7 +14,7 @@
 //       cin >> Re >> Uref >> omega2
 //       dt_global from precompute.h ComputeGlobalTimeStep
 //
-// Singularity overview (omega2 = 1.0):
+// Singularity overview (以 omega2 = 1.0 為基準列出零點; 實際值由 CUM_OMEGA2 控制):
 //   w1: input parameter, determined by {Re, Uref, Jacobian->dt_global}, no singularity
 //       w1 = 1/tau, tau = 3*nu/dt + 0.5, nu = Uref/Re
 //       Physics guarantee: w1 in (0, 2)

@@ -7,7 +7,13 @@
 //       Program prompts for Re, Uref, omega2, dt_global
 //
 //   (2) Parameter:    ./test_cumulant_wp_diagnostic <Re> <Uref> [omega2] [dt_global]
-//       Re, Uref required; omega2 default 1.0; dt_global default estimated from grid
+//       Re, Uref required; omega2 default 1.0 (掃描用); dt_global default estimated from grid
+//
+// omega2 note:
+//   模擬中的 omega2 由 variables.h 的 CUM_OMEGA2 全域巨集控制 (預設 0.5)。
+//   此獨立工具預設 omega2=1.0 是為了展示全域掃描結果，
+//   但 omega2 scan 會自動找出最佳值並印出完整報告。
+//   若要精確匹配模擬設定，請傳入第 3 參數: ./test_cumulant_wp_diagnostic 700 0.0503 0.5
 //
 // dt_global note:
 //   dt_global is computed by Imamura GTS from Jacobian metric terms:

@@ -313,8 +313,8 @@ int main(int argc, char *argv[])
 #if USE_WP_CUMULANT
     // ── 預計算奇異點診斷 (host-side, rank 0 only) ──
     // 自動從 {Re, Uref, dt_global} 計算所有鬆弛率並檢查是否接近奇異點
-    // omega2 = 1.0 (與 cumulant_collision.h 中硬編碼一致)
-    CumulantWP_DiagnoseOmega((int)Re, (double)Uref, dt_global, 1.0, myid);
+    // omega2 = CUM_OMEGA2 (variables.h 全域巨集，碰撞與診斷統一)
+    CumulantWP_DiagnoseOmega((int)Re, (double)Uref, dt_global, (double)CUM_OMEGA2, myid);
 #endif
 #endif
 
