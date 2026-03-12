@@ -112,7 +112,32 @@ BENCHMARK_SOURCES = {
 # ================================================================
 parser = argparse.ArgumentParser(description="ERCOFTAC benchmark comparison")
 parser.add_argument('--Re', type=int, default=None, help='Reynolds number')
+parser.add_argument('--Uref', type=float, default=None, help='Reference velocity (auto-detect from variables.h if omitted)')
 args, _ = parser.parse_known_args()
+
+# ---- Auto-detect Uref from variables.h ----
+def _read_uref_from_header():
+    """Parse '#define Uref <value>' from ../variables.h."""
+    import re as _re
+    header = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'variables.h')
+    if not os.path.isfile(header):
+        return None
+    with open(header) as fh:
+        for line in fh:
+            m = _re.match(r'^\s*#\s*define\s+Uref\s+([\d.eE+\-]+)', line)
+            if m:
+                return float(m.group(1))
+    return None
+
+if args.Uref is not None:
+    Uref = args.Uref
+else:
+    Uref = _read_uref_from_header()
+    if Uref is None:
+        Uref = 0.0583          # fallback default
+        print(f"[WARN] Cannot read Uref from variables.h — using default {Uref}")
+    else:
+        print(f"[INFO] Uref = {Uref}  (from variables.h)")
 
 if args.Re is not None:
     Re = args.Re
@@ -486,6 +511,13 @@ else:
         if uw_RS_3d  is not None: uw_RS_3d  = uw_RS_3d.reshape(nz, ny, nx)
         if ww_RS_3d  is not None: ww_RS_3d  = ww_RS_3d.reshape(nz, ny, nx)
         if k_TKE_3d  is not None: k_TKE_3d  = k_TKE_3d.reshape(nz, ny, nx)
+
+        # ---- Normalize raw velocity fields by Uref ----
+        if vel_u_key == "velocity_y":
+            print(f"[INFO] Normalizing {vel_u_key}/{vel_w_key} by Uref = {Uref}")
+            U_mean_3d = U_mean_3d / Uref
+            if W_mean_3d is not None:
+                W_mean_3d = W_mean_3d / Uref
 
         HAS_RS = (uu_RS_3d is not None)
         print(f"[INFO] Using VTK fields: {vel_u_key}, {vel_w_key}")

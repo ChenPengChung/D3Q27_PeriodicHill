@@ -148,7 +148,7 @@
 #define     RESTART_VTK_FILE    "result/velocity_merged_1380001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_370001"
+#define     RESTART_BIN_DIR     "checkpoint/step_920001"
 
 
 #define     TBINIT              (0)
