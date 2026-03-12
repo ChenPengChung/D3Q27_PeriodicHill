@@ -161,9 +161,12 @@ static void ComputeCumulantEquilibrium_Host(
         double CUMcac = m[H_I_cac] - (m[H_I_caa]*m[H_I_aac] + 2.0*m[H_I_bab]*m[H_I_bab]) * inv_rho;
         double CUMacc = m[H_I_acc] - (m[H_I_aca]*m[H_I_aac] + 2.0*m[H_I_abb]*m[H_I_abb]) * inv_rho;
 
+#if !USE_WP_CUMULANT
+        // Off-diagonal 4th-order cumulants (AO only; WP uses wp_C211 etc. directly)
         double CUMcbb = m[H_I_cbb] - (m[H_I_caa]*m[H_I_abb] + 2.0*m[H_I_bba]*m[H_I_bab]) * inv_rho;
         double CUMbcb = m[H_I_bcb] - (m[H_I_aca]*m[H_I_bab] + 2.0*m[H_I_bba]*m[H_I_abb]) * inv_rho;
         double CUMbbc = m[H_I_bbc] - (m[H_I_aac]*m[H_I_bba] + 2.0*m[H_I_bab]*m[H_I_abb]) * inv_rho;
+#endif
 
         double CUMccb = m[H_I_ccb]
             - (m[H_I_caa]*m[H_I_acb] + m[H_I_aca]*m[H_I_cab]

@@ -204,7 +204,7 @@ void Launch_CollisionStreaming(double *f_old[NQ], double *f_new[NQ]) {
         y_d, x_d, z_d, u, v, w, rho_d, feq_d
     );
 }
-
+/*
 void Launch_ModifyForcingTerm()
 {
     // ====== Instantaneous Ub: zero → accumulate once → read ======
@@ -379,5 +379,162 @@ void Launch_ModifyForcingTerm()
     CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaDeviceSynchronize() );
 }
+*/
+
+void Launch_ModifyForcingTerm()
+{
+    // ====== Instantaneous Ub: zero → accumulate once → read ======
+    const size_t nBytes = NX6 * NZ6 * sizeof(double);
+    CHECK_CUDA( cudaMemset(Ub_avg_d, 0, nBytes) );
+
+    dim3 griddim_Ubulk(NX6/NT+1, 1, NZ6);
+    dim3 blockdim_Ubulk(NT, 1, 1);
+    AccumulateUbulk<<<griddim_Ubulk, blockdim_Ubulk>>>(Ub_avg_d, v);
+    CHECK_CUDA( cudaDeviceSynchronize() );
+
+    CHECK_CUDA( cudaMemcpy(Ub_avg_h, Ub_avg_d, nBytes, cudaMemcpyDeviceToHost) );
+
+    // Bilinear cell-average integration: Σ v_cell × dx_cell × dz_cell / A_total
+    double Ub_avg = 0.0;
+    for( int k = 3; k < NZ6-4; k++ ){
+    for( int i = 3; i < NX6-4; i++ ){
+        double v_cell = (Ub_avg_h[k*NX6+i] + Ub_avg_h[(k+1)*NX6+i]
+                       + Ub_avg_h[k*NX6+i+1] + Ub_avg_h[(k+1)*NX6+i+1]) / 4.0;
+        Ub_avg += v_cell * (x_h[i+1] - x_h[i]) * (z_h[3*NZ6+k+1] - z_h[3*NZ6+k]);
+    }}
+    Ub_avg /= (double)(LX*(LZ-1.0));
+
+    // Only rank 0's j=3 (hill-crest inlet cross-section) is physically meaningful
+    CHECK_MPI( MPI_Bcast(&Ub_avg, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD) );
+    Ub_avg_global = Ub_avg;
+
+    double Ma_now = Ub_avg / (double)cs;
+    double Ma_max = ComputeMaMax();  // all ranks participate (MPI_Allreduce)
+    double FTT    = step * dt_global / (double)flow_through_time;
+
+    // ====== Dual-Stage Force Controller ======
+    // Phase 1: P-additive   (|Re%| > SWITCH_THRESHOLD, cold start / far from target)
+    // Phase 2: Gehrke mult. (|Re%| ≤ SWITCH_THRESHOLD, steady state fine-tuning)
+    // Reference: Gehrke & Rung (2020), "Periodic hill flow simulations with
+    //            a parameterized cumulant lattice Boltzmann method"
+    // ================================================================
+    double Re_pct = (Ub_avg - (double)Uref) / (double)Uref * 100.0;  // percentage
+    double Re_frac = Re_pct / 100.0;  // fractional (for backward compat logging)
+
+    // Poiseuille force estimate (baseline reference)
+    double h_eff = (double)LZ - (double)H_HILL;
+    double F_Poiseuille = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff);
+
+    // Controller mode selection
+    static bool gehrke_activated = false;
+    bool use_gehrke = (fabs(Re_pct) <= (double)FORCE_SWITCH_THRESHOLD);
+    const char *ctrl_mode;
+
+    // Phase transition logging
+    if (use_gehrke && !gehrke_activated) {
+        gehrke_activated = true;
+        if (myid == 0)
+            printf("\n=== [Step %d | FTT=%.2f] Gehrke controller ACTIVATED "
+                   "(Re%%=%.2f%%, threshold=%.1f%%) ===\n\n",
+                   step, FTT, Re_pct, (double)FORCE_SWITCH_THRESHOLD);
+    } else if (!use_gehrke && gehrke_activated) {
+        gehrke_activated = false;
+        if (myid == 0)
+            printf("\n=== [Step %d | FTT=%.2f] Gehrke controller DEACTIVATED, "
+                   "back to P-additive (Re%%=%.2f%%) ===\n\n",
+                   step, FTT, Re_pct);
+    }
+
+    if (use_gehrke) {
+        // ── Phase 2: Gehrke multiplicative controller ──
+        // F *= (1 - gain × Re%)
+        // Re% > 0 → Ub too high → correction < 1 → reduce Force
+        // Re% < 0 → Ub too low  → correction > 1 → increase Force
+        if (fabs(Re_pct) < (double)FORCE_GEHRKE_DEADZONE) {
+            ctrl_mode = "GEHRKE-HOLD";
+        } else {
+            double correction = 1.0 - (double)FORCE_GEHRKE_GAIN * Re_pct;
+            // Clamp correction to [0.5, 2.0]: prevent single-step catastrophe
+            if (correction < 0.5) correction = 0.5;
+            if (correction > 2.0) correction = 2.0;
+            Force_h[0] *= correction;
+            ctrl_mode = "GEHRKE-MULT";
+        }
+        // Multiplicative floor: prevent F → 0 trap
+        double F_floor = (double)FORCE_GEHRKE_FLOOR * F_Poiseuille;
+        if (Force_h[0] < F_floor) {
+            Force_h[0] = F_floor;
+            if (myid == 0)
+                printf("[GEHRKE-FLOOR] Force clamped to %.1f%% Poiseuille = %.5E\n",
+                       (double)FORCE_GEHRKE_FLOOR * 100.0, F_floor);
+        }
+    } else {
+        // ── Phase 1: P-additive controller ──
+        // F += beta × (Uref - Ub) × Uref / LY
+        // Cold start seed: initialize from Poiseuille estimate if Force ≈ 0
+        if (Force_h[0] < 0.01 * F_Poiseuille) {
+            Force_h[0] = F_Poiseuille;
+            if (myid == 0)
+                printf("[P-SEED] Force initialized from Poiseuille estimate: %.5E\n", F_Poiseuille);
+        }
+        double beta = (double)FORCE_P_ALPHA / (double)Re;
+        if (beta < 0.001) beta = 0.001;
+        double error = (double)Uref - Ub_avg;
+        Force_h[0] += beta * error * (double)Uref / (double)LY;
+        ctrl_mode = "P-ADDITIVE";
+    }
+
+    // Force non-negative clamp
+    if (Force_h[0] < 0.0) Force_h[0] = 0.0;
+
+    // Anti-windup cap: 200× Poiseuille (hill drag ≈ 5-50× Poiseuille)
+    double Force_cap = F_Poiseuille * 200.0;
+    if (Force_h[0] > Force_cap) {
+        if (myid == 0)
+            printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (200x Poiseuille)\n",
+                   Force_h[0], Force_cap);
+        Force_h[0] = Force_cap;
+    }
+
+    // Ma safety check (local Ma_max — LBM stability depends on local max, not bulk average)
+    if (Ma_max > 0.35) {
+        Force_h[0] *= 0.05;
+        if (myid == 0)
+            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 5%%: %.5E\n", Ma_max, Force_h[0]);
+    } else if (Ma_max > 0.3) {
+        Force_h[0] *= 0.5;
+        if (myid == 0)
+            printf("[WARNING] Ma_max=%.4f > 0.3, Force halved to %.5E\n", Ma_max, Force_h[0]);
+    }
+
+    // Broadcast updated Force to all ranks
+    CHECK_MPI( MPI_Bcast(Force_h, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD) );
+
+    double U_star = Ub_avg / (double)Uref;
+    double F_star = Force_h[0] * (double)LY / ((double)Uref * (double)Uref);
+    double Re_now = Ub_avg / ((double)Uref / (double)Re);
+
+    const char *status_tag = "";
+    if (Ma_max > 0.35)       status_tag = " [WARNING: Ma_max>0.35, reduce Uref]";
+    else if (U_star > 1.2)   status_tag = " [OVERSHOOT!]";
+    else if (U_star > 1.05)  status_tag = " [OVERSHOOT]";
+
+    if (myid == 0) {
+        printf("[Step %d | FTT=%.2f] Ub=%.6f  U*=%.4f  Re%%=%.2f%%  Force=%.5E  F*=%.4f  Re=%.1f  Ma=%.4f  Ma_max=%.4f  [%s]%s\n",
+               step, FTT, Ub_avg, U_star, Re_pct, Force_h[0], F_star, Re_now, Ma_now, Ma_max, ctrl_mode, status_tag);
+
+        // Append to force_control.dat for post-processing
+        FILE *flog = fopen("force_control.dat", "a");
+        if (flog) {
+            fprintf(flog, "%d\t%.4f\t%.6f\t%.6e\t%.4f\t%.1f\t%.4f\t%s\n",
+                    step, FTT, Ub_avg, Force_h[0], Re_frac, Re_now, Ma_max, ctrl_mode);
+            fclose(flog);
+        }
+    }
+
+    CHECK_CUDA( cudaMemcpy(Force_d, Force_h, sizeof(double), cudaMemcpyHostToDevice) );
+    CHECK_CUDA( cudaDeviceSynchronize() );
+}
+
 
 #endif
