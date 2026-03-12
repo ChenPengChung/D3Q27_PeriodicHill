@@ -126,8 +126,7 @@ static void ComputeCumulantEquilibrium_Host(
     const double omega6 = 1.0;
     const double omega9 = 1.0;
     const double omega10 = 1.0;
-    const double rho = 1.0;
-    const double inv_rho = 1.0;
+    const double inv_rho = 1.0;  // rho = 1.0 at equilibrium
 
     // Initialize with standard feq at rho=1, u=0
     for (int q = 0; q < 27; q++)
@@ -150,12 +149,10 @@ static void ComputeCumulantEquilibrium_Host(
                 int b = HOST_CUM_IDX[p][1];
                 int c = HOST_CUM_IDX[p][2];
                 double old_a = m[a], old_b = m[b], old_c = m[c];
-                double k = HOST_CUM_K[p];
-                // At u=0: no velocity shift
+                // At u=0: no velocity shift (k = HOST_CUM_K[p] not needed)
                 m[a] = old_a + old_b + old_c;
                 m[b] = old_c - old_a;
                 m[c] = old_a + old_c;
-                (void)k; // k not needed at u=0 for forward
             }
         }
 
@@ -217,9 +214,12 @@ static void ComputeCumulantEquilibrium_Host(
         mxxMyy *= (1.0 - omega);
         mxxMzz *= (1.0 - omega);
 
+#if USE_WP_CUMULANT
+        // Save pre-relaxation off-diagonal 2nd-order values for WP B26-B28
         const double saved_C011 = m[H_I_abb];
         const double saved_C101 = m[H_I_bab];
         const double saved_C110 = m[H_I_bba];
+#endif
         m[H_I_abb] *= (1.0 - omega);
         m[H_I_bab] *= (1.0 - omega);
         m[H_I_bba] *= (1.0 - omega);

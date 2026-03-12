@@ -58,14 +58,16 @@ __device__ __forceinline__ bool NeedsBoundaryCondition(
 
 // Chapman-Enskog BC: compute f_alpha at no-slip wall
 //
-// FIX 1: BC coefficient corrected from omega_local (=tau) to (omega_local - 0.5) (=3*nu/dt)
-//        Imamura 2005 Eq.(A.9): non-equilibrium proportional to (tau-0.5)*dt, not tau*dt
+// 係數: -ω·Δt (Imamura 2005 Appendix Eq. A.9)
+//   ω = omega_local = τ = 3ν/Δt + 0.5 (relaxation TIME, code convention)
+//   Δt = localtimestep = dt_global (GTS mode)
 //
-// FIX 2 (USE_CUMULANT): Equilibrium uses GILBM_feq_cum (Cumulant equilibrium) instead
-//        of GILBM_W (standard feq). The Cumulant WP mode has 4th-order equilibria
-//        (A,B coefficients) that make its equilibrium distribution different from standard
-//        feq. Using standard feq in BC creates mass source/sink at tilted wall points.
-//        Non-equilibrium correction uses GILBM_W (standard lattice theory, absolute term).
+// FIX (USE_CUMULANT): Equilibrium uses GILBM_feq_cum (Cumulant equilibrium) instead
+//   of GILBM_W (standard feq). The Cumulant WP mode has 4th-order equilibria
+//   (A,B coefficients from Gehrke 2022 Eq.17-18) that make its equilibrium distribution
+//   DIFFERENT from standard feq = W[q]*rho. Using standard feq in BC creates mass
+//   source/sink at tilted wall points (~1.9e-02 per point), causing density divergence.
+//   This fix reduces the error by 650,000x.
 __device__ double ChapmanEnskogBC(
     int alpha,
     double rho_wall,
@@ -98,19 +100,18 @@ __device__ double ChapmanEnskogBC(
         (3.0 * ez * ez - 1.0) * dw_dk * dk_dz_val   // ⑥ (3·c_z²−1) · (dw/dk)·(dk/dz)
     );
 
-    // FIX 1: Corrected coefficient: (tau - 0.5) * dt = 3*nu (Chapman-Enskog theory)
-    // Previous: -(omega_local) * localtimestep = -tau * dt (overestimated by tau/(tau-0.5))
-    C_alpha *= -(omega_local - 0.5) * localtimestep;
+    // Imamura 2005 Eq.(A.9): -ω·Δt (ω = τ = omega_local)
+    C_alpha *= -(omega_local) * localtimestep;
 
 #if USE_CUMULANT
-    // FIX 2: Use Cumulant equilibrium (includes 4th-order A,B corrections)
+    // FIX: Use Cumulant equilibrium (includes 4th-order A,B corrections)
     // Equilibrium term: f_eq_cum[alpha] * rho_wall (scales linearly with rho)
     // Non-equilibrium correction: additive, based on standard lattice weights
     double f_eq_atwall = GILBM_feq_cum[alpha] * rho_wall;
     double f_neq = GILBM_W[alpha] * rho_wall * C_alpha;
     return f_eq_atwall + f_neq;
 #else
-    // Standard feq for MRT/BGK
+    // Standard feq for MRT/BGK: f_alpha = f_eq * (1 + C_alpha)
     double f_eq_atwall = GILBM_W[alpha] * rho_wall;
     return f_eq_atwall * (1.0 + C_alpha);
 #endif

@@ -1236,7 +1236,7 @@ static double ChapmanEnskogBC_CumulantAware_CPU(
                (3.0 * ey * ez) * dv_dk * dk_dz_val;
     C_alpha += (3.0 * ez * ey) * dw_dk * dk_dy_val +
                (3.0 * ez * ez - 1.0) * dw_dk * dk_dz_val;
-    C_alpha *= -(omega_local - 0.5) * localtimestep;  // FIXED: tau-0.5, not tau
+    C_alpha *= -(omega_local) * localtimestep;  // Imamura 2005: -tau * dt (original)
 
     // Use Cumulant equilibrium scaled by rho_wall (instead of W[alpha]*rho_wall)
     double f_eq_atwall = f_eq_cum[alpha] * rho_wall;
@@ -1410,6 +1410,159 @@ void test13_cumulant_aware_bc_fix() {
 }
 
 // ================================================================
+// TEST 14: Multi-step checkrho simulation (OLD vs NEW BC)
+//
+// Simulates the GILBM pipeline at a SINGLE tilted wall point:
+//   Step 0: f_old = feq → collision → f_post (stored as f_old for next step)
+//   Step 1+: streaming with BC (replace BC dirs) → collision → f_post
+//   checkrho = sum(f_post) per step
+//
+// Compares OLD BC (W*rho) vs NEW BC (f_eq_cum*rho) for 500 steps.
+// Shows whether checkrho oscillates or diverges with the fix.
+// ================================================================
+void test14_multistep_checkrho_simulation() {
+    printf("\n================================================================\n");
+    printf("TEST 14: Multi-step checkrho Simulation (Wall Point)\n");
+    printf("================================================================\n");
+
+    double omega_tau = 3.0 * niu / minSize + 0.5;
+    double dt_test = minSize;
+    double Force = 8.0 * niu * Uref / ((LZ - H_HILL) * (LZ - H_HILL)) * 2.0;
+    double dk_dy = 1.0;   // tilted wall (periodic hill slope)
+    double dk_dz = 1.0;
+
+    // Determine BC directions for this wall slope
+    int bc_dirs[NQ], non_bc_dirs[NQ];
+    int n_bc = 0, n_non_bc = 0;
+    for (int q = 0; q < NQ; q++) {
+        if (q == 0) {
+            non_bc_dirs[n_non_bc++] = q;
+        } else if (NeedsBoundaryCondition_CPU(q, dk_dy, dk_dz, true)) {
+            bc_dirs[n_bc++] = q;
+        } else {
+            non_bc_dirs[n_non_bc++] = q;
+        }
+    }
+
+    // Pre-compute Cumulant equilibrium (200 steps, no force)
+    double f_cum_eq[NQ];
+    for (int q = 0; q < NQ; q++)
+        f_cum_eq[q] = compute_feq(q, 1.0, 0.0, 0.0, 0.0);
+    double rd, ud, vd, wd;
+    for (int iter = 0; iter < 200; iter++) {
+        double ftmp[NQ];
+        cumulant_collision_D3Q27(f_cum_eq, omega_tau, dt_test,
+            0.0, 0.0, 0.0, ftmp, &rd, &ud, &vd, &wd);
+        for (int q = 0; q < NQ; q++) f_cum_eq[q] = ftmp[q];
+    }
+
+    printf("  dk_dy=%.1f, dk_dz=%.1f, n_BC=%d, n_nonBC=%d\n",
+           dk_dy, dk_dz, n_bc, n_non_bc);
+    printf("  Force = %.6e, omega_tau = %.6f, dt = %.6e\n\n", Force, omega_tau, dt_test);
+
+    // ============================================================
+    // Run two simulations: OLD BC and NEW BC
+    // ============================================================
+    double f_old_OLD[NQ], f_old_NEW[NQ];
+
+    // Initialize: cold start feq
+    for (int q = 0; q < NQ; q++) {
+        f_old_OLD[q] = compute_feq(q, 1.0, 0.0, 0.0, 0.0);
+        f_old_NEW[q] = f_old_OLD[q];
+    }
+
+    int NSTEPS = 500;
+    printf("  %5s  %18s  %18s  %12s  %12s\n",
+           "step", "rho_OLD(W*rho)", "rho_NEW(f_cum)", "uy_OLD", "uy_NEW");
+    printf("  %5s  %18s  %18s  %12s  %12s\n",
+           "-----", "------------------", "------------------",
+           "------------", "------------");
+
+    for (int step = 0; step < NSTEPS; step++) {
+        // --- Step A: Streaming with BC ---
+        double f_streamed_OLD[NQ], f_streamed_NEW[NQ];
+
+        // Compute wall macroscopic (from f_old at this point, like k=4 neighbor)
+        // Simplified: use this cell's macroscopic as wall approximation
+        double rho_wall_old = 0, jx_old = 0, jy_old = 0, jz_old = 0;
+        double rho_wall_new = 0, jx_new = 0, jy_new = 0, jz_new = 0;
+        for (int q = 0; q < NQ; q++) {
+            rho_wall_old += f_old_OLD[q];
+            jx_old += GILBM_e[q][0] * f_old_OLD[q];
+            jy_old += GILBM_e[q][1] * f_old_OLD[q];
+            jz_old += GILBM_e[q][2] * f_old_OLD[q];
+            rho_wall_new += f_old_NEW[q];
+            jx_new += GILBM_e[q][0] * f_old_NEW[q];
+            jy_new += GILBM_e[q][1] * f_old_NEW[q];
+            jz_new += GILBM_e[q][2] * f_old_NEW[q];
+        }
+        double du_old = jx_old/rho_wall_old, dv_old = jy_old/rho_wall_old, dw_old = jz_old/rho_wall_old;
+        double du_new = jx_new/rho_wall_new, dv_new = jy_new/rho_wall_new, dw_new = jz_new/rho_wall_new;
+
+        // Apply streaming: non-BC dirs keep f_old, BC dirs use BC formula
+        for (int q = 0; q < NQ; q++) {
+            f_streamed_OLD[q] = f_old_OLD[q];  // non-BC: keep (simplified, uniform field)
+            f_streamed_NEW[q] = f_old_NEW[q];
+        }
+
+        // BC directions: OLD uses W*rho, NEW uses f_cum_eq*rho
+        for (int i = 0; i < n_bc; i++) {
+            int q = bc_dirs[i];
+            f_streamed_OLD[q] = ChapmanEnskogBC_CPU(q, rho_wall_old,
+                du_old, dv_old, dw_old, dk_dy, dk_dz, omega_tau, dt_test);
+            f_streamed_NEW[q] = ChapmanEnskogBC_CumulantAware_CPU(q, rho_wall_new,
+                du_new, dv_new, dw_new, dk_dy, dk_dz, omega_tau, dt_test, f_cum_eq);
+        }
+
+        // --- Step B: Collision ---
+        double f_post_OLD[NQ], f_post_NEW[NQ];
+        double rho_o, ux_o, uy_o, uz_o;
+        double rho_n, ux_n, uy_n, uz_n;
+        cumulant_collision_D3Q27(f_streamed_OLD, omega_tau, dt_test,
+            0.0, Force, 0.0, f_post_OLD, &rho_o, &ux_o, &uy_o, &uz_o);
+        cumulant_collision_D3Q27(f_streamed_NEW, omega_tau, dt_test,
+            0.0, Force, 0.0, f_post_NEW, &rho_n, &ux_n, &uy_n, &uz_n);
+
+        // checkrho: density after collision
+        double sum_old = 0, sum_new = 0;
+        for (int q = 0; q < NQ; q++) {
+            sum_old += f_post_OLD[q];
+            sum_new += f_post_NEW[q];
+        }
+
+        // Print every 10 steps for first 100, then every 50
+        if (step < 10 || (step < 100 && step % 10 == 0) || step % 50 == 0 || step == NSTEPS - 1) {
+            printf("  %5d  %18.12f  %18.12f  %+.6e  %+.6e\n",
+                   step, sum_old, sum_new, uy_o, uy_n);
+        }
+
+        // Store for next step
+        for (int q = 0; q < NQ; q++) {
+            f_old_OLD[q] = f_post_OLD[q];
+            f_old_NEW[q] = f_post_NEW[q];
+        }
+    }
+
+    // Final summary
+    double final_rho_old = 0, final_rho_new = 0;
+    for (int q = 0; q < NQ; q++) {
+        final_rho_old += f_old_OLD[q];
+        final_rho_new += f_old_NEW[q];
+    }
+    printf("\n  --- Summary after %d steps ---\n", NSTEPS);
+    printf("  OLD BC (W*rho):      rho = %.12f  (error = %+.6e)\n",
+           final_rho_old, final_rho_old - 1.0);
+    printf("  NEW BC (f_cum*rho):  rho = %.12f  (error = %+.6e)\n",
+           final_rho_new, final_rho_new - 1.0);
+
+    if (fabs(final_rho_new - 1.0) < fabs(final_rho_old - 1.0) * 0.01) {
+        printf("\n  >>> NEW BC: checkrho stable (no oscillation expected) <<<\n");
+    } else {
+        printf("\n  >>> WARNING: NEW BC still shows density drift <<<\n");
+    }
+}
+
+// ================================================================
 // MAIN
 // ================================================================
 int main() {
@@ -1438,6 +1591,7 @@ int main() {
     test11_ao_mode_comparison();
     test12_tilted_wall_bc_mismatch();
     test13_cumulant_aware_bc_fix();
+    test14_multistep_checkrho_simulation();
 
     printf("\n================================================================\n");
     printf("All tests complete.\n");
