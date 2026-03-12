@@ -658,7 +658,11 @@ __device__ void cumulant_collision_D3Q27(
         double ay = Fy * inv_rho;
         double az = Fz * inv_rho;
         double a_dot_u = ax*u[0] + ay*u[1] + az*u[2];
-        double prefactor = 1.0 - 0.5 * omega;  // (1 - ω₁/2)
+        // BEFORE (BUGGY):
+        //double prefactor = 1.0 - 0.5 * omega;  // (1 - omega/2)
+
+        // AFTER (CORRECT):
+        double prefactor = 1.0;
 
         for (int i = 0; i < 27; i++) {
             double e_dot_a = GILBM_e[i][0]*ax + GILBM_e[i][1]*ay + GILBM_e[i][2]*az;

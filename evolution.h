@@ -318,15 +318,18 @@ void Launch_ModifyForcingTerm()
         double beta = (double)FORCE_P_ALPHA / (double)Re;
         if (beta < 0.001) beta = 0.001;
         double error = (double)Uref - Ub_avg;
-        Force_h[0] += beta * error * (double)Uref / (double)LY;
+        Force_h[0] += beta * error * (double)Uref / (double)LY * dt_global;
+        // ↑ 乘以 dt_global：補償 GILBM 控制頻率 = 1/dt_global 倍於標準 LBM
+        // 離散積分控制器：ΔF = K_I × Ts × e(n)，Ts = NDTFRC × dt_global
+        // 不乘 dt_global → 等效增益放大 1/dt ≈ 627 倍 → 振盪發散
         ctrl_mode = "P-ADDITIVE";
     }
 
     // Force non-negative clamp
     if (Force_h[0] < 0.0) Force_h[0] = 0.0;
 
-    // Anti-windup cap: 200× Poiseuille (hill drag ≈ 5-50× Poiseuille)
-    double Force_cap = F_Poiseuille * 200.0;
+    // Anti-windup cap: 20× Poiseuille (hill drag ≈ 5-15× Poiseuille)
+    double Force_cap = F_Poiseuille * 20.0;
     if (Force_h[0] > Force_cap) {
         if (myid == 0)
             printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (200x Poiseuille)\n",
@@ -336,25 +339,17 @@ void Launch_ModifyForcingTerm()
 
     // Ma safety check (local Ma_max — LBM stability depends on local max, not bulk average)
     if (Ma_max > 0.35) {
-        Force_h[0] *= 0.05;
+        Force_h[0] *= 0.5;
         if (myid == 0)
-            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 5%%: %.5E\n", Ma_max, Force_h[0]);
+            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force halved: %.5E\n", Ma_max, Force_h[0]);
     } else if (Ma_max > 0.3) {
         Force_h[0] *= 0.5;
         if (myid == 0)
             printf("[WARNING] Ma_max=%.4f > 0.3, Force halved to %.5E\n", Ma_max, Force_h[0]);
     }
 
-    // Re-apply floor AFTER Ma safety check (prevents Ma-triggered reduction from killing Force → 0 → NaN)
-    {
-        double F_floor_final = (double)FORCE_GEHRKE_FLOOR * F_Poiseuille;
-        if (Force_h[0] < F_floor_final && Force_h[0] >= 0.0) {
-            Force_h[0] = F_floor_final;
-            if (myid == 0)
-                printf("[FLOOR-POST-MA] Force re-clamped to %.1f%% Poiseuille = %.5E after Ma safety\n",
-                       (double)FORCE_GEHRKE_FLOOR * 100.0, F_floor_final);
-        }
-    }
+    // Floor-reclamp 已移除：Ma 制動把力降下來後，floor 又推回去 → 正反饋迴圈
+    // Ma↑ → 制動砍力 → floor 推回 → 力不減 → Ma 繼續↑ → 發散
 
     // Broadcast updated Force to all ranks
     CHECK_MPI( MPI_Bcast(Force_h, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD) );

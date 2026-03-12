@@ -144,7 +144,8 @@
 // ====================================================================
 
 // P-additive controller//P控制外力控制增益模式 
-#define     FORCE_P_ALPHA           20.0     // aggressiveness (beta = alpha/Re)
+#define     FORCE_P_ALPHA           2.0      // aggressiveness (beta = alpha/Re)
+                                             // dt_global 修正後不需要高增益
 
 // Gehrke multiplicative controller
 #define     FORCE_GEHRKE_GAIN       0.05    // F *= (1 - gain × Re%)
