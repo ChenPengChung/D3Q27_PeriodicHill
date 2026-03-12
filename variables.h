@@ -81,7 +81,7 @@
 #define     USE_CUMULANT        1
 
 // ── Cumulant 子選項 (僅 USE_CUMULANT=1 時生效) ──────────────────
-//   USE_WP_CUMULANT = 0  →  AO: ω₂–ω₁₀ = 1, 全抑制, 穩定但耗散
+//   USE_WP_CUMULANT = 0  →  AO: ω₂–ω₁₀ = 1 (Geier 2015), 全抑制, 穩定但耗散
 //   USE_WP_CUMULANT = 1  →  WP: ω₃–ω₅ 從 ω₁,ω₂ 優化 (Eq.14-16),
 //                             4 階平衡態 A,B (Eq.17-18),
 //                             λ-limiter 正則化 (Eq.20-26)
@@ -97,12 +97,17 @@
 
 // ── Cumulant omega2 (bulk viscosity relaxation rate) ──────────────
 //   omega2 控制體積黏度 (bulk viscosity) 的鬆弛速率
-//   Geier 2015 / Gehrke 2022 常見選擇:
-//     0.5  → 最大化 omega4 奇異點距離 (推薦，本 GILBM 預設)
-//     1.0  → 原始 Geier 2015 設定 (AO 模式常用)
+//   Gehrke 2022 Section 3.2.3: C-AO 和 C-P 兩種模式均使用 ω₂ = 1.0
+//   Geier 2015: 同樣使用 ω₂ = 1.0 (AO: ω_{C≥2} = 1)
+//
+//   ω₂ = 1.0 → 體積黏度 trace 完全鬆弛至平衡態 (ζ_bulk = 0)
+//               消除 trace 的非平衡記憶，提高穩定性
+//   ω₂ = 0.5 → trace 部分鬆弛 (ζ_bulk = cs²·Δt/6)，會保留壓力波非平衡態
+//               可能與 GILBM 插值交互作用導致不穩定
+//
 //   影響: omega3-5 (Eq.14-16) 和 A,B (Eq.17-18) 的奇異點位置
 //   ★ 此全域變數同時控制 cumulant_collision.h 和 main.cu 診斷 ★
-#define     CUM_OMEGA2          0.5
+#define     CUM_OMEGA2          1.0
 // ── 互斥檢查 ──
 #if USE_MRT && USE_CUMULANT
 #error "USE_MRT and USE_CUMULANT are mutually exclusive. Set only one to 1."

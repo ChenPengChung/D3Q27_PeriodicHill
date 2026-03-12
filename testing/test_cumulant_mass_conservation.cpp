@@ -240,7 +240,7 @@ void test1_equilibrium_zero_force() {
 
 // ================================================================
 // TEST 2: Collision at rho=1, u=0, WITH force (same as cold start)
-//         Expected: sum(f_out) = 1.0 (Guo forcing conserves mass)
+//         Expected: sum(f_out) = 1.0 (sign-flip approach conserves mass)
 // ================================================================
 void test2_equilibrium_with_force() {
     printf("\n");
@@ -279,7 +279,7 @@ void test2_equilibrium_with_force() {
     printf("  ux = %.10e, uy = %.10e, uz = %.10e\n", ux_out, uy_out, uz_out);
     printf("  Mass error = %.2e\n", sum_out - sum_in);
 
-    // Verify Guo forcing mass conservation analytically
+    // Verify mass conservation analytically (Guo formula reference, now using sign-flip)
     double ax = 0.0, ay = Force_init, az = 0.0;
     double uy_half = 0.5 * Force_init * dt_test;  // half-force velocity at cold start
     double a_dot_u = ay * uy_half;
@@ -664,11 +664,14 @@ void test7_verify_weights() {
 
 // ================================================================
 // TEST 8: Decompose Guo forcing mass contribution
+//         NOTE: Guo source is now DISABLED in cumulant_collision.h
+//         (replaced by sign-flip approach, Gehrke Thesis §3.2.1).
+//         This test validates the Guo formula standalone for reference.
 // ================================================================
 void test8_guo_forcing_mass() {
     printf("\n");
     printf("============================================================\n");
-    printf("TEST 8: Guo forcing mass contribution\n");
+    printf("TEST 8: Guo forcing mass contribution (standalone reference)\n");
     printf("============================================================\n");
 
     double dt_test = minSize;
@@ -800,7 +803,7 @@ static double ChapmanEnskogBC_CPU(
                (3.0 * ey * ez) * dv_dk * dk_dz_val;
     C_alpha += (3.0 * ez * ey) * dw_dk * dk_dy_val +
                (3.0 * ez * ez - 1.0) * dw_dk * dk_dz_val;
-    C_alpha *= -(omega_local) * localtimestep;
+    C_alpha *= -(omega_local - 0.5) * localtimestep;  // FIX: (τ-0.5)·Δt = 3ν (physical viscosity only)
 
     double f_eq_atwall = GILBM_W[alpha] * rho_wall;
     return f_eq_atwall * (1.0 + C_alpha);
@@ -1236,12 +1239,12 @@ static double ChapmanEnskogBC_CumulantAware_CPU(
                (3.0 * ey * ez) * dv_dk * dk_dz_val;
     C_alpha += (3.0 * ez * ey) * dw_dk * dk_dy_val +
                (3.0 * ez * ez - 1.0) * dw_dk * dk_dz_val;
-    C_alpha *= -(omega_local) * localtimestep;  // Imamura 2005: -tau * dt (original)
+    C_alpha *= -(omega_local - 0.5) * localtimestep;  // FIX: (τ-0.5)·Δt = 3ν (physical viscosity only)
 
     // Use Cumulant equilibrium scaled by rho_wall (instead of W[alpha]*rho_wall)
     double f_eq_atwall = f_eq_cum[alpha] * rho_wall;
-    // Non-equilibrium correction added as absolute term (based on standard feq form)
-    double f_neq = GILBM_W[alpha] * rho_wall * C_alpha;
+    // Non-equilibrium correction: f^neq = f^eq_cum × C (must use same equilibrium)
+    double f_neq = f_eq_cum[alpha] * rho_wall * C_alpha;
     return f_eq_atwall + f_neq;
 }
 
@@ -1925,25 +1928,23 @@ void test15_wp_comprehensive_verification() {
 }
 
 // ================================================================
-// TEST 16: Guo Forcing Prefactor Verification
+// TEST 16: Body Force Integration Verification
 //
-// 驗證 cumulant_collision.h 中的 Guo forcing prefactor = (1 - omega/2)
-// 是否正確恢復 Navier-Stokes 動量方程。
+// NOTE: cumulant_collision.h 現在使用 Gehrke sign-flip 方案 (Thesis §3.2.1)
+//       取代 Guo explicit source term。以下測試仍驗證多步碰撞下的質量守恆
+//       和動量累積，但力的施加機制已改為 sign-flip + ũ = u + F·dt/(2ρ)。
 //
 // 方法：對均勻靜止流場施加恆定力 100 步，檢查：
 //   A. 質量守恆 (每步 Σf = 1.0)
 //   B. 動量正確累積 (第 n 步 u_y ≈ n × a_y × dt)
-//   C. 比較碰撞前後的 prefactor 效果
 //
-// 數學：
-//   Guo 2002: u_phys = Σ(e_i × f_i)/ρ + F·dt/(2ρ)
-//   正確 prefactor (1-ω/2): 有效力 = F (精確恢復 N-S)
-//   錯誤 prefactor 1.0:     有效力 ≈ (1+ω/2)×F ≈ 1.93×F
+// 歷史：原使用 Guo 2002 explicit source 驗證 prefactor (1-ω/2)。
+//       現在 sign-flip 不需要 prefactor，力通過 ũ 隱式施加。
 // ================================================================
 void test16_guo_forcing_prefactor() {
     printf("\n");
     printf("============================================================\n");
-    printf("TEST 16: Guo Forcing Prefactor Verification\n");
+    printf("TEST 16: Body Force Integration (sign-flip approach)\n");
     printf("============================================================\n");
 
     double dt_test = minSize;

@@ -209,6 +209,7 @@ __device__ void cumulant_collision_D3Q27(
     //     (1-τ) ≈ 0.28 instead of (1-1/τ) ≈ -0.39
     //     → ν_eff ≈ 4×ν → Re_eff ≈ Re/4  (wrong physics, but stable)
     // ==============================================================
+    //omega_tau為Imamura鬆弛時間
     const double omega = 1.0 / omega_tau;   // ω₁ = 1/τ (shear relaxation RATE)
     //設置omega1在這裡
     // ==============================================================
@@ -346,8 +347,15 @@ __device__ void cumulant_collision_D3Q27(
     const double omega2 = 0.5;   // fallback: verify/ 測試檔未 include variables.h 時
 #endif
 
-    // ---- w6=w7=w8: 4th order, w9: 5th order, w10: 6th order ----
-    const double omega6  = 1.0;
+    // ---- 4th order: separate ω₆/ω₇/ω₈ [Gehrke Thesis p.56, Eq.3.83-3.88] ----
+    //   ω₆: 4th-order deviatoric (Eq.3.83-3.85, deviatoric combos)
+    //   ω₇: 4th-order trace (Eq.3.83-3.85, trace combos)
+    //   ω₈: 4th-order off-diagonal (Eq.3.86-3.88)
+    //   All = 1.0 → numerically identical to previous single omega6
+    const double omega6  = 1.0;    // 4th-order deviatoric
+    const double omega7  = 1.0;    // 4th-order trace
+    const double omega8  = 1.0;    // 4th-order off-diagonal
+    // ---- w9: 5th order, w10: 6th order ----
     const double omega9  = 1.0;
     const double omega10 = 1.0;
 
@@ -413,11 +421,29 @@ __device__ void cumulant_collision_D3Q27(
     double mxxMyy    = m[I_caa] - m[I_aca];              // deviatoric 1
     double mxxMzz    = m[I_caa] - m[I_aac];              // deviatoric 2
 
-    // Relax trace with w2 toward rho equilibrium
-    mxxPyyPzz += omega2 * (m[I_aaa] - mxxPyyPzz);
-    // Relax deviatorics with w1 toward 0
-    mxxMyy *= (1.0 - omega);
-    mxxMzz *= (1.0 - omega);
+    // ---- Galilean correction [Gehrke Thesis p.56, Eq.3.70-3.75] ----
+    // Velocity derivatives from PRE-relaxation 2nd-order cumulants.
+    // Using well-conditioned variables directly: the ±1/3 shifts cancel
+    // in both ω₁ and ω₂ terms, so m[I_xxx] can be used as-is.
+    // Verification: well-conditioned trace - drho = (κ_trace-1)-(ρ-1) = κ_trace-ρ
+    //               = standard C_trace - C_000 (walberla convention) ✓
+    //
+    // Eq.3.73-3.75 (walberla CellwiseSweep.impl.h lines 270-272):
+    double Dxux = -0.5*omega*inv_rho*(2.0*m[I_caa] - m[I_aca] - m[I_aac])
+                 - 0.5*omega2*inv_rho*(mxxPyyPzz - drho);
+    double Dyuy = Dxux + 1.5*omega*inv_rho*(m[I_caa] - m[I_aca]);
+    double Dzuz = Dxux + 1.5*omega*inv_rho*(m[I_caa] - m[I_aac]);
+
+    // Eq.3.70-3.72: Galilean correction terms
+    // (walberla CellwiseSweep.impl.h lines 274-276)
+    double GalCorr_dev1  = -3.0*rho*(1.0-0.5*omega )*(Dxux*u[0]*u[0] - Dyuy*u[1]*u[1]);
+    double GalCorr_dev2  = -3.0*rho*(1.0-0.5*omega )*(Dxux*u[0]*u[0] - Dzuz*u[2]*u[2]);
+    double GalCorr_trace = -3.0*rho*(1.0-0.5*omega2)*(Dxux*u[0]*u[0] + Dyuy*u[1]*u[1] + Dzuz*u[2]*u[2]);
+
+    // Relax with Galilean correction
+    mxxMyy    = (1.0-omega)*mxxMyy + GalCorr_dev1;      // deviatoric 1 + Gal corr
+    mxxMzz    = (1.0-omega)*mxxMzz + GalCorr_dev2;      // deviatoric 2 + Gal corr
+    mxxPyyPzz = omega2*m[I_aaa] + (1.0-omega2)*mxxPyyPzz + GalCorr_trace;  // trace + Gal corr
 
     // Off-diagonal 2nd order with w1
 #if USE_WP_CUMULANT
@@ -503,37 +529,69 @@ __device__ void cumulant_collision_D3Q27(
     double CUMcac_eq = (coeff_A * (Sxx*Szz + Dxz*Dxz) + coeff_B * (Sxx*Szz - Dxz*Dxz)) * inv_rho;
     double CUMacc_eq = (coeff_A * (Syy*Szz + Dyz*Dyz) + coeff_B * (Syy*Szz - Dyz*Dyz)) * inv_rho;
 
-    // Relax diagonal 4th-order toward non-zero equilibria
-    CUMcca += omega6 * (CUMcca_eq - CUMcca);
-    CUMcac += omega6 * (CUMcac_eq - CUMcac);
-    CUMacc += omega6 * (CUMacc_eq - CUMacc);
+    // Relax diagonal 4th-order [Thesis p.56, Eq.3.83-3.85]
+    // Full decomposition: deviatoric modes with ω₆, trace mode with ω₇
+    // Since ω₆=ω₇=1.0, per-component relaxation is equivalent.
+    // (walberla CellwiseSweep.impl.h lines 296-298 for the decomposed form)
+    {
+        double cum4_dev1  = CUMcca - 2.0*CUMcac + CUMacc;
+        double cum4_dev2  = CUMcca + CUMcac - 2.0*CUMacc;
+        double cum4_trace = CUMcca + CUMcac + CUMacc;
 
-    // Off-diagonal 4th-order: [GR22 B26-B28]
-    //   Paper gives post-collision CENTRAL MOMENT directly:
-    //     C*_{211} = (1-w1/2)*B * C_{011,pre}   (B26)
-    //     C*_{121} = (1-w1/2)*B * C_{101,pre}   (B27)
-    //     C*_{112} = (1-w1/2)*B * C_{110,pre}   (B28)
-    //   These are NON-ZERO even though the CUMULANT equilibrium involves
-    //   the back-conversion product terms. The simplest correct implementation
-    //   is to set the post-collision central moment directly from B26-B28,
-    //   bypassing the cumulant relaxation + back-conversion for these 3 moments.
-    //   The saved_C0XX values were captured before 2nd-order relaxation.
-    const double wp_offdiag_coeff = (1.0 - omega * 0.5) * coeff_B;
+        double eq4_dev1   = CUMcca_eq - 2.0*CUMcac_eq + CUMacc_eq;
+        double eq4_dev2   = CUMcca_eq + CUMcac_eq - 2.0*CUMacc_eq;
+        double eq4_trace  = CUMcca_eq + CUMcac_eq + CUMacc_eq;
+
+        cum4_dev1  += omega6*(eq4_dev1  - cum4_dev1);   // deviatoric (ω₆)
+        cum4_dev2  += omega6*(eq4_dev2  - cum4_dev2);   // deviatoric (ω₆)
+        cum4_trace += omega7*(eq4_trace - cum4_trace);   // trace (ω₇)
+
+        CUMcca = (cum4_dev1 + cum4_dev2 + cum4_trace) / 3.0;
+        CUMcac = (cum4_trace - cum4_dev1) / 3.0;
+        CUMacc = (cum4_trace - cum4_dev2) / 3.0;
+    }
+
+    // Off-diagonal 4th-order: [Thesis p.57, Eq.3.86-3.88]
+    //   With ω₈=1, Eq.3.86 reduces to (C-P simplified, Eq.3.119):
+    //     C*_{211} = (ω₁/2 - 1)·ω₁·B · C_{011,pre}
+    //     C*_{121} = (ω₁/2 - 1)·ω₁·B · C_{101,pre}
+    //     C*_{112} = (ω₁/2 - 1)·ω₁·B · C_{110,pre}
+    //
+    //   Derivation: Eq.3.86 says C*_211 = -1/3(ω₁/2-1)·ω₈·B·ρ·(∂_yw+∂_zv) + (1-ω₈)·C_211
+    //   Substituting Eq.3.89: ρ(∂_yw+∂_zv) = -3ω₁·C_011 and ω₈=1:
+    //     C*_211 = -1/3(ω₁/2-1)·1·B·(-3ω₁·C_011) + 0 = (ω₁/2-1)·ω₁·B·C_011
+    //
+    //   BUG FIX: was (1-ω/2)·B — missing ω₁ factor AND wrong sign
+    //   Correct: (ω/2-1)·ω·B = -(1-ω/2)·ω·B
+    const double wp_offdiag_coeff = (omega * 0.5 - 1.0) * omega * coeff_B;
     // These will be written directly to m[] after Stage 4 header,
     // replacing the normal cumulant back-conversion for off-diagonal 4th order.
-    const double wp_C211_star = wp_offdiag_coeff * saved_C011;  // B26
-    const double wp_C121_star = wp_offdiag_coeff * saved_C101;  // B27
-    const double wp_C112_star = wp_offdiag_coeff * saved_C110;  // B28
+    const double wp_C211_star = wp_offdiag_coeff * saved_C011;  // Eq.3.119: C*_211 ↔ C_yz
+    const double wp_C121_star = wp_offdiag_coeff * saved_C101;  // Eq.3.120: C*_121 ↔ C_xz
+    const double wp_C112_star = wp_offdiag_coeff * saved_C110;  // Eq.3.121: C*_112 ↔ C_xy
     // Note: CUMcbb/CUMbcb/CUMbbc are no longer needed for off-diagonal;
     //       we skip their relaxation and override the back-conversion below.
 #else
     // AO: all 4th-order cumulants relax toward 0
-    CUMacc *= (1.0 - omega6);
-    CUMcac *= (1.0 - omega6);
-    CUMcca *= (1.0 - omega6);
-    CUMbbc *= (1.0 - omega6);
-    CUMbcb *= (1.0 - omega6);
-    CUMcbb *= (1.0 - omega6);
+    // Diagonal: ω₆ (deviatoric) and ω₇ (trace) [Thesis Eq.3.83-3.85]
+    // Since ω₆=ω₇=1 in AO, all → 0
+    {
+        double cum4_dev1  = CUMcca - 2.0*CUMcac + CUMacc;
+        double cum4_dev2  = CUMcca + CUMcac - 2.0*CUMacc;
+        double cum4_trace = CUMcca + CUMcac + CUMacc;
+
+        cum4_dev1  *= (1.0 - omega6);   // deviatoric (ω₆)
+        cum4_dev2  *= (1.0 - omega6);   // deviatoric (ω₆)
+        cum4_trace *= (1.0 - omega7);   // trace (ω₇)
+
+        CUMcca = (cum4_dev1 + cum4_dev2 + cum4_trace) / 3.0;
+        CUMcac = (cum4_trace - cum4_dev1) / 3.0;
+        CUMacc = (cum4_trace - cum4_dev2) / 3.0;
+    }
+    // Off-diagonal: ω₈ [Thesis Eq.3.86-3.88]
+    CUMbbc *= (1.0 - omega8);
+    CUMbcb *= (1.0 - omega8);
+    CUMcbb *= (1.0 - omega8);
 #endif
 
     // ---- 5th order: equilibria = 0 for both modes ----
@@ -551,10 +609,10 @@ __device__ void cumulant_collision_D3Q27(
 
     // --- 4th order off-diagonal inverse (Eq. J.16) ---
 #if USE_WP_CUMULANT
-    // [GR22 B26-B28] Direct central moment assignment (bypasses cumulant back-conversion)
-    m[I_cbb] = wp_C211_star;  // B26: (1-w1/2)*B*C011_pre
-    m[I_bcb] = wp_C121_star;  // B27: (1-w1/2)*B*C101_pre
-    m[I_bbc] = wp_C112_star;  // B28: (1-w1/2)*B*C110_pre
+    // [Thesis Eq.3.119-3.121] Direct central moment assignment
+    m[I_cbb] = wp_C211_star;  // Eq.3.119: (ω/2-1)·ω·B·C_yz_pre
+    m[I_bcb] = wp_C121_star;  // Eq.3.120: (ω/2-1)·ω·B·C_xz_pre
+    m[I_bbc] = wp_C112_star;  // Eq.3.121: (ω/2-1)·ω·B·C_xy_pre
 #else
     m[I_cbb] = CUMcbb + ((m[I_caa] + 1.0/3.0)*m[I_abb]
                + 2.0*m[I_bba]*m[I_bab]) * inv_rho;
@@ -611,21 +669,21 @@ __device__ void cumulant_collision_D3Q27(
                 * inv_rho * inv_rho * 2.0/3.0
         + 1.0/27.0*((drho*drho - drho) * inv_rho * inv_rho));
 
-    // --- 1st-order moments: NO sign flip for GILBM pull-streaming ---
-    // [BUG FIX] Geier 2015 Eq.85-87 的符號翻轉是為 push-streaming / AA-pattern 設計的，
-    // 將碰撞後動量方向反轉以配合 f_q(x+e_q) = f*_q(x) 的 streaming 步驟。
-    // 但 GILBM 使用 pull-style interpolation (從出發點讀取 f_old 到抵達點)，
-    // streaming 已在插值步驟完成，碰撞應產生「就地」碰撞後分佈函數。
+    // --- 1st-order moments: Sign flip for Strang-splitting body force ---
+    // [Gehrke Thesis p.55, §3.2.1]:
+    //   "the three first-order central moments (κ_ō=1) have to change sign
+    //    prior to the back transformation in this case."
     //
-    // 對照：BGK (line 386-392) 和 MRT (gilbm_mrt_collision) 碰撞算子
-    // 均不含符號翻轉，Cumulant 碰撞也不應該有。
+    // Strang splitting (Geier 2015 Eq.85-87):
+    //   1) Forward Chimera uses ũ = u + F·Δt/(2ρ)   → done at Stage 0c
+    //   2) After collision, flip κ*_100, κ*_010, κ*_001 before backward Chimera
     //
-    // 原始錯誤效果：每步碰撞後非平衡動量分量被翻轉 → 動量振盪累積 → Ma_max 指數增長 → 發散
-    // (t=0 冷啟動 u=0 時翻轉無效，所以初始化測試全部通過，流場發展後才爆炸)
+    // 之前失敗原因: sign flip + Guo source 同時啟用 → 重複計算力 → 發散
+    // 現在移除 Guo source (Stage 6) 後，sign flip 單獨使用即正確實現 Strang splitting
     //
-    // m[I_baa] = -m[I_baa];  // REMOVED: kappa100 (x-momentum)
-    // m[I_aba] = -m[I_aba];  // REMOVED: kappa010 (y-momentum)
-    // m[I_aab] = -m[I_aab];  // REMOVED: kappa001 (z-momentum)
+    m[I_baa] = -m[I_baa];  // κ*_100 (x-momentum)
+    m[I_aba] = -m[I_aba];  // κ*_010 (y-momentum)
+    m[I_aab] = -m[I_aab];  // κ*_001 (z-momentum)
 
     // ==============================================================
     // STAGE 5: Backward Chimera Transform (x -> y -> z)
@@ -639,34 +697,26 @@ __device__ void cumulant_collision_D3Q27(
     }
 
     // ==============================================================
-    // STAGE 6: Guo Forcing Source Term (Guo et al. 2002)
+    // STAGE 6: Guo Forcing Source Term — DISABLED
     // ==============================================================
-    // Cumulant 碰撞的半力速度修正 (Stage 0c) 只修改了 Chimera 變換的
-    // 速度基底，使平衡態包含力的效果，但分佈函數本身仍缺少 source term。
-    // 必須加上 Guo forcing 使動量方程正確恢復 Navier-Stokes：
+    // [Gehrke Thesis p.48, Eq.3.35-3.36]:
+    //   "the body force is implicitly applied" through the modified
+    //   equilibrium velocity ũ = u + F·Δt/(2ρ) entering the collision.
+    //   No explicit Guo source term for MRT/cumulant models.
     //
-    //   f*_α += (1 - ω₁/2) × S_α × Δt
+    // Thesis p.48, Eq.3.36: f*_ζ(x,t) = f_ζ(x,t) + Ω_ζ(ρ,ũ)
+    //   → collision uses ũ directly (Stage 0c), combined with sign flip
+    //     of κ_ō=1 (above) to achieve Strang splitting.
     //
-    // 其中 S_α = w_α × ρ × [3(ξ_α·a)(1 + 3(ξ_α·u)) - 3(a·u)]
-    //       a = F/ρ (加速度), u = 半力修正速度
-    //
-    // 對照: MRT (gilbm_mrt_collision) 第 141-171 行使用完全相同的公式
-    //       BGK (evolution_gilbm.h:390) 使用簡化版 (忽略速度相關項)
+    // Previously this block added explicit Guo source: f* += (1-ω/2)·S·Δt
+    // which DOUBLE-COUNTED the force when combined with sign flip → divergence.
     // ==============================================================
+#if 0  // Guo source DISABLED — using sign-flip approach (Thesis §3.2.1)
     {
         double ax = Fx * inv_rho;
         double ay = Fy * inv_rho;
         double az = Fz * inv_rho;
         double a_dot_u = ax*u[0] + ay*u[1] + az*u[2];
-        // Guo forcing prefactor: (1 - omega/2) where omega = 1/tau
-        // 與 MRT 版 (evolution_gilbm.h 第 178 行) 一致:
-        //   m_post[n] += (1.0 - 0.5*sn) * MF[n] * dt
-        //
-        // 歷史紀錄: CONVENTION FIX 之前 omega 代表 τ(≈0.54)，
-        //   修正為 1/τ(≈1.85) 後 prefactor 從 0.73→0.075，
-        //   被誤判為 "BUGGY" 改成 1.0。
-        //   實際 (1-omega/2) 才是正確的 Guo 2002 公式。
-        //   沒有此因子 → 有效力放大 ~1.93x → Ma 爆衝。
         double prefactor = 1.0 - 0.5 * omega;
 
         for (int i = 0; i < 27; i++) {
@@ -676,6 +726,7 @@ __device__ void cumulant_collision_D3Q27(
             f_out[i] += prefactor * S_i * delta_t;
         }
     }
+#endif
 
     // Output macroscopic quantities
     *rho_out = rho;

@@ -100,8 +100,23 @@ __device__ double ChapmanEnskogBC(
         (3.0 * ez * ez - 1.0) * dw_dk * dk_dz_val   // ⑥ (3·c_z²−1) · (dw/dk)·(dk/dz)
     );
 
-    // Imamura 2005 Eq.(A.9): -ω·Δt (ω = τ = omega_local)
-    C_alpha *= -(omega_local) * localtimestep;
+    // Chapman-Enskog non-equilibrium coefficient: -(τ-0.5)·Δt = -3ν
+    //
+    // [BUG FIX] 原始代碼使用 -τ·Δt (Imamura 2005 Eq.A.9 原始寫法),
+    //   但 Chapman-Enskog BC 應使用 PHYSICAL viscosity 係數:
+    //     f^neq = -w·ρ·(τ-0.5)·Δt·cs^{-2}·Σ(e·e - cs²δ)·S
+    //
+    //   CE 一階展開 f^(1) ∝ τ 包含了離散碰撞的 "numerical viscosity" (0.5·Δt)，
+    //   但 BC 重建的是物理解 (Navier-Stokes level)，應只包含物理黏度 ν。
+    //
+    //   τ = 3ν/Δt + 0.5 → (τ-0.5)·Δt = 3ν   [正確: 純物理黏度]
+    //                      τ·Δt = 3ν + 0.5·Δt  [錯誤: 包含數值黏度]
+    //
+    //   修正前: ratio = τ/(τ-0.5) = 0.635/0.135 ≈ 4.7× 過大
+    //   → 壁面非平衡修正放大 4.7 倍 → 壁面附近不穩定 → Ma 爆衝
+    //
+    // 參照: Latt & Chopard 2006, Malaspinas 2007 (標準 CE-BC 文獻均使用 (τ-0.5))
+    C_alpha *= -(omega_local - 0.5) * localtimestep;
 
 #if USE_CUMULANT
     // FIX: Use Cumulant equilibrium (includes 4th-order A,B corrections)
