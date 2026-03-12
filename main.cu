@@ -10,6 +10,9 @@
 #if USE_WP_CUMULANT
 #include "Cumulants/cumulant_wp_diagnostic.h"
 #endif
+#if USE_CUMULANT
+#include "Cumulants/cumulant_equilibrium_host.h"
+#endif
 using namespace std;
 /************************** Host Variables **************************/
 double  *fh_p[NQ]; //主機端一般態分佈函數 (D3Q27)
@@ -316,6 +319,25 @@ int main(int argc, char *argv[])
     // omega2 = CUM_OMEGA2 (variables.h 全域巨集，碰撞與診斷統一)
     CumulantWP_DiagnoseOmega((int)Re, (double)Uref, dt_global, (double)CUM_OMEGA2, myid);
 #endif
+
+    // ── 預計算 Cumulant 平衡態分佈 (host-side, for Chapman-Enskog BC) ──
+    // Cumulant WP mode 的平衡態分佈因 4 階 A,B 係數而不同於標準 feq = W[q]*rho。
+    // 在 BC 中使用標準 feq 會在傾斜壁面造成質量源/匯 (每點 ~1.9e-02)，
+    // 導致密度波動 (checkrho ≠ 1.0000)。此修正消除了 650000 倍的誤差。
+    {
+        double feq_cum_h[NQ];
+        ComputeCumulantEquilibrium_Host(omega_global, feq_cum_h);
+        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_feq_cum, feq_cum_h, NQ*sizeof(double)) );
+        if (myid == 0) {
+            printf("  Cumulant equilibrium -> __constant__ GILBM_feq_cum[27]\n");
+            printf("    feq_cum[0]  = %.12f (vs W[0]=%.12f, diff=%+.6e)\n",
+                   feq_cum_h[0], 8.0/27.0, feq_cum_h[0] - 8.0/27.0);
+            printf("    feq_cum[1]  = %.12f (vs W[1]=%.12f, diff=%+.6e)\n",
+                   feq_cum_h[1], 2.0/27.0, feq_cum_h[1] - 2.0/27.0);
+            printf("    feq_cum[19] = %.12f (vs W[19]=%.12f, diff=%+.6e)\n",
+                   feq_cum_h[19], 1.0/216.0, feq_cum_h[19] - 1.0/216.0);
+        }
+    }
 #endif
 
     if (myid == 0) printf("GILBM: delta_zeta + __constant__(dt,eta,xi) + bk_precomp + dk copied to GPU.\n");

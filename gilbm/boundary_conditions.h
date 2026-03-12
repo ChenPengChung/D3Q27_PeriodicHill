@@ -57,6 +57,15 @@ __device__ __forceinline__ bool NeedsBoundaryCondition(
 }
 
 // Chapman-Enskog BC: compute f_alpha at no-slip wall
+//
+// FIX 1: BC coefficient corrected from omega_local (=tau) to (omega_local - 0.5) (=3*nu/dt)
+//        Imamura 2005 Eq.(A.9): non-equilibrium proportional to (tau-0.5)*dt, not tau*dt
+//
+// FIX 2 (USE_CUMULANT): Equilibrium uses GILBM_feq_cum (Cumulant equilibrium) instead
+//        of GILBM_W (standard feq). The Cumulant WP mode has 4th-order equilibria
+//        (A,B coefficients) that make its equilibrium distribution different from standard
+//        feq. Using standard feq in BC creates mass source/sink at tilted wall points.
+//        Non-equilibrium correction uses GILBM_W (standard lattice theory, absolute term).
 __device__ double ChapmanEnskogBC(
     int alpha,
     double rho_wall,
@@ -73,28 +82,38 @@ __device__ double ChapmanEnskogBC(
 
     // α=x: ①② 項
     C_alpha += (
-        (3.0 * ex * ey) * du_dk * dk_dy_val +       // ① 3·c_x·c_y · (du/dk)·(dk/dy)//x->u;y->y
-        (3.0 * ex * ez) * du_dk * dk_dz_val          // ② 3·c_x·c_z · (du/dk)·(dk/dz)//x->u;z->z
+        (3.0 * ex * ey) * du_dk * dk_dy_val +       // ① 3·c_x·c_y · (du/dk)·(dk/dy)
+        (3.0 * ex * ez) * du_dk * dk_dz_val          // ② 3·c_x·c_z · (du/dk)·(dk/dz)
     );
 
     // α=y: ③④ 項
     C_alpha += (
-        (3.0 * ey * ey - 1.0) * dv_dk * dk_dy_val + // ③ (3·c_y²−1) · (dv/dk)·(dk/dy)//y->v;y->y
-        (3.0 * ey * ez) * dv_dk * dk_dz_val          // ④ 3·c_y·c_z · (dv/dk)·(dk/dz)//y->v;z->z
+        (3.0 * ey * ey - 1.0) * dv_dk * dk_dy_val + // ③ (3·c_y²−1) · (dv/dk)·(dk/dy)
+        (3.0 * ey * ez) * dv_dk * dk_dz_val          // ④ 3·c_y·c_z · (dv/dk)·(dk/dz)
     );
 
     // α=z: ⑤⑥ 項
     C_alpha += (
-        (3.0 * ez * ey) * dw_dk * dk_dy_val +       // ⑤ 3·c_z·c_y · (dw/dk)·(dk/dy)//z->w;y->y
-        (3.0 * ez * ez - 1.0) * dw_dk * dk_dz_val   // ⑥ (3·c_z²−1) · (dw/dk)·(dk/dz)//z->w;z->z
+        (3.0 * ez * ey) * dw_dk * dk_dy_val +       // ⑤ 3·c_z·c_y · (dw/dk)·(dk/dy)
+        (3.0 * ez * ez - 1.0) * dw_dk * dk_dz_val   // ⑥ (3·c_z²−1) · (dw/dk)·(dk/dz)
     );
 
-    
-    C_alpha *= -(omega_local ) * localtimestep; //根據Imamura公式 
-    // equilibrium distribution function = GILBM_W[alpha] * rho_wall
-    // f_alpha = f_eq * (1 + C_alpha)   (Imamura Eq. A.9)
+    // FIX 1: Corrected coefficient: (tau - 0.5) * dt = 3*nu (Chapman-Enskog theory)
+    // Previous: -(omega_local) * localtimestep = -tau * dt (overestimated by tau/(tau-0.5))
+    C_alpha *= -(omega_local - 0.5) * localtimestep;
+
+#if USE_CUMULANT
+    // FIX 2: Use Cumulant equilibrium (includes 4th-order A,B corrections)
+    // Equilibrium term: f_eq_cum[alpha] * rho_wall (scales linearly with rho)
+    // Non-equilibrium correction: additive, based on standard lattice weights
+    double f_eq_atwall = GILBM_feq_cum[alpha] * rho_wall;
+    double f_neq = GILBM_W[alpha] * rho_wall * C_alpha;
+    return f_eq_atwall + f_neq;
+#else
+    // Standard feq for MRT/BGK
     double f_eq_atwall = GILBM_W[alpha] * rho_wall;
-    return f_eq_atwall * (1.0 + C_alpha) ;  //計算壁面上的插值後分佈函數
+    return f_eq_atwall * (1.0 + C_alpha);
+#endif
 }
 
 #endif

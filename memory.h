@@ -166,6 +166,7 @@ void AllocateMemory() {
     CHECK_CUDA( cudaMalloc( &Force_d, nBytes ) );
     CHECK_CUDA( cudaMallocHost( (void**)&rho_modify_h, nBytes ) );
     CHECK_CUDA( cudaMalloc( &rho_modify_d, nBytes ) );
+    CHECK_CUDA( cudaMemset(rho_modify_d, 0, nBytes) );  // FIX: zero-init (was uninitialized at step 0)
 
     CHECK_CUDA( cudaStreamCreate( &stream0 ) );
     CHECK_CUDA( cudaStreamCreate( &stream1 ) );

@@ -49,6 +49,13 @@ __constant__ double GILBM_Mi[NQ][NQ];
 __constant__ double GILBM_S[NQ];
 #endif
 
+#if USE_CUMULANT
+// Cumulant equilibrium distribution at rho=1, u=0 (pre-computed on host)
+// Differs from GILBM_W due to 4th-order equilibria (A,B coefficients in WP mode)
+// Used by Chapman-Enskog BC to match the Cumulant collision's equilibrium
+__constant__ double GILBM_feq_cum[NQ];
+#endif
+
 // Include sub-modules (after __constant__ declarations they depend on)
 #include "interpolation_gilbm.h"
 #include "boundary_conditions.h"

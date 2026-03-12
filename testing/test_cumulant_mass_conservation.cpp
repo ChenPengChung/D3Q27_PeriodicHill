@@ -1062,6 +1062,354 @@ void test11_ao_mode_comparison() {
 }
 
 // ================================================================
+// TEST 12: Tilted wall BC mismatch (actual periodic hill has dk_dy != 0)
+//          AND: BC coefficient error analysis (tau vs tau-0.5)
+// ================================================================
+void test12_tilted_wall_bc_mismatch() {
+    printf("\n================================================================\n");
+    printf("TEST 12: Tilted Wall BC Mismatch + BC Coefficient Error\n");
+    printf("================================================================\n");
+
+    double omega_tau = 3.0 * niu / minSize + 0.5;  // tau
+    double dt_test = minSize;
+    double Force = 8.0 * niu * Uref / ((LZ - H_HILL) * (LZ - H_HILL)) * 2.0;  // 2x Poiseuille
+
+    // Step 0 collision: feq + force → f_post
+    double f_eq[NQ];
+    for (int q = 0; q < NQ; q++)
+        f_eq[q] = compute_feq(q, 1.0, 0.0, 0.0, 0.0);
+
+    double f_post[NQ];
+    double rho_cum, ux_cum, uy_cum, uz_cum;
+    cumulant_collision_D3Q27(f_eq, omega_tau, dt_test,
+        0.0, Force, 0.0,
+        f_post, &rho_cum, &ux_cum, &uy_cum, &uz_cum);
+
+    // Raw macroscopic (no force correction, like compute_macroscopic_at)
+    double rho_raw = 0.0, jx_raw = 0.0, jy_raw = 0.0, jz_raw = 0.0;
+    for (int q = 0; q < NQ; q++) {
+        rho_raw += f_post[q];
+        jx_raw += GILBM_e[q][0] * f_post[q];
+        jy_raw += GILBM_e[q][1] * f_post[q];
+        jz_raw += GILBM_e[q][2] * f_post[q];
+    }
+    double ux_raw = jx_raw / rho_raw;
+    double vy_raw = jy_raw / rho_raw;
+    double wz_raw = jz_raw / rho_raw;
+
+    printf("  omega_global(tau)   = %.6f\n", omega_tau);
+    printf("  tau - 0.5          = %.6f  (=3*nu/dt)\n", omega_tau - 0.5);
+    printf("  BC uses tau*dt     = %.6e  (CURRENT, wrong)\n", omega_tau * dt_test);
+    printf("  Should use (tau-0.5)*dt = %.6e  (CORRECT = 3*nu)\n", (omega_tau - 0.5) * dt_test);
+    printf("  Overestimation factor = tau/(tau-0.5) = %.1f x !!!\n", omega_tau / (omega_tau - 0.5));
+    printf("  Post-collision: vy_raw = %.6e (raw momentum / rho)\n\n", vy_raw);
+
+    // Test several tilted wall angles (like the periodic hill slope)
+    double dk_dy_vals[] = { 0.0, 0.5, 1.0, 2.0, -0.5, -1.0 };
+    double dk_dz_val = 1.0;
+    int n_angles = sizeof(dk_dy_vals) / sizeof(dk_dy_vals[0]);
+
+    printf("  %-8s  %-6s  %-6s  %-12s  %-12s  %-12s\n",
+           "dk_dy", "n_BC", "n_noBC", "err_tau*dt", "err_(tau-0.5)", "ratio");
+    printf("  %-8s  %-6s  %-6s  %-12s  %-12s  %-12s\n",
+           "--------", "------", "------", "------------", "------------", "--------");
+
+    for (int angle = 0; angle < n_angles; angle++) {
+        double dk_dy = dk_dy_vals[angle];
+
+        // Determine BC directions
+        int bc_dirs[NQ], n_bc = 0;
+        int non_bc_dirs[NQ], n_non_bc = 0;
+        for (int q = 0; q < NQ; q++) {
+            if (q == 0) {
+                non_bc_dirs[n_non_bc++] = q;
+            } else if (NeedsBoundaryCondition_CPU(q, dk_dy, dk_dz_val, true)) {
+                bc_dirs[n_bc++] = q;
+            } else {
+                non_bc_dirs[n_non_bc++] = q;
+            }
+        }
+
+        // Test with CURRENT BC coefficient (tau * dt) — WRONG
+        double rho_err_current = 0.0;
+        for (int i = 0; i < n_bc; i++) {
+            int q = bc_dirs[i];
+            double f_bc = ChapmanEnskogBC_CPU(q, rho_raw,
+                ux_raw, vy_raw, wz_raw, dk_dy, dk_dz_val, omega_tau, dt_test);
+            rho_err_current += (f_bc - f_post[q]);
+        }
+
+        // Test with CORRECT BC coefficient (tau-0.5) * dt = 3*nu
+        double rho_err_correct = 0.0;
+        for (int i = 0; i < n_bc; i++) {
+            int q = bc_dirs[i];
+            double f_bc = ChapmanEnskogBC_CPU(q, rho_raw,
+                ux_raw, vy_raw, wz_raw, dk_dy, dk_dz_val, omega_tau - 0.5, dt_test);
+            rho_err_correct += (f_bc - f_post[q]);
+        }
+
+        double ratio = (fabs(rho_err_correct) > 1e-30) ?
+            fabs(rho_err_current) / fabs(rho_err_correct) : 0.0;
+
+        printf("  %+6.1f    %-6d  %-6d  %+.6e  %+.6e  %.1f\n",
+               dk_dy, n_bc, n_non_bc - 1, rho_err_current, rho_err_correct, ratio);
+    }
+
+    // ---- Detailed analysis for dk_dy = 1.0 (typical hill slope) ----
+    double dk_dy_hill = 1.0;
+    printf("\n  Detailed analysis for dk_dy = %.1f (tilted wall like periodic hill):\n", dk_dy_hill);
+
+    int bc_dirs_hill[NQ], n_bc_hill = 0;
+    for (int q = 1; q < NQ; q++)
+        if (NeedsBoundaryCondition_CPU(q, dk_dy_hill, dk_dz_val, true))
+            bc_dirs_hill[n_bc_hill++] = q;
+
+    printf("  BC directions (%d): ", n_bc_hill);
+    for (int i = 0; i < n_bc_hill; i++)
+        printf("q=%d(ey=%+.0f,ez=%+.0f) ", bc_dirs_hill[i],
+               GILBM_e[bc_dirs_hill[i]][1], GILBM_e[bc_dirs_hill[i]][2]);
+    printf("\n\n");
+
+    printf("  Per-direction (CURRENT tau*dt):\n");
+    double total_err = 0.0;
+    for (int i = 0; i < n_bc_hill; i++) {
+        int q = bc_dirs_hill[i];
+        double f_bc = ChapmanEnskogBC_CPU(q, rho_raw,
+            ux_raw, vy_raw, wz_raw, dk_dy_hill, dk_dz_val, omega_tau, dt_test);
+        double diff = f_bc - f_post[q];
+        total_err += diff;
+        printf("    q=%2d e=(%+.0f,%+.0f,%+.0f) W=%.6f: f_BC=%.12f f_post=%.12f diff=%+.6e\n",
+               q, GILBM_e[q][0], GILBM_e[q][1], GILBM_e[q][2], GILBM_W[q], f_bc, f_post[q], diff);
+    }
+    printf("  Sum of errors (= density error per wall point) = %+.6e\n", total_err);
+
+    // Global estimate for periodic hill
+    printf("\n  --- Global density error estimate (periodic hill) ---\n");
+    // Periodic hill has ~50% of bottom wall area with non-zero slope
+    // Estimate: wall points with slope contribute density error
+    int n_wall_points_sloped = (NX6 - 7) * (NY6 - 7) / 2;  // ~50% of wall with slope
+    int n_total_points = (NX6 - 7) * (NY6 - 7) * (NZ6 - 6);
+    double estimated_global_err = total_err * (double)n_wall_points_sloped / (double)n_total_points;
+    printf("  Sloped wall points (approx): %d\n", n_wall_points_sloped);
+    printf("  Total interior points: %d\n", n_total_points);
+    printf("  Estimated rho error per step: %.6e\n", estimated_global_err);
+    printf("  After ~100 steps (if accumulating): %.6e\n", estimated_global_err * 100);
+    printf("  Observed error: ~8.0e-04\n");
+
+    if (fabs(total_err) > 1e-10) {
+        printf("\n  *** ROOT CAUSE IDENTIFIED ***\n");
+        printf("  On TILTED walls (dk_dy != 0), the Chapman-Enskog BC\n");
+        printf("  creates a mass mismatch with Cumulant post-collision distributions.\n");
+        printf("  The asymmetric BC direction set doesn't cancel the 4th-order\n");
+        printf("  equilibria from the WP parametrization.\n");
+        printf("  Additionally, the BC coefficient uses tau*dt instead of (tau-0.5)*dt,\n");
+        printf("  overestimating the non-equilibrium by %.1f x.\n", omega_tau / (omega_tau - 0.5));
+        printf("\n  RECOMMENDED FIX:\n");
+        printf("  In boundary_conditions.h line 93, change:\n");
+        printf("    C_alpha *= -(omega_local) * localtimestep;\n");
+        printf("  To:\n");
+        printf("    C_alpha *= -(omega_local - 0.5) * localtimestep;\n");
+    }
+}
+
+// ================================================================
+// Cumulant-aware Chapman-Enskog BC (CPU version)
+// Uses Cumulant equilibrium (f_eq_cum) instead of standard feq (W*rho)
+// ================================================================
+static double ChapmanEnskogBC_CumulantAware_CPU(
+    int alpha,
+    double rho_wall,
+    double du_dk, double dv_dk, double dw_dk,
+    double dk_dy_val, double dk_dz_val,
+    double omega_local, double localtimestep,
+    const double f_eq_cum[NQ]  // pre-computed Cumulant equilibrium at rho=1, u=0
+) {
+    double ex = GILBM_e[alpha][0];
+    double ey = GILBM_e[alpha][1];
+    double ez = GILBM_e[alpha][2];
+
+    // Non-equilibrium correction (same as original, but with correct coefficient)
+    double C_alpha = 0.0;
+    C_alpha += (3.0 * ex * ey) * du_dk * dk_dy_val +
+               (3.0 * ex * ez) * du_dk * dk_dz_val;
+    C_alpha += (3.0 * ey * ey - 1.0) * dv_dk * dk_dy_val +
+               (3.0 * ey * ez) * dv_dk * dk_dz_val;
+    C_alpha += (3.0 * ez * ey) * dw_dk * dk_dy_val +
+               (3.0 * ez * ez - 1.0) * dw_dk * dk_dz_val;
+    C_alpha *= -(omega_local - 0.5) * localtimestep;  // FIXED: tau-0.5, not tau
+
+    // Use Cumulant equilibrium scaled by rho_wall (instead of W[alpha]*rho_wall)
+    double f_eq_atwall = f_eq_cum[alpha] * rho_wall;
+    // Non-equilibrium correction added as absolute term (based on standard feq form)
+    double f_neq = GILBM_W[alpha] * rho_wall * C_alpha;
+    return f_eq_atwall + f_neq;
+}
+
+// ================================================================
+// TEST 13: Cumulant-Aware BC Fix Verification
+//
+// Verifies that using the Cumulant equilibrium (instead of standard feq)
+// in the Chapman-Enskog BC eliminates the density error at tilted walls.
+// ================================================================
+void test13_cumulant_aware_bc_fix() {
+    printf("\n================================================================\n");
+    printf("TEST 13: Cumulant-Aware BC Fix Verification\n");
+    printf("================================================================\n");
+
+    double omega_tau = 3.0 * niu / minSize + 0.5;  // tau
+    double dt_test = minSize;
+    double Force = 8.0 * niu * Uref / ((LZ - H_HILL) * (LZ - H_HILL)) * 2.0;
+
+    // --- Step A: Compute the Cumulant equilibrium at rho=1, u=0 ---
+    // Run collision 200 times from standard feq (no force) to find fixed point
+    double f_cum_eq[NQ];
+    for (int q = 0; q < NQ; q++)
+        f_cum_eq[q] = compute_feq(q, 1.0, 0.0, 0.0, 0.0);
+
+    double rho_dummy, ux_dummy, uy_dummy, uz_dummy;
+    for (int step = 0; step < 200; step++) {
+        double f_tmp[NQ];
+        cumulant_collision_D3Q27(f_cum_eq, omega_tau, dt_test,
+            0.0, 0.0, 0.0,  // NO force
+            f_tmp, &rho_dummy, &ux_dummy, &uy_dummy, &uz_dummy);
+        for (int q = 0; q < NQ; q++)
+            f_cum_eq[q] = f_tmp[q];
+    }
+
+    // Verify convergence
+    double rho_ceq = 0.0;
+    for (int q = 0; q < NQ; q++) rho_ceq += f_cum_eq[q];
+    printf("  Cumulant equilibrium (200 collisions, no force):\n");
+    printf("    Sum(f_eq_cum) = %.15f (should be 1.0)\n", rho_ceq);
+    printf("    f_eq_cum[0] = %.12f (vs W[0]=%.12f, diff=%+.6e)\n",
+           f_cum_eq[0], GILBM_W[0], f_cum_eq[0] - GILBM_W[0]);
+    printf("    f_eq_cum[1] = %.12f (vs W[1]=%.12f, diff=%+.6e)\n",
+           f_cum_eq[1], GILBM_W[1], f_cum_eq[1] - GILBM_W[1]);
+    printf("    f_eq_cum[19] = %.12f (vs W[19]=%.12f, diff=%+.6e)\n",
+           f_cum_eq[19], GILBM_W[19], f_cum_eq[19] - GILBM_W[19]);
+
+    // --- Step B: Collision with force (cold start step 0) ---
+    double f_eq[NQ];
+    for (int q = 0; q < NQ; q++)
+        f_eq[q] = compute_feq(q, 1.0, 0.0, 0.0, 0.0);
+
+    double f_post[NQ];
+    double rho_cum, ux_cum, uy_cum, uz_cum;
+    cumulant_collision_D3Q27(f_eq, omega_tau, dt_test,
+        0.0, Force, 0.0,
+        f_post, &rho_cum, &ux_cum, &uy_cum, &uz_cum);
+
+    // Raw macroscopic (no force correction)
+    double rho_raw = 0.0, jx_raw = 0.0, jy_raw = 0.0, jz_raw = 0.0;
+    for (int q = 0; q < NQ; q++) {
+        rho_raw += f_post[q];
+        jx_raw += GILBM_e[q][0] * f_post[q];
+        jy_raw += GILBM_e[q][1] * f_post[q];
+        jz_raw += GILBM_e[q][2] * f_post[q];
+    }
+    double ux_raw = jx_raw / rho_raw;
+    double vy_raw = jy_raw / rho_raw;
+    double wz_raw = jz_raw / rho_raw;
+
+    // --- Step C: Compare OLD vs NEW BC at tilted walls ---
+    double dk_dy_vals[] = { 0.0, 0.5, 1.0, 2.0, -0.5, -1.0 };
+    double dk_dz_val = 1.0;
+    int n_angles = sizeof(dk_dy_vals) / sizeof(dk_dy_vals[0]);
+
+    printf("\n  %-8s  %-6s  %-14s  %-14s  %-10s\n",
+           "dk_dy", "n_BC", "err_OLD(W*rho)", "err_NEW(f_cum)", "reduction");
+    printf("  %-8s  %-6s  %-14s  %-14s  %-10s\n",
+           "--------", "------", "--------------", "--------------", "----------");
+
+    for (int angle = 0; angle < n_angles; angle++) {
+        double dk_dy = dk_dy_vals[angle];
+
+        // BC directions
+        int bc_dirs[NQ], n_bc = 0;
+        for (int q = 1; q < NQ; q++) {
+            if (NeedsBoundaryCondition_CPU(q, dk_dy, dk_dz_val, true))
+                bc_dirs[n_bc++] = q;
+        }
+
+        // OLD BC: standard feq (W*rho) + wrong coefficient (tau*dt)
+        double err_old = 0.0;
+        for (int i = 0; i < n_bc; i++) {
+            int q = bc_dirs[i];
+            double f_bc = ChapmanEnskogBC_CPU(q, rho_raw,
+                ux_raw, vy_raw, wz_raw, dk_dy, dk_dz_val, omega_tau, dt_test);
+            err_old += (f_bc - f_post[q]);
+        }
+
+        // NEW BC: Cumulant equilibrium + correct coefficient (tau-0.5)*dt
+        double err_new = 0.0;
+        for (int i = 0; i < n_bc; i++) {
+            int q = bc_dirs[i];
+            double f_bc = ChapmanEnskogBC_CumulantAware_CPU(q, rho_raw,
+                ux_raw, vy_raw, wz_raw, dk_dy, dk_dz_val, omega_tau, dt_test,
+                f_cum_eq);
+            err_new += (f_bc - f_post[q]);
+        }
+
+        double reduction = (fabs(err_old) > 1e-30) ?
+            fabs(err_new) / fabs(err_old) : 0.0;
+
+        printf("  %+6.1f    %-6d  %+.8e  %+.8e  %.2e\n",
+               dk_dy, n_bc, err_old, err_new, reduction);
+    }
+
+    // --- Step D: Detailed per-direction analysis for dk_dy=1.0 ---
+    double dk_dy_hill = 1.0;
+    printf("\n  Detailed per-direction for dk_dy=%.1f (NEW Cumulant-aware BC):\n", dk_dy_hill);
+
+    int bc_dirs_hill[NQ], n_bc_hill = 0;
+    for (int q = 1; q < NQ; q++)
+        if (NeedsBoundaryCondition_CPU(q, dk_dy_hill, dk_dz_val, true))
+            bc_dirs_hill[n_bc_hill++] = q;
+
+    double total_err_old = 0.0, total_err_new = 0.0;
+    for (int i = 0; i < n_bc_hill; i++) {
+        int q = bc_dirs_hill[i];
+        double f_bc_old = ChapmanEnskogBC_CPU(q, rho_raw,
+            ux_raw, vy_raw, wz_raw, dk_dy_hill, dk_dz_val, omega_tau, dt_test);
+        double f_bc_new = ChapmanEnskogBC_CumulantAware_CPU(q, rho_raw,
+            ux_raw, vy_raw, wz_raw, dk_dy_hill, dk_dz_val, omega_tau, dt_test,
+            f_cum_eq);
+        double diff_old = f_bc_old - f_post[q];
+        double diff_new = f_bc_new - f_post[q];
+        total_err_old += diff_old;
+        total_err_new += diff_new;
+        printf("    q=%2d e=(%+.0f,%+.0f,%+.0f): OLD=%+.6e  NEW=%+.6e\n",
+               q, GILBM_e[q][0], GILBM_e[q][1], GILBM_e[q][2], diff_old, diff_new);
+    }
+    printf("  Sum OLD = %+.6e\n", total_err_old);
+    printf("  Sum NEW = %+.6e\n", total_err_new);
+
+    // --- Step E: Global estimate with fix ---
+    int n_wall_sloped = (NX6 - 7) * (NY6 - 7) / 2;
+    int n_total = (NX6 - 7) * (NY6 - 7) * (NZ6 - 6);
+    double glob_old = total_err_old * (double)n_wall_sloped / (double)n_total;
+    double glob_new = total_err_new * (double)n_wall_sloped / (double)n_total;
+
+    printf("\n  --- Global density error estimate ---\n");
+    printf("  OLD BC: rho error/step = %+.6e\n", glob_old);
+    printf("  NEW BC: rho error/step = %+.6e\n", glob_new);
+    printf("  Improvement: %.1f x reduction\n",
+           fabs(glob_old) / (fabs(glob_new) > 1e-30 ? fabs(glob_new) : 1e-30));
+
+    if (fabs(total_err_new) < fabs(total_err_old) * 0.01) {
+        printf("\n  >>> FIX VERIFIED: Cumulant-aware BC reduces mass error by >100x <<<\n");
+    } else if (fabs(total_err_new) < fabs(total_err_old) * 0.1) {
+        printf("\n  >>> FIX PARTIALLY EFFECTIVE: ~%.0fx reduction <<<\n",
+               fabs(total_err_old) / fabs(total_err_new));
+    } else {
+        printf("\n  >>> FIX INSUFFICIENT: only %.1fx reduction <<<\n",
+               fabs(total_err_old) / fabs(total_err_new));
+        printf("  The Guo forcing term creates additional distribution asymmetry\n");
+        printf("  that the BC equilibrium change alone cannot fix.\n");
+    }
+}
+
+// ================================================================
 // MAIN
 // ================================================================
 int main() {
@@ -1088,6 +1436,8 @@ int main() {
     test5_multiple_steps();
     test10_bc_cumulant_mismatch();
     test11_ao_mode_comparison();
+    test12_tilted_wall_bc_mismatch();
+    test13_cumulant_aware_bc_fix();
 
     printf("\n================================================================\n");
     printf("All tests complete.\n");
