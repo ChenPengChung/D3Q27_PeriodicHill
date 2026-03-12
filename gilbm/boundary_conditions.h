@@ -105,10 +105,14 @@ __device__ double ChapmanEnskogBC(
 
 #if USE_CUMULANT
     // FIX: Use Cumulant equilibrium (includes 4th-order A,B corrections)
-    // Equilibrium term: f_eq_cum[alpha] * rho_wall (scales linearly with rho)
-    // Non-equilibrium correction: additive, based on standard lattice weights
+    // Chapman-Enskog: f = f^eq × (1 + C)
+    //   f^eq = feq_cum (Cumulant 固定點), NOT standard W[q]
+    //   f^neq = f^eq × C (非平衡校正也必須用 Cumulant 平衡態)
+    //
+    // AO mode: feq_cum = W → 與舊版一致, 無影響
+    // WP mode: feq_cum ≠ W (差 ~5%) → 用 W 會產生質量源/匯 → rho 震盪
     double f_eq_atwall = GILBM_feq_cum[alpha] * rho_wall;
-    double f_neq = GILBM_W[alpha] * rho_wall * C_alpha;
+    double f_neq = GILBM_feq_cum[alpha] * rho_wall * C_alpha;
     return f_eq_atwall + f_neq;
 #else
     // Standard feq for MRT/BGK: f_alpha = f_eq * (1 + C_alpha)

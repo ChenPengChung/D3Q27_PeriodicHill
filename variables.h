@@ -153,7 +153,13 @@
 #define     FORCE_GEHRKE_FLOOR      0.5     // minimum Force = floor x F_Poiseuille (>0 prevents multiplicative trap to 0)
 
 // Controller switching
-#define     FORCE_SWITCH_THRESHOLD   8     // |Re%| ≤ 8% → Gehrke; > 8% → P-additive 此數據為外力模式轉換條件 
+#define     FORCE_SWITCH_THRESHOLD   8     // |Re%| ≤ 8% → Gehrke; > 8% → P-additive 此數據為外力模式轉換條件
+
+// Cold start ramp: 避免 cold start 時力無限累加導致局部 Ma 爆炸
+// 前 RAMP_STEPS 步，力的上限從 0 線性增加到 RAMP_CAP × F_Poiseuille
+// 之後解除限制，由 controller 自由控制
+#define     FORCE_RAMP_STEPS        5000   // 前 5000 步漸進加力 (≈ FTT 0.045)
+#define     FORCE_RAMP_CAP          30.0   // ramp 結束時上限 = 30× F_Poiseuille
 
 // Legacy defines (kept for backward compatibility, unused by new controller)
 #define     FORCE_RE_DEADZONE       0.015   // (deprecated) was fractional dead zone

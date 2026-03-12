@@ -658,11 +658,16 @@ __device__ void cumulant_collision_D3Q27(
         double ay = Fy * inv_rho;
         double az = Fz * inv_rho;
         double a_dot_u = ax*u[0] + ay*u[1] + az*u[2];
-        // BEFORE (BUGGY):
-        //double prefactor = 1.0 - 0.5 * omega;  // (1 - omega/2)
-
-        // AFTER (CORRECT):
-        double prefactor = 1.0;
+        // Guo forcing prefactor: (1 - omega/2) where omega = 1/tau
+        // 與 MRT 版 (evolution_gilbm.h 第 178 行) 一致:
+        //   m_post[n] += (1.0 - 0.5*sn) * MF[n] * dt
+        //
+        // 歷史紀錄: CONVENTION FIX 之前 omega 代表 τ(≈0.54)，
+        //   修正為 1/τ(≈1.85) 後 prefactor 從 0.73→0.075，
+        //   被誤判為 "BUGGY" 改成 1.0。
+        //   實際 (1-omega/2) 才是正確的 Guo 2002 公式。
+        //   沒有此因子 → 有效力放大 ~1.93x → Ma 爆衝。
+        double prefactor = 1.0 - 0.5 * omega;
 
         for (int i = 0; i < 27; i++) {
             double e_dot_a = GILBM_e[i][0]*ax + GILBM_e[i][1]*ay + GILBM_e[i][2]*az;

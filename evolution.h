@@ -496,6 +496,20 @@ void Launch_ModifyForcingTerm()
         Force_h[0] = Force_cap;
     }
 
+    // ── Cold start ramp: 漸進式力上限 ──────────────────────────
+    // 問題: P-additive 在 cold start (Ub≈0) 時 error≈Uref，每步累加 ΔF≈alpha/Re，
+    //       力線性增長但 flow 還沒發展，hill crest 局部 Ma 先爆炸。
+    // 解法: 前 RAMP_STEPS 步，力的上限從 0 線性增加到 RAMP_CAP × F_Poiseuille，
+    //       讓流場有時間逐步發展，避免衝擊式啟動。
+    if (step < FORCE_RAMP_STEPS) {
+        double ramp = (double)(step + 1) / (double)FORCE_RAMP_STEPS;
+        double F_ramp_limit = ramp * (double)FORCE_RAMP_CAP * F_Poiseuille;
+        if (Force_h[0] > F_ramp_limit) {
+            Force_h[0] = F_ramp_limit;
+            ctrl_mode = "P-RAMP";
+        }
+    }
+
     // Ma safety check (local Ma_max — LBM stability depends on local max, not bulk average)
     if (Ma_max > 0.35) {
         Force_h[0] *= 0.05;
