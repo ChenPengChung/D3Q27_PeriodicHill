@@ -71,7 +71,7 @@
                 "1256",
                 "chenpengchung@140.114.58.87",
                 "-t",
-                "ssh -t cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+                "ssh -t cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/${workspaceFolderBasename} && export P=$PWD; exec bash'"
             ],
             "presentation": {
                 "reveal": "always",
@@ -90,7 +90,7 @@
                 "1256",
                 "chenpengchung@140.114.58.154",
                 "-t",
-                "ssh -t cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+                "ssh -t cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/${workspaceFolderBasename} && export P=$PWD; exec bash'"
             ],
             "presentation": {
                 "reveal": "always",
@@ -109,7 +109,7 @@
                 "1256",
                 "chenpengchung@140.114.58.87",
                 "-t",
-                "ssh -t cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+                "ssh -t cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/${workspaceFolderBasename} && export P=$PWD; exec bash'"
             ],
             "presentation": {
                 "reveal": "always",
@@ -128,7 +128,7 @@
                 "1256",
                 "chenpengchung@140.114.58.154",
                 "-t",
-                "ssh -t cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+                "ssh -t cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/${workspaceFolderBasename} && export P=$PWD; exec bash'"
             ],
             "presentation": {
                 "reveal": "always",
@@ -147,7 +147,7 @@
                 "1256",
                 "chenpengchung@140.114.58.87",
                 "-t",
-                "ssh -t cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+                "ssh -t cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/${workspaceFolderBasename} && export P=$PWD; exec bash'"
             ],
             "presentation": {
                 "reveal": "always",
@@ -166,7 +166,7 @@
                 "1256",
                 "chenpengchung@140.114.58.154",
                 "-t",
-                "ssh -t cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill; exec bash'"
+                "ssh -t cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/${workspaceFolderBasename} && export P=$PWD; exec bash'"
             ],
             "presentation": {
                 "reveal": "always",
@@ -185,7 +185,7 @@
                 "1256",
                 "-batch",
                 "chenpengchung@140.114.58.87",
-                "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill && nvcc main.cu -arch=sm_35 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out && nohup mpirun -np ${input:gpuCount} ./a.out > log$(date +%Y%m%d) 2>&1 &'"
+                "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/${workspaceFolderBasename} && nvcc main.cu -arch=sm_35 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out && nohup mpirun -np ${input:gpuCount} ./a.out > log$(date +%Y%m%d) 2>&1 &'"
             ],
             "group": {
                 "kind": "build",
@@ -207,7 +207,7 @@
                 "1256",
                 "-batch",
                 "chenpengchung@140.114.58.154",
-                "ssh cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/D3Q27_PeriodicHill && /usr/local/cuda/bin/nvcc -O2 -arch=sm_60 main.cu -I/opt/openmpi-3.1.4/include -L/opt/openmpi-3.1.4/lib -lmpi -o a.out && nohup /opt/openmpi-3.1.4/bin/mpirun -np ${input:gpuCount} ./a.out > log$(date +%Y%m%d) 2>&1 &'"
+                "ssh cfdlab-ib${input:nodeFor154} 'cd /home/chenpengchung/${workspaceFolderBasename} && /usr/local/cuda/bin/nvcc -O2 -arch=sm_60 main.cu -I/opt/openmpi-3.1.4/include -L/opt/openmpi-3.1.4/lib -lmpi -o a.out && nohup /opt/openmpi-3.1.4/bin/mpirun -np ${input:gpuCount} ./a.out > log$(date +%Y%m%d) 2>&1 &'"
             ],
             "presentation": {
                 "reveal": "always",
@@ -225,7 +225,7 @@
                 "1256",
                 "-batch",
                 "chenpengchung@140.114.58.87",
-                "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill && nvcc main.cu -arch=sm_35 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out'"
+                "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/${workspaceFolderBasename} && nvcc main.cu -arch=sm_35 -I/home/chenpengchung/openmpi-3.0.3/include -L/home/chenpengchung/openmpi-3.0.3/lib -lmpi -o a.out'"
             ],
             "presentation": {
                 "reveal": "always",
@@ -243,7 +243,7 @@
                 "1256",
                 "-batch",
                 "chenpengchung@140.114.58.87",
-                "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill && nohup mpirun -np 4 ./a.out > log$(date +%Y%m%d) 2>&1 &'"
+                "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/${workspaceFolderBasename} && nohup mpirun -np 4 ./a.out > log$(date +%Y%m%d) 2>&1 &'"
             ],
             "presentation": {
                 "reveal": "always",
@@ -261,7 +261,7 @@
                 "1256",
                 "-batch",
                 "chenpengchung@140.114.58.87",
-                "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/D3Q27_PeriodicHill && nohup mpirun -np 8 ./a.out > log$(date +%Y%m%d) 2>&1 &'"
+                "ssh cfdlab-ib${input:nodeFor87} 'cd /home/chenpengchung/${workspaceFolderBasename} && nohup mpirun -np 8 ./a.out > log$(date +%Y%m%d) 2>&1 &'"
             ],
             "presentation": {
                 "reveal": "always",
@@ -344,7 +344,7 @@
         {
             "label": "Auto Sync (Watch)",
             "type": "shell",
-            "command": "& 'c:\\Users\\88697.CHENPENGCHUNG12\\Desktop\\GitHub-PeriodicHill\\D3Q27_PeriodicHill\\.vscode\\Pwshell_mainsystem.ps1' watch",
+            "command": "& '${workspaceFolder}\\.vscode\\Pwshell_mainsystem.ps1' watch",
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated",
@@ -356,7 +356,7 @@
         {
             "label": "Quick Sync (Push if changed)",
             "type": "shell",
-            "command": "& 'c:\\Users\\88697.CHENPENGCHUNG12\\Desktop\\GitHub-PeriodicHill\\D3Q27_PeriodicHill\\.vscode\\Pwshell_mainsystem.ps1' autopush",
+            "command": "& '${workspaceFolder}\\.vscode\\Pwshell_mainsystem.ps1' autopush",
             "presentation": {
                 "reveal": "always",
                 "panel": "shared"

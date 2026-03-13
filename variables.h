@@ -91,7 +91,7 @@
 //     1e-2  → Gehrke 預設 (多數情況適用)
 //     1e-1  → Re≥10600 中等網格 (GR22 Table 7)
 // ================================================================
-#define     USE_WP_CUMULANT     0   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
+#define     USE_WP_CUMULANT     1   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
 #define     CUM_LAMBDA          1.0e-2
 //正則化參數引入
 
@@ -108,6 +108,20 @@
 //   影響: omega3-5 (Eq.14-16) 和 A,B (Eq.17-18) 的奇異點位置
 //   ★ 此全域變數同時控制 cumulant_collision.h 和 main.cu 診斷 ★
 #define     CUM_OMEGA2          1.0
+
+// ── 力的施加方案 & Galilean 校正 (DEBUG 開關) ──────────────
+//   CUM_SIGNFLIP:  1 = Strang sign-flip (Gehrke §3.2.1), 0 = 不翻轉
+//   CUM_GUO_SRC:   1 = Guo explicit source (方案 B), 0 = 不加 source
+//   CUM_GALILEAN:  1 = Galilean correction (Eq.3.70-3.75), 0 = 不修正
+//
+//   方案 A (Gehrke thesis):  SIGNFLIP=1, GUO_SRC=0, GALILEAN=1
+//   方案 B (Guo explicit):   SIGNFLIP=0, GUO_SRC=1, GALILEAN=0
+//   純 debug (無力):          SIGNFLIP=0, GUO_SRC=0, GALILEAN=0
+//
+//   ★ 請逐一切換測試，找出發散來源 ★
+#define     CUM_SIGNFLIP        1
+#define     CUM_GUO_SRC         0
+#define     CUM_GALILEAN        1
 // ── 互斥檢查 ──
 #if USE_MRT && USE_CUMULANT
 #error "USE_MRT and USE_CUMULANT are mutually exclusive. Set only one to 1."

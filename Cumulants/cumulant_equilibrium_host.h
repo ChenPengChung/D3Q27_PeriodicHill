@@ -157,15 +157,28 @@ static void ComputeCumulantEquilibrium_Host(
         }
 
         // Central moments -> Cumulants (Stage 2, orders 4+)
-        double CUMcca = m[H_I_cca] - (m[H_I_caa]*m[H_I_aca] + 2.0*m[H_I_bba]*m[H_I_bba]) * inv_rho;
-        double CUMcac = m[H_I_cac] - (m[H_I_caa]*m[H_I_aac] + 2.0*m[H_I_bab]*m[H_I_bab]) * inv_rho;
-        double CUMacc = m[H_I_acc] - (m[H_I_aca]*m[H_I_aac] + 2.0*m[H_I_abb]*m[H_I_abb]) * inv_rho;
+        // [BUG FIX] Added well-conditioning corrections (+1/3 and -1/9 terms)
+        // to match GPU cumulant_collision.h L274-282
+        double drho = m[H_I_aaa];  // density deviation (= rho - 1.0 in well-conditioned form)
+        double CUMcca = m[H_I_cca] - (((m[H_I_caa]*m[H_I_aca] + 2.0*m[H_I_bba]*m[H_I_bba])
+                        + 1.0/3.0*(m[H_I_caa]+m[H_I_aca])) * inv_rho
+                        - 1.0/9.0*(drho*inv_rho));
+        double CUMcac = m[H_I_cac] - (((m[H_I_caa]*m[H_I_aac] + 2.0*m[H_I_bab]*m[H_I_bab])
+                        + 1.0/3.0*(m[H_I_caa]+m[H_I_aac])) * inv_rho
+                        - 1.0/9.0*(drho*inv_rho));
+        double CUMacc = m[H_I_acc] - (((m[H_I_aac]*m[H_I_aca] + 2.0*m[H_I_abb]*m[H_I_abb])
+                        + 1.0/3.0*(m[H_I_aac]+m[H_I_aca])) * inv_rho
+                        - 1.0/9.0*(drho*inv_rho));
 
 #if !USE_WP_CUMULANT
         // Off-diagonal 4th-order cumulants (AO only; WP uses wp_C211 etc. directly)
-        double CUMcbb = m[H_I_cbb] - (m[H_I_caa]*m[H_I_abb] + 2.0*m[H_I_bba]*m[H_I_bab]) * inv_rho;
-        double CUMbcb = m[H_I_bcb] - (m[H_I_aca]*m[H_I_bab] + 2.0*m[H_I_bba]*m[H_I_abb]) * inv_rho;
-        double CUMbbc = m[H_I_bbc] - (m[H_I_aac]*m[H_I_bba] + 2.0*m[H_I_bab]*m[H_I_abb]) * inv_rho;
+        // [BUG FIX] Added +1/3 well-conditioning correction to match GPU L264-269
+        double CUMcbb = m[H_I_cbb] - ((m[H_I_caa] + 1.0/3.0)*m[H_I_abb]
+                        + 2.0*m[H_I_bba]*m[H_I_bab]) * inv_rho;
+        double CUMbcb = m[H_I_bcb] - ((m[H_I_aca] + 1.0/3.0)*m[H_I_bab]
+                        + 2.0*m[H_I_bba]*m[H_I_abb]) * inv_rho;
+        double CUMbbc = m[H_I_bbc] - ((m[H_I_aac] + 1.0/3.0)*m[H_I_bba]
+                        + 2.0*m[H_I_bab]*m[H_I_abb]) * inv_rho;
 #endif
 
         double CUMccb = m[H_I_ccb]
@@ -256,7 +269,11 @@ static void ComputeCumulantEquilibrium_Host(
         CUMacc += omega6 * (CUMacc_eq - CUMacc);
 
         // Off-diagonal 4th order (B26-B28)
-        double wp_offdiag_coeff = (1.0 - omega * 0.5) * coeff_B;
+        // [BUG FIX] Was: (1.0 - omega*0.5) * coeff_B  (missing omega factor + wrong sign)
+        // Correct: (omega*0.5 - 1.0) * omega * coeff_B  (matches GPU L566)
+        // Derivation: Eq.3.86 + Eq.3.89 with ω₈=1 →
+        //   C*_211 = -1/3·(ω/2-1)·B·ρ·(-3ω/ρ·C_011) = (ω/2-1)·ω·B·C_011
+        double wp_offdiag_coeff = (omega * 0.5 - 1.0) * omega * coeff_B;
         double wp_C211 = wp_offdiag_coeff * saved_C011;
         double wp_C121 = wp_offdiag_coeff * saved_C101;
         double wp_C112 = wp_offdiag_coeff * saved_C110;
@@ -278,18 +295,29 @@ static void ComputeCumulantEquilibrium_Host(
         CUMccc *= (1.0 - omega10);
 
         // Cumulants -> Central moments (Stage 4)
-        m[H_I_cca] = CUMcca + (m[H_I_caa]*m[H_I_aca] + 2.0*m[H_I_bba]*m[H_I_bba]) * inv_rho;
-        m[H_I_cac] = CUMcac + (m[H_I_caa]*m[H_I_aac] + 2.0*m[H_I_bab]*m[H_I_bab]) * inv_rho;
-        m[H_I_acc] = CUMacc + (m[H_I_aca]*m[H_I_aac] + 2.0*m[H_I_abb]*m[H_I_abb]) * inv_rho;
+        // [BUG FIX] Added well-conditioning corrections to match GPU L626-634
+        m[H_I_cca] = CUMcca + (((m[H_I_caa]*m[H_I_aca]+2.0*m[H_I_bba]*m[H_I_bba])*9.0
+                     + 3.0*(m[H_I_caa]+m[H_I_aca])) * inv_rho
+                     - (drho*inv_rho)) * 1.0/9.0;
+        m[H_I_cac] = CUMcac + (((m[H_I_caa]*m[H_I_aac]+2.0*m[H_I_bab]*m[H_I_bab])*9.0
+                     + 3.0*(m[H_I_caa]+m[H_I_aac])) * inv_rho
+                     - (drho*inv_rho)) * 1.0/9.0;
+        m[H_I_acc] = CUMacc + (((m[H_I_aac]*m[H_I_aca]+2.0*m[H_I_abb]*m[H_I_abb])*9.0
+                     + 3.0*(m[H_I_aac]+m[H_I_aca])) * inv_rho
+                     - (drho*inv_rho)) * 1.0/9.0;
 
 #if USE_WP_CUMULANT
         m[H_I_cbb] = wp_C211;
         m[H_I_bcb] = wp_C121;
         m[H_I_bbc] = wp_C112;
 #else
-        m[H_I_cbb] = CUMcbb + (m[H_I_caa]*m[H_I_abb] + 2.0*m[H_I_bba]*m[H_I_bab]) * inv_rho;
-        m[H_I_bcb] = CUMbcb + (m[H_I_aca]*m[H_I_bab] + 2.0*m[H_I_bba]*m[H_I_abb]) * inv_rho;
-        m[H_I_bbc] = CUMbbc + (m[H_I_aac]*m[H_I_bba] + 2.0*m[H_I_bab]*m[H_I_abb]) * inv_rho;
+        // [BUG FIX] Added +1/3 well-conditioning correction to match GPU L617-622
+        m[H_I_cbb] = CUMcbb + ((m[H_I_caa] + 1.0/3.0)*m[H_I_abb]
+                     + 2.0*m[H_I_bba]*m[H_I_bab]) * inv_rho;
+        m[H_I_bcb] = CUMbcb + ((m[H_I_aca] + 1.0/3.0)*m[H_I_bab]
+                     + 2.0*m[H_I_bba]*m[H_I_abb]) * inv_rho;
+        m[H_I_bbc] = CUMbbc + ((m[H_I_aac] + 1.0/3.0)*m[H_I_bba]
+                     + 2.0*m[H_I_bab]*m[H_I_abb]) * inv_rho;
 #endif
 
         m[H_I_ccb] = CUMccb
