@@ -9,9 +9,11 @@
 //     Equivalent to original Geier et al. 2015 approach.
 //
 //   USE_WP_CUMULANT = 1  ->  WP (Well-conditioned Parameterized, Geier 2017)
-//     w3,w4,w5 optimized from w1,w2 (Eq.14-16 of Gehrke & Rung 2022).
-//     4th-order equilibria use A,B coefficients (Eq.17-18).
-//     Regularization limiter lambda (Eq.20-26) for stability control.
+//     w3,w4,w5 optimized from w1,w2 (Eq.3.103-3.105 / [GR22] Eq.14-16).
+//     4th-order diagonal: A·velocity_derivative form (Thesis Eq.3.83-3.85).
+//     4th-order off-diagonal: B·velocity_derivative form (Thesis Eq.3.86-3.88).
+//     Regularization limiter lambda (Eq.3.111-3.114 / [GR22] Eq.20-26).
+//     ω₆,ω₇,ω₈ retained as parameters (override via CUM_OMEGA6/7/8).
 //     Superior accuracy at moderate grids; lambda tunes DNS<->VLES blend.
 //
 // Interface:
@@ -259,16 +261,15 @@ __device__ void cumulant_collision_D3Q27(
     // ==============================================================
 
     // --- 4th order off-diagonal (Eq. J.16) ---
-#if !USE_WP_CUMULANT
-    // AO mode: need cumulants for standard relaxation + back-conversion
+    // Both modes need these for:
+    //   AO: standard relaxation + back-conversion
+    //   WP: general ω₈ formula (Eq.3.86-3.88) + back-conversion (Eq.J.16 inverse)
     double CUMcbb = m[I_cbb] - ((m[I_caa] + 1.0/3.0) * m[I_abb]
                     + 2.0 * m[I_bba] * m[I_bab]) * inv_rho;
     double CUMbcb = m[I_bcb] - ((m[I_aca] + 1.0/3.0) * m[I_bab]
                     + 2.0 * m[I_bba] * m[I_abb]) * inv_rho;
     double CUMbbc = m[I_bbc] - ((m[I_aac] + 1.0/3.0) * m[I_bba]
                     + 2.0 * m[I_bab] * m[I_abb]) * inv_rho;
-#endif
-    // WP mode: off-diagonal 4th-order handled directly via B26-B28 (no cumulant needed)
 
     // --- 4th order diagonal (Eq. J.17) ---
     double CUMcca = m[I_cca] - (((m[I_caa]*m[I_aca] + 2.0*m[I_bba]*m[I_bba])
@@ -347,17 +348,38 @@ __device__ void cumulant_collision_D3Q27(
     const double omega2 = 0.5;   // fallback: verify/ 測試檔未 include variables.h 時
 #endif
 
-    // ---- 4th order: separate ω₆/ω₇/ω₈ [Gehrke Thesis p.56, Eq.3.83-3.88] ----
-    //   ω₆: 4th-order deviatoric (Eq.3.83-3.85, deviatoric combos)
-    //   ω₇: 4th-order trace (Eq.3.83-3.85, trace combos)
+    // ---- ω₆/ω₇/ω₈: 4th-order relaxation rates [Gehrke Thesis p.44-45, Eq.3.83-3.88] ----
+    //   ω₆: 4th-order deviatoric (Eq.3.83-3.85, deviatoric linear combos)
+    //   ω₇: 4th-order trace      (Eq.3.83-3.85, trace linear combo)
     //   ω₈: 4th-order off-diagonal (Eq.3.86-3.88)
-    //   All = 1.0 → numerically identical to previous single omega6
-    const double omega6  = 1.0;    // 4th-order deviatoric
-    const double omega7  = 1.0;    // 4th-order trace
-    const double omega8  = 1.0;    // 4th-order off-diagonal
-    // ---- w9: 5th order, w10: 6th order ----
+    //   Thesis §3.2.3 (p.47): WP variant sets ω_{C>5}=1.
+    //   Override via CUM_OMEGA6/7/8 in variables.h for non-unity values.
+#ifdef CUM_OMEGA6
+    const double omega6  = CUM_OMEGA6;
+#else
+    const double omega6  = 1.0;    // 4th-order deviatoric (default: thesis WP/AO)
+#endif
+#ifdef CUM_OMEGA7
+    const double omega7  = CUM_OMEGA7;
+#else
+    const double omega7  = 1.0;    // 4th-order trace (default: thesis WP/AO)
+#endif
+#ifdef CUM_OMEGA8
+    const double omega8  = CUM_OMEGA8;
+#else
+    const double omega8  = 1.0;    // 4th-order off-diagonal (default: thesis WP/AO)
+#endif
+    // ---- ω₉: 5th order, ω₁₀: 6th order ----
+#ifdef CUM_OMEGA9
+    const double omega9  = CUM_OMEGA9;
+#else
     const double omega9  = 1.0;
+#endif
+#ifdef CUM_OMEGA10
+    const double omega10 = CUM_OMEGA10;
+#else
     const double omega10 = 1.0;
+#endif
 
 #if USE_WP_CUMULANT
     // ============================================================
@@ -500,77 +522,66 @@ __device__ void cumulant_collision_D3Q27(
 
     // ---- 4th order relaxation ----
 #if USE_WP_CUMULANT
-    // WP: 4th-order diagonal cumulants relax toward NON-ZERO equilibria
-    //   C^eq_{alphaalpha,betabeta} involves products of 2nd-order cumulants via A, B
-    //   [GR22] Eq.17-18, Appendix B.2
+    // ================================================================
+    // WP: 4th-order DIAGONAL collision — Thesis Eq. 3.83-3.85 (original form)
     //
-    // 2nd-order cumulants (post-relaxation, well-conditioned):
-    //   Dxx = m[I_caa], Dyy = m[I_aca], Dzz = m[I_aac]  (well-conditioned = standard - 1/3)
-    //   Dxy = m[I_bba], Dxz = m[I_bab], Dyz = m[I_abb]  (off-diagonal: same in both forms)
+    //   Uses velocity derivatives (∂_xu, ∂_yv, ∂_zw) and parameter A only.
+    //   This is the GENERAL form valid for ANY ω₆, ω₇ values.
     //
-    // [GR22] Eq.17-18: 4th-order equilibria use STANDARD 2nd-order cumulants:
-    //   sigma_xx = Dxx + 1/3,  sigma_yy = Dyy + 1/3,  sigma_zz = Dzz + 1/3
-    //   C^eq_{xxyy} / rho = A(sigma_xx*sigma_yy + sigma_xy^2)/rho
-    //                      + B(sigma_xx*sigma_yy - sigma_xy^2)/rho
+    //   Structure per mode (deviatoric/trace):
+    //     mode* = equilibrium_term(A, vel_derivs) + (1-ω)·mode_pre
     //
-    // BUG FIX: previous version used Dxx*Dyy (well-conditioned, ~0 at rho=1)
-    //          instead of (Dxx+1/3)*(Dyy+1/3) (standard, ~rho/9 at equilibrium).
-    //          This made WP mode degenerate to AO (4th-order eq = 0).
-    double Dxx = m[I_caa], Dyy = m[I_aca], Dzz = m[I_aac];
-    double Dxy = m[I_bba], Dxz = m[I_bab], Dyz = m[I_abb];
-
-    // Restore standard 2nd-order cumulants for the equilibrium formula
-    double Sxx = Dxx + 1.0/3.0;   // sigma_xx (standard)
-    double Syy = Dyy + 1.0/3.0;   // sigma_yy
-    double Szz = Dzz + 1.0/3.0;   // sigma_zz
-
-    // 4th-order diagonal equilibria [GR22 Eq.17-18]:
-    double CUMcca_eq = (coeff_A * (Sxx*Syy + Dxy*Dxy) + coeff_B * (Sxx*Syy - Dxy*Dxy)) * inv_rho;
-    double CUMcac_eq = (coeff_A * (Sxx*Szz + Dxz*Dxz) + coeff_B * (Sxx*Szz - Dxz*Dxz)) * inv_rho;
-    double CUMacc_eq = (coeff_A * (Syy*Szz + Dyz*Dyz) + coeff_B * (Syy*Szz - Dyz*Dyz)) * inv_rho;
-
-    // Relax diagonal 4th-order [Thesis p.56, Eq.3.83-3.85]
-    // Full decomposition: deviatoric modes with ω₆, trace mode with ω₇
-    // Since ω₆=ω₇=1.0, per-component relaxation is equivalent.
-    // (walberla CellwiseSweep.impl.h lines 296-298 for the decomposed form)
+    //   The velocity derivatives Dxux, Dyuy, Dzuz were computed at Eq.3.73-3.75
+    //   BEFORE 2nd-order relaxation, using PRE-relaxation cumulants (correct).
+    // ================================================================
     {
+        // Velocity-derivative equilibrium coefficient: (1/ω₁ - 1/2)·A·ρ
+        const double vel_eq_A = (1.0/omega - 0.5) * coeff_A * rho;
+
+        // Eq. 3.83-3.85 equilibrium terms for each orthogonal mode:
+        //   deviatoric 1: 2/3·vel_eq_A·(∂_xu - 2∂_yv + ∂_zw)
+        //   deviatoric 2: 2/3·vel_eq_A·(∂_xu + ∂_yv - 2∂_zw)
+        //   trace:       -4/3·vel_eq_A·(∂_xu + ∂_yv + ∂_zw)
+        const double eq4_dev1  =  2.0/3.0 * vel_eq_A * (Dxux - 2.0*Dyuy + Dzuz);
+        const double eq4_dev2  =  2.0/3.0 * vel_eq_A * (Dxux + Dyuy - 2.0*Dzuz);
+        const double eq4_trace = -4.0/3.0 * vel_eq_A * (Dxux + Dyuy + Dzuz);
+
+        // Pre-collision deviatoric/trace decomposition of 4th-order diagonal cumulants
         double cum4_dev1  = CUMcca - 2.0*CUMcac + CUMacc;
         double cum4_dev2  = CUMcca + CUMcac - 2.0*CUMacc;
         double cum4_trace = CUMcca + CUMcac + CUMacc;
 
-        double eq4_dev1   = CUMcca_eq - 2.0*CUMcac_eq + CUMacc_eq;
-        double eq4_dev2   = CUMcca_eq + CUMcac_eq - 2.0*CUMacc_eq;
-        double eq4_trace  = CUMcca_eq + CUMcac_eq + CUMacc_eq;
+        // Thesis Eq. 3.83-3.85 (original form, NO simplification):
+        //   mode* = eq_term + (1 - ω)·mode_pre
+        cum4_dev1  = eq4_dev1  + (1.0 - omega6) * cum4_dev1;    // deviatoric (ω₆)
+        cum4_dev2  = eq4_dev2  + (1.0 - omega6) * cum4_dev2;    // deviatoric (ω₆)
+        cum4_trace = eq4_trace + (1.0 - omega7) * cum4_trace;   // trace (ω₇)
 
-        cum4_dev1  += omega6*(eq4_dev1  - cum4_dev1);   // deviatoric (ω₆)
-        cum4_dev2  += omega6*(eq4_dev2  - cum4_dev2);   // deviatoric (ω₆)
-        cum4_trace += omega7*(eq4_trace - cum4_trace);   // trace (ω₇)
-
+        // Reconstruct individual 4th-order diagonal cumulants
         CUMcca = (cum4_dev1 + cum4_dev2 + cum4_trace) / 3.0;
         CUMcac = (cum4_trace - cum4_dev1) / 3.0;
         CUMacc = (cum4_trace - cum4_dev2) / 3.0;
     }
 
-    // Off-diagonal 4th-order: [Thesis p.57, Eq.3.86-3.88]
-    //   With ω₈=1, Eq.3.86 reduces to (C-P simplified, Eq.3.119):
-    //     C*_{211} = (ω₁/2 - 1)·ω₁·B · C_{011,pre}
-    //     C*_{121} = (ω₁/2 - 1)·ω₁·B · C_{101,pre}
-    //     C*_{112} = (ω₁/2 - 1)·ω₁·B · C_{110,pre}
+    // Off-diagonal 4th-order: General Eq. 3.86-3.88 [Gehrke Thesis p.45]
+    //   C*_αβγ = -1/3(ω₁/2-1)·ω₈·B·ρ·(velocity_derivative) + (1-ω₈)·C_αβγ
     //
-    //   Derivation: Eq.3.86 says C*_211 = -1/3(ω₁/2-1)·ω₈·B·ρ·(∂_yw+∂_zv) + (1-ω₈)·C_211
-    //   Substituting Eq.3.89: ρ(∂_yw+∂_zv) = -3ω₁·C_011 and ω₈=1:
-    //     C*_211 = -1/3(ω₁/2-1)·1·B·(-3ω₁·C_011) + 0 = (ω₁/2-1)·ω₁·B·C_011
-    //
-    //   BUG FIX: was (1-ω/2)·B — missing ω₁ factor AND wrong sign
-    //   Correct: (ω/2-1)·ω·B = -(1-ω/2)·ω·B
-    const double wp_offdiag_coeff = (omega * 0.5 - 1.0) * omega * coeff_B;
-    // These will be written directly to m[] after Stage 4 header,
-    // replacing the normal cumulant back-conversion for off-diagonal 4th order.
-    const double wp_C211_star = wp_offdiag_coeff * saved_C011;  // Eq.3.119: C*_211 ↔ C_yz
-    const double wp_C121_star = wp_offdiag_coeff * saved_C101;  // Eq.3.120: C*_121 ↔ C_xz
-    const double wp_C112_star = wp_offdiag_coeff * saved_C110;  // Eq.3.121: C*_112 ↔ C_xy
-    // Note: CUMcbb/CUMbcb/CUMbbc are no longer needed for off-diagonal;
-    //       we skip their relaxation and override the back-conversion below.
+    // Step 1: Velocity derivatives from Eq. 3.89 (CORRECTED subscripts):
+    //   Thesis Eq. 3.89 has C_110 ↔ C_011 SWAPPED (typo).
+    //   Correct mapping (from Chapman-Enskog analysis):
+    //     ∂_y w + ∂_z v = -3ω₁/ρ · C_011  (yz shear → C_011)
+    //     ∂_x w + ∂_z u = -3ω₁/ρ · C_101  (xz shear → C_101)
+    //     ∂_x v + ∂_y u = -3ω₁/ρ · C_110  (xy shear → C_110)
+    const double dywPdzv = -3.0 * omega * inv_rho * saved_C011;  // ∂_yw+∂_zv (Eq.3.89 corrected)
+    const double dxwPdzu = -3.0 * omega * inv_rho * saved_C101;  // ∂_xw+∂_zu
+    const double dxvPdyu = -3.0 * omega * inv_rho * saved_C110;  // ∂_xv+∂_yu (Eq.3.89 corrected)
+
+    // Step 2: General collision Eq. 3.86-3.88 with ω₈ retained
+    //   When ω₈=1: (1-ω₈)·C = 0, reduces to Eq. 3.119-3.121
+    const double eq_offdiag_coeff = -1.0/3.0 * (omega * 0.5 - 1.0) * omega8 * coeff_B * rho;
+    const double wp_C211_star = eq_offdiag_coeff * dywPdzv + (1.0 - omega8) * CUMcbb;  // Eq.3.86
+    const double wp_C121_star = eq_offdiag_coeff * dxwPdzu + (1.0 - omega8) * CUMbcb;  // Eq.3.87
+    const double wp_C112_star = eq_offdiag_coeff * dxvPdyu + (1.0 - omega8) * CUMbbc;  // Eq.3.88
 #else
     // AO: all 4th-order cumulants relax toward 0
     // Diagonal: ω₆ (deviatoric) and ω₇ (trace) [Thesis Eq.3.83-3.85]
@@ -588,7 +599,7 @@ __device__ void cumulant_collision_D3Q27(
         CUMcac = (cum4_trace - cum4_dev1) / 3.0;
         CUMacc = (cum4_trace - cum4_dev2) / 3.0;
     }
-    // Off-diagonal: ω₈ [Thesis Eq.3.86-3.88]
+    // Off-diagonal: ω₈ [Thesis Eq.3.86-3.88, with eq=0 since A=B=0 in AO]
     CUMbbc *= (1.0 - omega8);
     CUMbcb *= (1.0 - omega8);
     CUMcbb *= (1.0 - omega8);
@@ -609,10 +620,14 @@ __device__ void cumulant_collision_D3Q27(
 
     // --- 4th order off-diagonal inverse (Eq. J.16) ---
 #if USE_WP_CUMULANT
-    // [Thesis Eq.3.119-3.121] Direct central moment assignment
-    m[I_cbb] = wp_C211_star;  // Eq.3.119: (ω/2-1)·ω·B·C_yz_pre
-    m[I_bcb] = wp_C121_star;  // Eq.3.120: (ω/2-1)·ω·B·C_xz_pre
-    m[I_bbc] = wp_C112_star;  // Eq.3.121: (ω/2-1)·ω·B·C_xy_pre
+    // [Thesis Eq.3.86-3.88 + Eq.J.16 inverse] Cumulant → central moment
+    // FIXED: was missing low-order product terms (cumulant≠central moment for order≥4)
+    m[I_cbb] = wp_C211_star + ((m[I_caa] + 1.0/3.0)*m[I_abb]
+               + 2.0*m[I_bba]*m[I_bab]) * inv_rho;
+    m[I_bcb] = wp_C121_star + ((m[I_aca] + 1.0/3.0)*m[I_bab]
+               + 2.0*m[I_bba]*m[I_abb]) * inv_rho;
+    m[I_bbc] = wp_C112_star + ((m[I_aac] + 1.0/3.0)*m[I_bba]
+               + 2.0*m[I_bab]*m[I_abb]) * inv_rho;
 #else
     m[I_cbb] = CUMcbb + ((m[I_caa] + 1.0/3.0)*m[I_abb]
                + 2.0*m[I_bba]*m[I_bab]) * inv_rho;
