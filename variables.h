@@ -34,7 +34,7 @@
 #define     GRID_SIZE (NX6 * NYD6 * NZ6) // per-rank 總格點數
 
 // 非均勻網格
-#define     CFL                 0.5
+#define     CFL                 0.3     // 降低 CFL 以增加 hill 底部過渡區的插值穩定性
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
 #define     Uniform_In_Xdir     1   // 1=均勻, 0=非均勻
 #define     Uniform_In_Ydir     1
@@ -91,7 +91,7 @@
 //     1e-2  → Gehrke 預設 (多數情況適用)
 //     1e-1  → Re≥10600 中等網格 (GR22 Table 7)
 // ================================================================
-#define     USE_WP_CUMULANT     1   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
+#define     USE_WP_CUMULANT     0   // AO mode: all higher-order omega=1, A=B=0. Stable baseline for GILBM.
 #define     CUM_LAMBDA          1.0e-2
 //正則化參數引入
 
@@ -135,18 +135,22 @@
 #define     CUM_GUO_SRC         0
 #define     CUM_GALILEAN        1
 
-// ── Odd-Even Filter (方案 C: 2Δx 振盪抑制) ──────────────────
-//   CUM_ODDEVEN_SIGMA: 展向 (x) 3-point Laplacian filter 強度
-//     0.0   → 關閉 (預設)
-//     0.01  → 微弱阻尼 (推薦起始值)
-//     0.05  → 中等阻尼
-//     0.10  → 強阻尼 (可能過度耗散)
+// ── Odd-Even Filter (3-point Laplacian 擴散濾波器) ────────────
+//   f_filtered = (1-σ)·f + σ/2·(f_left + f_right)
+//   目的: 抑制 GILBM 框架 (Chimera+Lagrange插值) 在 hill 底部過渡區造成的不穩定
 //
-//   機制: f_filtered = (1-σ)·f + σ/2·(f_{i-1} + f_{i+1})
-//   目的: 抑制 GILBM 插值 + Chimera 非線性 u-依賴 造成的 2Δx checkerboard
-//   僅作用於 x-方向 (spanwise, uniform), 不影響 y/z 方向
-//   ★ 此為診斷測試用，確認 2Δx 噪聲放大是否為根因 ★
-#define     CUM_ODDEVEN_SIGMA   0.01
+//   ★ 不穩定發生在 j-k 平面 (流向-法向), 不是 x 方向 (展向) ★
+//   AO 和 WP 模式產生幾乎相同的不穩定 (Ma_max ratio 1.07-1.11x)
+//   → 根因是 GILBM 框架, 不是碰撞模型
+//
+//   CUM_ODDEVEN_SIGMA: 統一濾波強度
+//   CUM_FILTER_X: 啟用展向 (x, η) 方向濾波    — 0=關, 1=開
+//   CUM_FILTER_K: 啟用法向 (k, ζ) 方向濾波    — 0=關, 1=開 (跳過壁面點)
+//   CUM_FILTER_J: 啟用流向 (j, ξ) 方向濾波    — 0=關, 1=開 (需額外 MPI exchange)
+#define     CUM_ODDEVEN_SIGMA   0.10
+#define     CUM_FILTER_X        0       // 展向: 已證明無效 (不穩定不在此方向)
+#define     CUM_FILTER_K        1       // 法向: 直接抑制壁面附近插值振盪
+#define     CUM_FILTER_J        1       // 流向: 抑制 dk_dy 突變處的流向不一致
 
 // ── 互斥檢查 ──
 #if USE_MRT && USE_CUMULANT

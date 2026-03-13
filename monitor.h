@@ -72,8 +72,10 @@ void InitMonitorCheckPoint() {
 
 // 計算全場最大 Ma 數 (所有 rank 參與, MPI_Allreduce MAX)
 // 從 GPU 拷貝 u,v,w → 掃描內部計算點 → 取全域最大 |V| / cs
+// 增加位置追蹤: 輸出 Ma_max 發生的 (i,j,k) 座標和 rank
 double ComputeMaMax(){
     double local_max_sq = 0.0;
+    int loc_i = -1, loc_j = -1, loc_k = -1;  // Ma_max location tracking
     const int gs = NX6 * NYD6 * NZ6;
     double *u_h = (double*)malloc(gs * sizeof(double));
     double *v_h = (double*)malloc(gs * sizeof(double));
@@ -87,13 +89,30 @@ double ComputeMaMax(){
     for (int i = 3; i < NX6-3; i++) {
         int idx = j*NX6*NZ6 + k*NX6 + i;
         double sq = u_h[idx]*u_h[idx] + v_h[idx]*v_h[idx] + w_h[idx]*w_h[idx];
-        if (sq > local_max_sq) local_max_sq = sq;
+        if (sq > local_max_sq) {
+            local_max_sq = sq;
+            loc_i = i; loc_j = j; loc_k = k;
+        }
     }
     free(u_h); free(v_h); free(w_h);
 
     double local_max_mag = sqrt(local_max_sq);
     double global_max_mag;
     MPI_Allreduce(&local_max_mag, &global_max_mag, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+
+    // Determine which rank has the global max and print location
+    // Use MPI_MAXLOC to find rank with maximum
+    struct { double val; int rank; } local_vr, global_vr;
+    local_vr.val = local_max_mag;
+    local_vr.rank = myid;
+    MPI_Allreduce(&local_vr, &global_vr, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+
+    // The rank that owns the max prints its location (j is local to that rank)
+    if (myid == global_vr.rank && global_max_mag / (double)cs > 0.05) {
+        printf("  [Ma_max loc] rank=%d, i=%d, j_local=%d, k=%d, |V|=%.6f, Ma=%.4f\n",
+               myid, loc_i, loc_j, loc_k, global_max_mag, global_max_mag / (double)cs);
+    }
+
     return global_max_mag / (double)cs;
 }
 
