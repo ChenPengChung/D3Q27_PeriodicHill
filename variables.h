@@ -34,7 +34,7 @@
 #define     GRID_SIZE (NX6 * NYD6 * NZ6) // per-rank 總格點數
 
 // 非均勻網格
-#define     CFL                 0.5
+#define     CFL                 0.56
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
 #define     Uniform_In_Xdir     1   // 1=均勻, 0=非均勻
 #define     Uniform_In_Ydir     1
@@ -91,7 +91,7 @@
 //     1e-2  → Gehrke 預設 (多數情況適用)
 //     1e-1  → Re≥10600 中等網格 (GR22 Table 7)
 // ================================================================
-#define     USE_WP_CUMULANT     1   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
+#define     USE_WP_CUMULANT     0   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
 #define     CUM_LAMBDA          1.0e-2
 //正則化參數引入
 
@@ -119,9 +119,9 @@
 //   純 debug (無力):          SIGNFLIP=0, GUO_SRC=0, GALILEAN=0
 //
 //   ★ 請逐一切換測試，找出發散來源 ★
-#define     CUM_SIGNFLIP        1
-#define     CUM_GUO_SRC         0
-#define     CUM_GALILEAN        1
+#define     CUM_SIGNFLIP        0
+#define     CUM_GUO_SRC         1
+#define     CUM_GALILEAN        0
 // ── 互斥檢查 ──
 #if USE_MRT && USE_CUMULANT
 #error "USE_MRT and USE_CUMULANT are mutually exclusive. Set only one to 1."

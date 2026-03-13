@@ -1105,6 +1105,9 @@ void InitFromMergedVTK(const char* vtk_path) {
  */
 // 合併所有 GPU 結果，輸出單一 VTK 檔案 (Paraview)
 void fileIO_velocity_vtk_merged(int step) {
+    // 前 30000 步只輸出速度向量，減少檔案大小
+    const bool velocity_only = (step > 0 && step < 30000);
+
     // 每個 GPU 內部有效區域的 y 層數 (不含 ghost)
     const int nyLocal = NYD6 - 6;  // 去除上下各3層ghost
     const int nxLocal = NX6 - 6;
@@ -1140,7 +1143,7 @@ void fileIO_velocity_vtk_merged(int step) {
     // 準備本地時間平均資料 (若有累積), 正規化: ÷accu_count÷Uref
     // 只輸出 U_mean (streamwise=code v) 和 W_mean (wall-normal=code w)
     double *vt_local = NULL, *wt_local = NULL;
-    if (accu_count > 0) {
+    if (accu_count > 0 && !velocity_only) {
         vt_local = (double*)malloc(localPoints * sizeof(double));
         wt_local = (double*)malloc(localPoints * sizeof(double));
         double inv_count_uref = 1.0 / ((double)accu_count * (double)Uref);
@@ -1164,7 +1167,7 @@ void fileIO_velocity_vtk_merged(int step) {
     //   vv (展向 RS) 只用於 k_TKE 計算，不單獨輸出
     double *uu_local = NULL, *uw_local = NULL, *ww_local = NULL;
     double *k_local = NULL, *p_mean_local = NULL;
-    if (accu_count > 0 && (int)TBSWITCH) {
+    if (accu_count > 0 && (int)TBSWITCH && !velocity_only) {
         uu_local = (double*)malloc(localPoints * sizeof(double));
         uw_local = (double*)malloc(localPoints * sizeof(double));
         ww_local = (double*)malloc(localPoints * sizeof(double));
@@ -1218,9 +1221,13 @@ void fileIO_velocity_vtk_merged(int step) {
     //   ∂φ/∂x = (1/dx) ∂φ/∂i
     //   ∂φ/∂y = (1/dy) ∂φ/∂j + dk_dy ∂φ/∂k
     //   ∂φ/∂z = dk_dz ∂φ/∂k
-    double *ox_local  = (double*)malloc(localPoints * sizeof(double));
-    double *oy_local  = (double*)malloc(localPoints * sizeof(double));
-    double *oz_local  = (double*)malloc(localPoints * sizeof(double));
+    double *ox_local  = NULL;
+    double *oy_local  = NULL;
+    double *oz_local  = NULL;
+    if (!velocity_only) {
+    ox_local  = (double*)malloc(localPoints * sizeof(double));
+    oy_local  = (double*)malloc(localPoints * sizeof(double));
+    oz_local  = (double*)malloc(localPoints * sizeof(double));
     {
         double dx_val = (double)LX / (double)(NX6 - 7);
         double dx_inv = 1.0 / dx_val;
@@ -1254,6 +1261,7 @@ void fileIO_velocity_vtk_merged(int step) {
             oidx++;
         }}}
     }
+    } // end if (!velocity_only) for vorticity
 
     // 準備本地 z 座標
     int zidx = 0;
@@ -1276,14 +1284,14 @@ void fileIO_velocity_vtk_merged(int step) {
     }
 
     double *vt_global = NULL, *wt_global = NULL;
-    if( myid == 0 && accu_count > 0 ) {
+    if( myid == 0 && accu_count > 0 && !velocity_only ) {
         vt_global = (double*)malloc(gatherPoints * sizeof(double));
         wt_global = (double*)malloc(gatherPoints * sizeof(double));
     }
 
     double *uu_global = NULL, *uw_global = NULL, *ww_global = NULL;
     double *k_global = NULL, *p_mean_global = NULL;
-    if( myid == 0 && accu_count > 0 && (int)TBSWITCH ) {
+    if( myid == 0 && accu_count > 0 && (int)TBSWITCH && !velocity_only ) {
         uu_global = (double*)malloc(gatherPoints * sizeof(double));
         uw_global = (double*)malloc(gatherPoints * sizeof(double));
         ww_global = (double*)malloc(gatherPoints * sizeof(double));
@@ -1292,7 +1300,7 @@ void fileIO_velocity_vtk_merged(int step) {
     }
 
     double *ox_global = NULL, *oy_global = NULL, *oz_global = NULL;
-    if( myid == 0 ) {
+    if( myid == 0 && !velocity_only ) {
         ox_global  = (double*)malloc(gatherPoints * sizeof(double));
         oy_global  = (double*)malloc(gatherPoints * sizeof(double));
         oz_global  = (double*)malloc(gatherPoints * sizeof(double));
@@ -1304,20 +1312,22 @@ void fileIO_velocity_vtk_merged(int step) {
     MPI_Gather(w_local, localPoints, MPI_DOUBLE, w_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(z_local, zLocalSize, MPI_DOUBLE, z_global, zLocalSize, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-    if (accu_count > 0) {
+    if (accu_count > 0 && !velocity_only) {
         MPI_Gather(vt_local, localPoints, MPI_DOUBLE, vt_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(wt_local, localPoints, MPI_DOUBLE, wt_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
-    if (accu_count > 0 && (int)TBSWITCH) {
+    if (accu_count > 0 && (int)TBSWITCH && !velocity_only) {
         MPI_Gather(uu_local,     localPoints, MPI_DOUBLE, uu_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(uw_local,     localPoints, MPI_DOUBLE, uw_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(ww_local,     localPoints, MPI_DOUBLE, ww_global,     localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(k_local,      localPoints, MPI_DOUBLE, k_global,      localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gather(p_mean_local, localPoints, MPI_DOUBLE, p_mean_global, localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
+    if (!velocity_only) {
     MPI_Gather(ox_local,  localPoints, MPI_DOUBLE, ox_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(oy_local,  localPoints, MPI_DOUBLE, oy_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Gather(oz_local,  localPoints, MPI_DOUBLE, oz_global,  localPoints, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    }
 
     // rank 0 輸出合併的 VTK
     if( myid == 0 ) {
@@ -1404,7 +1414,7 @@ void fileIO_velocity_vtk_merged(int step) {
             }}}
 
         // [A] 瞬時速度 (3 SCALARS): u_inst=v_code/Uref, v_inst=u_code/Uref, w_inst=w_code/Uref
-        {
+        if (!velocity_only) {
             double inv_Uref = 1.0 / (double)Uref;
             out << "\nSCALARS u_inst double 1\n";
             out << "LOOKUP_TABLE default\n";
@@ -1442,18 +1452,20 @@ void fileIO_velocity_vtk_merged(int step) {
         }
 
         // [B] 瞬時渦度 (3 SCALARS): benchmark frame (omega_u=流向, omega_v=展向, omega_w=法向)
+        if (!velocity_only) {
         VTK_WRITE_SCALAR("omega_u", oy_global);  // 流向渦度 = code ω_y
         VTK_WRITE_SCALAR("omega_v", ox_global);  // 展向渦度 = code ω_x
         VTK_WRITE_SCALAR("omega_w", oz_global);  // 法向渦度 = code ω_z
+        }
 
         // [C] 平均速度 (2 SCALARS): U_mean, W_mean (÷count÷Uref)
-        if (accu_count > 0) {
+        if (accu_count > 0 && !velocity_only) {
             VTK_WRITE_SCALAR("U_mean", vt_global);  // ERCOFTAC <U>/Ub = streamwise = code v
             VTK_WRITE_SCALAR("W_mean", wt_global);  // ERCOFTAC <V>/Ub = wall-normal = code w
         }
 
         // [D] Reynolds Stress (3 SCALARS) + k_TKE (1) + P_mean (1) — ERCOFTAC col 4-7
-        if (accu_count > 0 && (int)TBSWITCH) {
+        if (accu_count > 0 && (int)TBSWITCH && !velocity_only) {
             VTK_WRITE_SCALAR("uu_RS", uu_global);   // ERCOFTAC col 4: <u'u'>/Ub²
             VTK_WRITE_SCALAR("uw_RS", uw_global);   // ERCOFTAC col 6: <u'v'>/Ub²
             VTK_WRITE_SCALAR("ww_RS", ww_global);   // ERCOFTAC col 5: <v'v'>/Ub²
@@ -1470,7 +1482,8 @@ void fileIO_velocity_vtk_merged(int step) {
 
         out.close();
         cout << "Merged VTK output: velocity_merged_" << setfill('0') << setw(6) << step << ".vtk";
-        if (accu_count > 0) cout << " (accu=" << accu_count << ")";
+        if (velocity_only) cout << " (velocity-only)";
+        else if (accu_count > 0) cout << " (accu=" << accu_count << ")";
         cout << "\n";
 
         free(u_global);
@@ -1496,9 +1509,9 @@ void fileIO_velocity_vtk_merged(int step) {
     free(z_local);
     if (vt_local) free(vt_local);
     if (wt_local) free(wt_local);
-    free(ox_local);
-    free(oy_local);
-    free(oz_local);
+    if (ox_local)  free(ox_local);
+    if (oy_local)  free(oy_local);
+    if (oz_local)  free(oz_local);
     if (uu_local)     free(uu_local);
     if (uw_local)     free(uw_local);
     if (ww_local)     free(ww_local);
