@@ -37,6 +37,15 @@
 #define USE_WP_CUMULANT 0   // 0 = AO (All-One), 1 = WP (Parameterized)
 #endif
 
+// ── Compile-time diagnostic: verify macro visibility ──
+#if USE_WP_CUMULANT
+  #ifdef CUM_WP_OMEGA_MIN
+    #pragma message(">>> CUM_WP_OMEGA_MIN is DEFINED = active")
+  #else
+    #pragma message(">>> CUM_WP_OMEGA_MIN is NOT defined = original WP behavior")
+  #endif
+#endif
+
 // ================================================================
 // WP regularization parameter lambda  (only used when USE_WP_CUMULANT=1)
 //   lambda_def = 1e-2  (Gehrke default, good for most cases)
@@ -79,13 +88,30 @@ __device__ static void _cum_backward_chimera(double m[27], const double u[3]);
 // ================================================================
 __device__ static double _cum_wp_clamp_with_ao_fallback(double omega_raw)
 {
-    // If in stable range, use as-is
-    if (omega_raw >= 0.0 && omega_raw <= 2.0) {
-        return omega_raw;
-    }
     // Outside [0,2]: fall back to AO neutral (1.0)
     // The parametrization is unreliable at this w1.
-    return 1.0;
+    if (omega_raw < 0.0 || omega_raw > 2.0) {
+        return 1.0;
+    }
+
+    // ── GILBM safety: enforce minimum damping for 3rd-order cumulants ──
+    // When ω₁ crosses the ω₄ pole at 14/9 ≈ 1.556, the Eq.15 formula
+    // produces ω₄ → 0 (≈0.067 at ω₁=1.80), meaning antisymmetric
+    // 3rd-order modes retain 93% per step — almost no damping.
+    // In GILBM, interpolation noise continuously feeds 3rd-order cumulants.
+    // Without sufficient damping, this noise accumulates → divergence.
+    //
+    // Fix: clamp ω₃,ω₄,ω₅ to [CUM_WP_OMEGA_MIN, 2.0].
+    // CUM_WP_OMEGA_MIN = 0.5 → at least 50% damping per step.
+    // This preserves the WP parametrization where it's well-behaved,
+    // and falls back toward AO-like damping in the near-pole region.
+#ifdef CUM_WP_OMEGA_MIN
+    if (omega_raw < CUM_WP_OMEGA_MIN) {
+        return CUM_WP_OMEGA_MIN;
+    }
+#endif
+
+    return omega_raw;
 }
 
 __device__ static void _cum_wp_compute_omega345(
@@ -396,6 +422,34 @@ __device__ void cumulant_collision_D3Q27(
     // Step B: Compute A, B for 4th-order equilibria (Eq.17-18)
     double coeff_A, coeff_B;
     _cum_wp_compute_AB(omega, omega2, &coeff_A, &coeff_B);
+
+    // ── ONE-TIME DIAGNOSTIC: print WP parameters at first call ──
+    // Thread (0,0,0) in block (0,0,0) prints once, then flag prevents repeats.
+    {
+        __shared__ int printed;
+        if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) printed = 0;
+        __syncthreads();
+        if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0
+            && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
+            if (atomicCAS(&printed, 0, 1) == 0) {
+                printf("[CUM_WP_DIAG] omega1=%.6f omega2=%.6f\n", omega, omega2);
+                printf("[CUM_WP_DIAG] omega3_base=%.6f omega4_base=%.6f omega5_base=%.6f\n",
+                       omega3_base, omega4_base, omega5_base);
+                printf("[CUM_WP_DIAG] A=%.6f B=%.6f\n", coeff_A, coeff_B);
+                printf("[CUM_WP_DIAG] rho=%.6f u=(%.6e, %.6e, %.6e) Ma=%.6f\n",
+                       rho, u[0], u[1], u[2],
+                       sqrt(u[0]*u[0]+u[1]*u[1]+u[2]*u[2]) / (1.0/1.732050807568877));
+#ifdef CUM_WP_OMEGA_MIN
+                printf("[CUM_WP_DIAG] CUM_WP_OMEGA_MIN=%.4f *** ACTIVE ***\n", (double)CUM_WP_OMEGA_MIN);
+#else
+                printf("[CUM_WP_DIAG] CUM_WP_OMEGA_MIN not defined (original WP)\n");
+#endif
+#ifdef CUM_ODDEVEN_SIGMA
+                printf("[CUM_WP_DIAG] CUM_ODDEVEN_SIGMA=%.4f\n", (double)CUM_ODDEVEN_SIGMA);
+#endif
+            }
+        }
+    }
 
     // Step C: Extract raw 3rd-order cumulants BEFORE symmetric/antisymmetric
     //         decomposition (needed for lambda-limiter magnitude, Eq.20-26)

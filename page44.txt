@@ -1,0 +1,70 @@
+                                                                                                     10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1154                                                                               GEHRKE and RUNG
+
+
+        ∗
+       C002 = [(1 − 𝜔1 ) (C200 − C020 ) − 3 𝜌 (1 − 𝜔1 ∕2) (u2 Dx u − v2 Dy v)
+              − 2 (1 − 𝜔1 ) (C200 − C002 ) + 6 𝜌 (1 − 𝜔1 ∕2) (u2 Dx u − w2 Dz w)
+              + k000 − 3 𝜌 (1 − 1∕2) (u2 Dx u + v2 Dy v + w2 Dz w)]∕3,                      (B15)
+
+                           𝜆                            𝜆
+             ∗
+            C102 = [(1 − 𝜔3,1 ) (C120 + C102 ) − (1 − 𝜔4,2 ) (C120 − C102 )]∕2,             (B16)
+
+                           𝜆                            𝜆
+             ∗
+            C120 = [(1 − 𝜔3,1 ) (C120 + C102 ) + (1 − 𝜔4,1 ) (C120 − C102 )]∕2,             (B17)
+
+                           𝜆                            𝜆
+             ∗
+            C012 = [(1 − 𝜔3,2 ) (C210 + C012 ) − (1 − 𝜔4,2 ) (C210 − C012 )]∕2,             (B18)
+
+                           𝜆                            𝜆
+             ∗
+            C210 = [(1 − 𝜔3,2 ) (C210 + C012 ) + (1 − 𝜔4,2 ) (C210 − C012 )]∕2,             (B19)
+
+                           𝜆                            𝜆
+             ∗
+            C021 = [(1 − 𝜔3,3 ) (C201 + C021 ) − (1 − 𝜔4,3 ) (C201 − C021 )]∕2,             (B20)
+
+                           𝜆                            𝜆
+             ∗
+            C201 = [(1 − 𝜔3,3 ) (C201 + C021 ) + (1 − 𝜔4,3 ) (C201 − C021 )]∕2,             (B21)
+
+                                  ∗
+                                 C111 = (1 − 𝜔𝜆5 ) C111 ,                                   (B22)
+
+               ∗
+              C220 = [2∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u − 2 Dy v + Dz w)
+                     + 2∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u + Dy v − 2 Dz w)
+                     − 4∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u + Dy v + Dz w)]∕3,                        (B23)
+
+               ∗
+              C022 = [−2∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u + Dy v − 2 Dz w)
+                     − 4∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u + Dy v + Dz w)]∕3,                        (B24)
+
+               ∗
+              C202 = [−2∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u − 2 Dy v + Dz w)
+                     − 4∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u + Dy v + Dz w)]∕3,                        (B25)
+
+                                ∗
+                               C211 = (1 − 𝜔1 ∕2) B C011 ,                                  (B26)
+
+                                ∗
+                               C121 = (1 − 𝜔1 ∕2) B C101 ,                                  (B27)
+
+                                ∗
+                               C112 = (1 − 𝜔1 ∕2) B C110 ,                                  (B28)
+
+                                         ∗
+                                        C221 = 0,                                           (B29)
+
+                                         ∗
+                                        C212 = 0,                                           (B30)
+
+                                         ∗
+                                        C122 = 0,                                           (B31)
+
+                                         ∗
+                                        C222 = 0.                                           (B32)
+

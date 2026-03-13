@@ -1,0 +1,2124 @@
+Received: 18 October 2021      Revised: 7 February 2022      Accepted: 10 March 2022
+
+DOI: 10.1002/fld.5085
+
+
+RESEARCH ARTICLE
+
+
+
+
+Periodic hill flow simulations with a parameterized
+cumulant lattice Boltzmann method
+
+Martin Gehrke                      Thomas Rung
+
+Hamburg University of Technology,
+TUHH, Institute for Fluid Dynamics and                Abstract
+Ship Theory, Hamburg, Germany                         The article is concerned with the assessment of a cumulant lattice Boltzmann
+                                                      method in wall-bounded, separated turbulent shear flows. The approach is of
+Correspondence
+Martin Gehrke, Hamburg University of                  interest for its resolution-spanning success in turbulent channel flows without
+Technology, TUHH, Institute for Fluid                 using a specific turbulence treatment. The assessment focuses upon the flow
+Dynamics and Ship Theory,
+Am Schwarzenberg-Campus 4, 21073
+                                                      over a periodic hill, which offers a rich basis of numerical and experimental
+Hamburg, Germany.                                     data, for Reynolds numbers within 700 ≤ Re ≤ 37,000. The analysis involves the
+Email: martin.gehrke@tuhh.de                          mean flow field, second moments and their invariants, as well as spectral data
+Funding information                                   obtained for a wide range of resolutions with 2 ≲ Δxi+ ≲ 100. With the emphasis
+TUHH                                                  on a recently published parameterized cumulant collision operator, the univer-
+                                                      sality of the value assigned to a stability preserving regularization parameter
+                                                      is assessed. Reported results guide resolution-dependent optimized values and
+                                                      indicate a required minimum resolution of Δxi+ ≈ 30. Analog to the findings for
+                                                      attached turbulent shear flows, the approach appears to adequately resolve com-
+                                                      plex turbulent flows without the need for ad hoc modeling for a range of scale
+                                                      resolving resolutions.
+
+                                                      KEYWORDS
+                                                      cumulant lattice Boltzmann method, GPU computing, lattice Boltzmann, separated shear flows,
+                                                      turbulent boundary layer, turbulent flow
+
+
+
+
+1         I N T RO DU CT ION
+
+Many recent fluid engineering applications are concerned with inherently unsteady problems where turbulent and
+transient motion are hardly separable, and turbulence modeling becomes difficult. On the contrary, comprehensive
+time-dependent studies or efforts to resolve turbulent scales often remain challenging if not unfeasible for industrial com-
+putational fluid dynamics (CFD), particularly for large Reynolds number applications. An example refers to flow control
+efforts increasingly introduced to the fluid dynamic design of cars, aircraft, or ships. The lattice Boltzmann method (LBM)
+has recently gained enhanced attention for transient simulations of scale resolving industrial flows.1-3 The method offers
+favorable efficiency features also adopted by a few other recent CFD strategies, that is, weak compressibility, explicit
+advancing in time, and a structured grid discretization. A crucial algorithmic benefit of LBM is the strict locality of
+nonlinear expressions. However, the turbulence simulation capabilities remain uncertain, limiting its use in practical
+applications.
+
+This is an open access article under the terms of the Creative Commons Attribution License, which permits use, distribution and reproduction in any medium, provided the
+original work is properly cited.
+© 2022 The Authors. International Journal for Numerical Methods in Fluids published by John Wiley & Sons, Ltd.
+
+Int J Numer Meth Fluids. 2022;94:1111–1154.                                                                                wileyonlinelibrary.com/journal/fld      1111
+                                                                                                                                       10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1112                                                                                                                GEHRKE and RUNG
+
+
+
+
+F I G U R E 1 Instantaneous normalized velocity magnitude in the x-y center plane for the four investigated Reynolds numbers [Colour
+figure can be viewed at wileyonlinelibrary.com]
+
+
+
+    The performance of LBM in turbulent flows is notably intertwined with the employed collision operator. Therefore, the
+formulation of adequate collision models is a focal area of LBM research. Various improvements of the initial single-time
+BGK4 collision operator were suggested to increase the stability and accuracy in high Reynolds number (turbulent) flows.
+A detailed review of collision operators and their rationale is beyond the scope of this article, and we refer, for instance,
+to a recent comprehensive paper of Coreixas et al.5 Published suggestions for improved collision operators adopt two and
+more relaxation times, for example, TRT6,7 and MRT8,9 approaches, introduce an improved Galilean invariance of the
+collision operator as suggested by the cascaded approach,10 promote stability in addition to accuracy enhancements by
+a regularization11 as well as by a local adaptation of relaxation times using discrete entropy minimizing methods,12-14 or
+relax the distribution functions in cumulant space.15,16 The latter is the focal point of our effort.
+    As regards scale-resolving simulations of turbulent engineering shear flows, the predictive accuracy of different LBM
+concepts has been investigated in, for example, Pasquali,17 Gehrke et al.,18,19 Nathen et al.,20 and Geier et al.21 to assess the
+influence of the collision operator and the employed LBM discretization strategy. Still, virtually all these studies focus on
+the predictive performance in fairly generic flows, for example, a turbulence-driven decay of large vortices in a periodic
+box, the so-called Taylor–Green vortex (TGV) test case, or a wall-bounded unidirectional mean shear in a plane channel
+flow. On the contrary, few systematic efforts into separated engineering shear flows were published. The present article
+aims to assess the performance of a more recent well-conditioned parameterized (WP) cumulant collision operator16 in a
+particular separated shear flow that has previously been examined in greater detail. To this end, the flow over a periodic
+hill arrangement that is, mounted to the bottom wall of a straight channel22 is computed. Figure 1 outlines snapshots of
+the instantaneous velocity magnitude for different Reynolds numbers in a centered x-y-plane of the numerical domain,
+which is perpendicular to the homogeneous direction of the geometry. As indicated by the figure, an increase in the
+Reynolds number is associated with a decrease in flow structure sizes and a more intensified turbulent motion. Due to
+the simple setup of the geometry and the boundary conditions, the test case refers to a frequently computed benchmark
+studied to assess the turbulence modeling capabilities of various CFD approaches.
+    The present study utilizes results obtained from a 27-point three-dimensional spatial LBM discretization (D3Q27) on
+isotropic homogeneous Cartesian grids to analyze the predictive capabilities of the WP cumulant LBM for the periodic
+hill test case. The WP cumulant operator was chosen because it offers improved stability properties controlled by a sin-
+gle user-defined parameter. Attention is restricted to four different Reynolds numbers, Re = {700; 2800; 10,600; 37,000},
+where results are compared with solutions of Navier–Stokes-based direct (DNS) and large eddy (LES) simulations for all
+investigated Reynolds numbers as well as experimental data for Re = {10,600; 37,000}. The utilized D3Q27 discretiza-
+tion supports Galilean invariance and offers benefits when pronounced nonlinearities occur. For this reason, we exclude
+related stencil influences from the present study and refer to previously reported investigations of the cumulant LBM.19,23
+All simulations were subject to the waiver of a turbulence closure or wall function, which is a crucial aspect of the study,
+                                                                                                                                              10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                        1113
+
+
+
+
+F I G U R E 2 Illustration of the physical domain supplemented by isosurfaces of the longitudinal vorticity component
+𝜔x = 𝜕uz ∕𝜕y − 𝜕uy ∕𝜕z (20% of the maximum value) colored by the velocity magnitude [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+and different spatial and temporal resolutions were assessed. Emphasis is given to the influence of the value assigned
+to the stability-enhancing regularization parameter and its relation to the required resolution. The discussion involves
+mean flow data as well as Reynolds stresses and is supplemented by one-dimensional power spectra obtained from locally
+recorded time series of the velocity vector. Results of the present study reveal an interplay between the value assigned to
+the regularization parameter and the (near-wall) resolution of the grid.
+    The remainder of the article is structured as follows. The subsequent parts of the introduction outline the test case
+details and briefly describe the status of cumulant LBM applied to turbulent flows. Section 2 provides details of the
+numerical method and Section 3 is concerned with case specific computational aspects. Section 4 is devoted to the com-
+prehensive presentation of results. Final conclusions are drawn in Section 5. A description of the geometry and the explicit
+implementation of the cumulant collision operator are given in the Appendix.
+
+
+1.1        Periodic hill test case description
+
+The periodic hill test case (PHTC) was initially the subject of experimental investigations for a periodic arrangement
+of analytically described hills in a straight channel, compare Figure 2. The geometry is homogeneous in the lateral (z)
+direction, and the flow is deemed periodic in the longitudinal (x) and lateral direction. The case features separation from
+a curved surface and accelerated and decelerated mean shear. Due to the more complex physics, the test case represents a
+natural candidate to scrutinize simulation capabilities subsequent to assessing simple flows, for example, unidirectional
+channel flows.19 The PHTC is part of prominent benchmark databases, for example, ERCOFTAC,24 featuring reference
+data from various simulations25,26 and experiments.27
+    To reduce the influence of lateral walls and improve the periodicity in the lateral direction, the initial geometry,28 firstly
+numerically analyzed by Bonnin et al.,29 was revised by Mellen et al.22 The revised setup also served as a basis for extensive
+experimental studies, for example, Rapp et al.27,30 In comparison to the initial geometry, the revised geometry increases the
+ratio of the horizontal to vertical dimension Lx ∕Ly to 𝜋, which avoids a longitudinal correlation.31 Experimental data for
+the revised geometry were reported for four Reynolds numbers, Re = {5600; 10, 600; 19, 000; 37, 000} by Rapp et al.27 and
+two further Reynolds numbers, Re = {8000; 33, 000} by Kähler et al.,32 whereas numerical studies31,33-38 refer to an wider
+range of Reynolds numbers between Re = 102 and Re = 105 forlaminar as well as highly turbulent conditions. Similar
+to the majority of investigations, the present study employs the revised geometry in a domain that spans Lx × Ly × Lz =
+9H × 3.035H × 4.5H. Here H refers to the height of the hill, Lx denotes the horizontal distance between the hill crests, and
+Ly denotes the maximum vertical distance between the plane bottom wall and the straight top wall, compare Figure 2.
+Numerical simulations are performed with periodic boundary conditions along the longitudinal (x) and lateral (z) end
+planes. The definition of the Reynolds number employs H and the bulk velocity uB at the entrance plane (x = 0), which
+is spatially averaged in lateral (z) and vertical (y) direction,
+                                                                                3.035H
+                                 u H                          1
+                             Re = B            with uB =                                 u (x = 0, y, z) dy dz.                        (1)
+                                   𝜈                     2.035H ⋅ Lz ∫Lz ∫
+                                                                                   H
+                                                                                                                                  10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1114                                                                                                          GEHRKE and RUNG
+
+
+
+1.2       Development of cumulant collision operators
+
+The use of cumulants in conjunction with LBM simulations was initially suggested by Seeger et al.39 in the year 2000 and
+has received increased attention following the publication of Geier et al.15 in 2015. While the initial publication39 refers to
+the equations of motion in cumulant space, the subsequent studies15,16 restrict the use of cumulants to the collision step
+for a D3Q27 discretization. The suggested collision operator15 employs ten different relaxation rates 𝜔i (i ∈ [1, … , 10])
+to relax the cumulants toward their specific equilibria. Generally, the choice of the relaxation rates strongly influences
+the stability and the predictive accuracy of the LBM and therefore motivates research into collision operators.
+    Only a single relaxation rate (𝜔1 ) is usually linked to a physically observable quantity and is defined from the shear
+viscosity of the underlying fluid. The remaining nine relaxation rates are user-specified and bounded to 𝜔i ∈ [0, 2] and
+often assigned to unity, 𝜔2 = 𝜔3 = · · · = 𝜔10 = 1, which refers to the all one (AO) approach. The AO approach greatly
+supports the method’s stability due to neglecting the nonequilibrium parts of the third to sixth-order cumulants in the
+collision step, whereby the concerning postcollision states are set to zero. The AO cumulant approach was tested for
+a few benchmark cases,15,40 among them Taylor–Green vortex for moderate Reynolds numbers and the flow around
+a sphere for Reynolds numbers in the range of (102 ) to (105 ). Asmuth et al.41 have successfully applied the AO
+approach to study more complex wind turbine flows at higher Reynolds numbers Re ≈ (107 ) on relatively coarse grids.
+A first modification of the cumulant collision operator was suggested by Geier et al.,15 see Appendix J therein. The
+modification aims at a reduction of round-off errors due to a particular calculation sequence when reconstructing the
+flow field from the particle distribution functions of the lattice Boltzmann equation and is labeled well-conditioned (W)
+cumulant.
+    Turbulence model-free applications of the W and AO cumulant models were assessed in greater detail for lower
+Reynolds number turbulent flows, for example, transitional ZPG flat plate,42 Taylor–Green vortex, and channel flows.18,19
+Increasing the Reynolds number, the viscosity-related relaxation rate approaches 𝜔1 → 2, whereby the nonequilibrium
+parts of the second-order cumulant expressions are almost fully conserved during the collision step, whereby instabili-
+ties could emerge. These hamper the robustness of the approach and trigger further modifications. A derivative of the
+well-conditioned (W) cumulant was suggested and applied by Geier et al.,16,43 labeled the well-conditioned parameterized
+(WP) cumulant. The WP approach includes stability enhancing regularization, which also helps to improve the accu-
+racy. It combines the well-conditioned approach with a parameterization of three relaxation rates (𝜔3 , 𝜔4 , 𝜔5 ) and two
+parameters (A, B) as a function of the shear and the bulk viscosity, and thereby 𝜔1 and 𝜔2 , compare Section 2.2. The
+parameterization involves a single unified regularization parameter 𝜆 to limit the third-order nonequilibrium contribu-
+tions during the collision. In general, numerical damping is introduced through the regularization parameter. A default
+value is assigned to 𝜆def = 10−2 , and smaller values around 𝜆 ≤ 10−6 restore unit relaxation rates (→ AO) by disabling the
+parameterization. The regularization interacts with the turbulence treatment by suppressing the small-scale motion of
+the upper-frequency end, compare Section 4, also observed by Asmuth et al.44 for wind turbine simulations. The latter
+study compares results of an LES-WP (𝜆 = 10−6 ) that incorporates an algebraic subgrid-scale (SGS) closure model, with
+results obtained by increasing the regularization parameter from the default value to 𝜆 = 10−1 and 𝜆 = 100 without the use
+of an SGS turbulence model. The study indicates significant flow changes in the turbulent wake downstream of the wind
+turbine, whereby results obtained from 𝜆 = 10−2 to some extent resembled SGS results, but no detailed grid influences
+were assessed. Moreover, Pasquali17 also vaguely researched the influence of increased or specifically tuned 𝜆 values for
+turbulent channel flow simulations at Re𝜏 = {950; 2000; 16, 000}.
+
+
+2       NUMERICAL METHOD
+
+This section briefly introduces the underlying LBM, the utilized specific collision operator, and its relaxation rates and
+summarizes the details of the applied solid wall boundary condition.
+
+
+2.1       Lattice Boltzmann procedure
+
+The current study is based on a GPU-based (graphics processing unit) lattice Boltzmann implementation45 for the simu-
+lation of incompressible fluid flow.46,47 The Boltzmann equation governs the particle distribution functions f (x, t, 𝝃) and
+reads
+                                                                                                                                              10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                        1115
+
+
+                                          𝜕f (x, t, 𝝃)     𝜕f (x, t, 𝝃)    𝜕f (x, t, 𝝃)
+                                                       +𝝃⋅              +F              = Ω.                                           (2)
+                                              𝜕t               𝜕x              𝜕𝝃
+
+The particle distribution function (PDF) describes the probability of encountering a particle located at position x with
+the velocity 𝝃 at the time t. While the left-hand side of the Boltzmann equation (2) is of advection type, the right-hand
+side contains the so-called collision operator Ω, which covers the interaction of particles. The third term of the left-hand
+side incorporates surface or body forces. For the sake of simplicity, the term is neglected below. The consideration of body
+forces is outlined in Appendix B.1.
+    In the framework of a numerical approximation, the Boltzmann equation is solved for a set of discrete par-
+ticle distribution functions described by a lattice of grid points. The present study employs a regular D3Q27 lat-
+tice. Accordingly, a set of 27 discrete velocities eijk is introduced, oriented in 27 characteristic directions of the
+underlying grid, compare Figure 3. Deploying these assumptions, Equation (2) transforms into a set of discrete
+equations
+
+                                                 𝜕fijk (x, t)          𝜕fijk (x, t)
+                                                              + eijk ⋅              = Ωijk ,                                           (3)
+                                                     𝜕t                    𝜕x
+
+where eijk = c × (i, j, k) refers to a directional speed matrix, with i, j, k ∈ (1, 0, 1) based on the Miller notation (−1 ≡ 1,
+0 ≡ 0, 1 ≡ 1),
+
+                 ⎛0 1 1 0 0 0 0 1 1 1 1 1 1 1 1 0 0 0 0 1 1 1 1 1 1 1 1⎞
+                 ⎜                                                     ⎟
+        eijk = c ⎜0 0 0 1 1 0 0 1 1 1 1 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1⎟ .                                                             (4)
+                 ⎜                                                     ⎟
+                 ⎝0 0 0 0 0 1 1 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1⎠
+
+The lattice speed is defined as c = Δx∕Δt, where Δx represents the regular lattice spacing, and Δt is the time step. Usually,
+spatial and temporal unit spacings are assumed, that is, Δx = 1 and Δt = 1. Thus c is also assigned to unity implying the
+particles are restricted to stay or move only to one of their next neighbor nodes within a discrete time step. The numerical
+solution of the discrete Boltzmann equation (3) is obtained from a finite difference approximation in space and time over
+a grid cell
+
+                                            fijk (x + eijk Δt, t + Δt) = fijk (x, t) + Δt Ωijk .                                       (5)
+
+As indicated by the Chapman–Enskog theory,48 the LBE (5) converges to that of the incompressible Navier–Stokes
+equation for sufficiently small spatial and temporal step sizes, as well as adequately small Mach (Ma) and Knudsen
+numbers. The macroscopic flow quantities of pressure and velocity are extracted from the PDF space via
+
+
+
+
+F I G U R E 3 D3Q27 lattice model used in the present LBM, where the arrows indicate the 27 possible velocity vectors. The so-called
+collocation points are marked in color [Colour figure can be viewed at wileyonlinelibrary.com]
+                                                                                                                                   10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1116                                                                                                           GEHRKE and RUNG
+
+
+
+                                          ∑ ∑∑
+                                          1 1 1
+                                                                                            1 ∑∑∑
+                                                                                              1   1   1
+                              p = c2s 𝜌                 fijk   and     ui = (u, v, w)⊺ =         fijk eijk ,                (6)
+                                                                                            𝜌
+                                          i=1 j=1 k=1                                        i=1 j=1 k=1
+
+             √
+where cs = c∕ 3 matches the speed of sound in the lattice. The solution procedure is usually divided into two parts
+involving
+
+                                            ∗
+                                          fijk (x, t) = fijk (x, t) + Ωijk      the collision step,                         (7)
+
+                                                              ∗
+                               fijk (x + eijk Δt, t + Δt) = fijk (x, t)        and the propagation step.                    (8)
+
+The first part (7) contains the collision step, where the initial particle distribution function fijk (x, t) deviates from equi-
+                                                                         ∗
+librium state due to the collision of particles. The asterisk notation fijk represents the postcollision particle distribution
+function. The second part (8) shifts the evolved particle distribution functions to their respective neighboring nodes and
+is termed the propagation step. The prevalent strict locality of the collision step allows exploiting the advantage of GPUs
+for high-performance computing.49
+
+
+2.2       Cumulant collision operator
+
+Previously reported studies15,16,18,19,41,42,44,50 demonstrated that the cumulant collision operator is suitable for simulating
+transitional and turbulent flows. To save space, we only provide a brief description of the approach and its implementation,
+and the reader is referred to the initial work of Geier et al.15 for a more in-depth explanation of the cumulant LBM.
+The method involves transforming the PDFs from phase space (𝜉, 𝜓, 𝜁) to frequency space (Ξ)      ⃗ = (Ξ, Ψ, Z) by a two-sided
+Laplace transform
+
+                                                                                +∞
+                                                                ⃗ =                    ⃗⃗     ⃗ dx.
+                                            ℒ {f (𝜉, 𝜓, 𝜁)} = F(Ξ)                   e−𝜉.Ξ f (𝜉)                            (9)
+                                                                             ∫−∞
+
+The eponymous cumulants of the method are defined as
+
+                                                                 𝜕𝛼 𝜕𝛽 𝜕𝛾
+                                    c𝛼𝛽𝛾 = (−c)−𝛼−𝛽−𝛾                        ln(F(Ξ, Ψ, Z))|Ξ=Ψ=Z=0 .                      (10)
+                                                               𝜕𝜉 𝛼 𝜕Ψ𝛽 Z𝜕 𝛾
+
+Herein (𝛼𝛽𝛾) ∈ (0, 1, 2) each, whereby a total of 27 cumulant moments are generated with the highest order of 6. Due
+to the complexity, the computation of cumulants based on (10) is costly. A simpler alternative refers to the reconstruc-
+tion of cumulants through central moments 𝜅𝛼𝛽𝛾 , which involves the velocity vector ui , the lattice speed c, and the
+PDFs fijk
+                                                    ∑
+                                          𝜅𝛼𝛽𝛾 =            (i − u∕c)𝛼 (j − v∕c)𝛽 (k − w∕c)𝛾 fijk .                        (11)
+                                                    i,j,k
+
+
+Details of the related reconstruction from central moments employed in the present work are outlined by Geier
+et al.16 Once the cumulants are computed, the collision is executed in cumulant space. The postcollision cumulants
+read
+
+                                                                  eq
+                                                     ∗
+                                                    C𝛼𝛽𝛾 = C𝛼𝛽𝛾 + (1 − 𝜔𝛼𝛽𝛾 ) C𝛼𝛽𝛾 ,                                       (12)
+
+where the asterisk expresses the post collision states, 𝜔𝛼𝛽𝛾 represents the order-dependent relaxation rates and C𝛼𝛽𝛾 =
+                                                                   eq
+c𝛼𝛽𝛾 𝜌. While C𝛼𝛽𝛾 represents precollision cumulant states, C𝛼𝛽𝛾 denotes their equilibria. It is to be noted that only three
+                          eq     eq         eq
+second-order equilibria (C200 , C020 , and C002 ) and all fourth-order cumulant equilibria differ from zero for the utilized WP
+cumulant collision operator.
+                                                                                                                                10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                          1117
+
+
+
+Relaxation rates
+
+Equation (12) features a total of 27 relaxation rates 𝜔𝛼𝛽𝛾 of which 10 are independent of each other, 𝜔1 · · · 𝜔10 . For the
+WP cumulant collision, the most influential rate 𝜔1 addresses both second- and fourth-order collision. The relaxation
+rate 𝜔2 occurs in the nonzero second-order equilibria. While 𝜔3 , 𝜔4 , and 𝜔5 are related to third-order collision, the rates
+𝜔6 , 𝜔7 , and 𝜔8 address fourth-order collision. Fifth- and sixth-order relaxation of the cumulant nonequilibrium parts are
+controlled by 𝜔9 and 𝜔10 , respectively. The properties of the underlying fluid determine only the relaxation rate 𝜔1 , which
+is its (shear) viscosity via
+
+                                                                    1
+                                                       𝜔1 =                  .                                          (13)
+                                                              𝜈∕c2s + Δt∕2
+
+The remaining nine relaxation rates 𝜔2 to 𝜔10 can be chosen within the interval [0, 2]. The choice affects both the accuracy
+and numerical stability. Assigning all nine rates to unity is accompanied by beneficial stability for high Reynolds number
+flows due to the associated introduction of numerical damping. However, this choice is detrimental to the attainable
+accuracy beyond a sufficiently fine spatial/temporal resolution. Geier et al.16 report an improvement of the method’s
+diffusive order up to an order of four, derived from an optimization of the leading error of the collision operator. The
+optimization provides parameterized formulations for the three relaxation rates 𝜔3 to 𝜔5 , which are responsible for the
+third-order collision, and two additional coefficients A and B are of influence for the fourth-order cumulant equilibria,
+compare Appendix B.2 for details. All five expressions are determined from 𝜔1 and 𝜔2 ,
+
+                                                 8 (𝜔1 − 2) (𝜔2 (3 𝜔1 − 1) − 5 𝜔1 )
+                                     𝜔3 =                                              ,                                (14)
+                                            8 (5 − 2 𝜔1 ) 𝜔1 + 𝜔2 (8 + 𝜔1 (9 𝜔1 − 26))
+                                                   8 (𝜔1 − 2) (𝜔1 + 𝜔2 (3 𝜔1 − 7))
+                                            𝜔4 =                                   ,                                    (15)
+                                                   𝜔2 (56 − 42 𝜔1 + 9 𝜔21 ) − 8 𝜔1
+                               24 (𝜔1 − 2) (4 𝜔21 + 𝜔1 𝜔2 (18 − 13 𝜔1 ) + 𝜔22 (2 + 𝜔1 (6 𝜔1 − 11)))
+            𝜔5 =                                                                                                ,       (16)
+                   16 𝜔21 (𝜔1 − 6) − 2 𝜔1 𝜔2 (216 + 5 𝜔1 (9 𝜔1 − 46)) + 𝜔22 (𝜔1 (3𝜔1 − 10) (15 𝜔1 − 28) − 48)
+                                      4 𝜔21 + 2 𝜔1 𝜔2 (𝜔1 − 6) + 𝜔22 (𝜔1 (10 − 3 𝜔1 ) − 4)
+                                 A=                                                          ,                          (17)
+                                                (𝜔1 − 𝜔2 ) (𝜔2 (2 + 3 𝜔1 ) − 8 𝜔1 )
+
+                                    4 𝜔1 𝜔2 (9 𝜔1 − 16) − 4 𝜔21 − 2 𝜔22 (2 + 9 𝜔1 (𝜔1 − 2))
+                               B=                                                                .                      (18)
+                                               3 (𝜔1 − 𝜔2 ) (𝜔2 (2 + 3 𝜔1 ) − 8 𝜔1 )
+
+Mind that the relaxation rate 𝜔2 , theoretically linked to the bulk viscosity, is assigned to unity within our study, such as
+𝜔6 to 𝜔10 . In the low viscosity (high Reynolds number) limit one obtains 𝜔1 → 2 from (13), which in turn yields
+
+                                                                    |
+                                                   lim 𝜔𝜀 (𝜔1 , 𝜔2 )|          =0                                       (19)
+                                                   𝜈→0              |𝜀={3,4,5}
+
+from (14)–(16), and has a detrimental effect on the numerical stability. To regularize the expressions (14)–(16) at low
+viscosities, Geier et al.16 suggested a limiter for the third-order relaxation rates. In conclusion, seven limited relaxation
+rates occur, defined as
+
+                                               𝜆            (1 − 𝜔3 ) |C120 + C102 |
+                                             𝜔3,1 = 𝜔3 +                             ,                                  (20)
+                                                               𝜌 𝜆 + |C120 + C102 |
+
+                                               𝜆            (1 − 𝜔4 ) |C120 − C102 |
+                                             𝜔4,1 = 𝜔4 +                             ,                                  (21)
+                                                               𝜌 𝜆 + |C120 − C102 |
+
+                                               𝜆            (1 − 𝜔3 ) |C210 + C012 |
+                                             𝜔3,2 = 𝜔3 +                             ,                                  (22)
+                                                               𝜌 𝜆 + |C210 + C012 |
+
+                                               𝜆            (1 − 𝜔4 ) |C210 − C012 |
+                                             𝜔4,2 = 𝜔4 +                             ,                                  (23)
+                                                               𝜌 𝜆 + |C210 − C012 |
+                                                                                                                                          10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1118                                                                                                                    GEHRKE and RUNG
+
+
+
+
+FIGURE 4        Illustration of the no-slip wall boundary condition [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+                                                  𝜆           (1 − 𝜔3 ) |C201 + C021 |
+                                                𝜔3,3 = 𝜔3 +                            ,                                           (24)
+                                                                 𝜌 𝜆 + |C201 + C021 |
+
+                                                  𝜆           (1 − 𝜔4 ) |C201 − C021 |
+                                                𝜔4,3 = 𝜔4 +                            ,                                           (25)
+                                                                 𝜌 𝜆 + |C201 − C021 |
+
+                                                                  (1 − 𝜔5 ) |C111 |
+                                                     𝜔𝜆5 = 𝜔5 +                     ,                                              (26)
+                                                                     𝜌 𝜆 + |C111 |
+
+where 𝜆 refers to an adjustable free parameter. As already mentioned, the default value is assigned to 𝜆def = 10−2 . For
+small products 𝜌 𝜆, the optimized relaxation rate converges to 1 and therefore to the AO variant. For large values the
+limiter has virtually no effect, 𝜔𝜆𝜀,k = 𝜔𝜀 .
+    Owing to 𝜆def = 10−2 , one would intuitively expect the cumulant magnitude expressions in (20)–(26) to reach up to
+values around 10−2 or higher. However, the present results reveal peak values around 10−3 for coarser resolutions, which
+indicates that subtle changes of 𝜔i in the order of 1% in the direction of AO are of distinct significance. The latter is
+understood by the generally low values of the higher-order relaxation rates, which are around 𝜔𝜀 ≈ (10−3 ) − (10−2 ).
+Essentially, one can observe a strong link between the resolution and the cumulant magnitude expressions. Likewise,
+a very weak link between these expressions and changes of the Reynolds number is seen. A weak proportionality is
+observed when attention is directed to the nonlinear interaction between the cumulant magnitude expressions observed
+for a variation of the limiter value 𝜆.
+
+
+2.3       Wall boundary condition
+
+Figure 4 depicts a cutout of the Cartesian grid where the continuous boundary (B) separates the solid nodes S of the
+discretized geometry from the fluid nodes F. The illustrated vectors correspond to the particle distributions (PDF) of
+the discrete velocity space e, compare (4). Omitting the three directional indices, 𝛼 denotes the opposite of wall-normal
+direction 𝛼. The PDF moving outwards of the solid wall into the direction of the first fluid node (F1 ) is unknown, that is,
+f𝛼 (F1 ). The corresponding direction is illustrated in red and the subgrid distance51 , defining the distance in e𝛼 direction
+between the continuous solid boundary (wall) and the first fluid node, is depicted by the scalar value q ∈ [0, 1). The PDF
+directions marked in green are known properties since they constitute valid poststreaming states received from their next
+neighbor nodes. It is noted that all PDFs are accessed at the same discrete time step, which is why its explicit indication
+is omitted.
+     The employed boundary condition (BC) complies with the second-order accurate unified boundary treatment pro-
+posed by Yu et al.52 as a modification of a BC introduced by Bouzidi et al.53 which has also been applied in an amended
+version by Geier et al.15 solely based on using postcollision PDFs of the local node bypassing the need to access neighboring
+node information.
+                                                                                                                                    10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                              1119
+
+
+
+   The sequence of the applied BC starts from a linear interpolation of the PDF located at the wall in 𝛼-direction (orange
+vector) via
+                                                                   [                 ]
+                                              f𝛼 (B) = f𝛼 (F1 ) + q f𝛼 (S) − f𝛼 (F1 ) .                                     (27)
+
+using the information of the first fluid node (F1 ) and the corresponding solid node (S). In order to satisfy the momentum
+balance in the direction of 𝛼 and to fulfill the no-slip boundary condition on the surface of the geometry, requiring zero
+velocity on the wall, the inverse (𝛼) value is set to f𝛼 (B) = f𝛼 (B) and the unknown value follows from
+
+                                                            1            q
+                                              f𝛼 (F1 ) =       f𝛼 (B) +     f𝛼 (F2 ).                                       (28)
+                                                           1+q          1+q
+
+
+3       CO MPUTAT IONA L STRAT EGY AND DATA PROCESSING
+
+This section covers (i) details of the scaling between physical and LB units, (ii) describes the adjustment of the body
+force used to match the targeted Reynolds number, and (iii) briefly outlines data processing aspects as well as (iv) the
+underlying grid layout.
+
+
+3.1       Scaling and Reynolds number adjustment
+
+The Reynolds numbers (1) defined by physical (SI) and LB units agree, from which
+
+                                                               uB,LB NH
+                                                     𝜈LB =                 [−]                                              (29)
+                                                                  Re
+
+applies. Here NH corresponds to the discrete number of lattice nodes distributed over the hill height H, and the associ-
+ated physical spacing corresponds to ΔxSI = H∕NH [m], with H = 0.05 [m]. In the remainder of the article, the spatial
+discretization is referred to by specifying the discretization of the hill height NH . The parameter uB,LB of√(29) relates to the
+nondimensional bulk velocity of the LB context and is linked to the Mach number (Ma) by uB,LB = Ma∕ 3 [-]. As a result,
+the physical time increment is recovered by ΔtSI = ΔxSI ∕Λu [s] with the velocity scaling factor Λu = uB,SI ∕uB,LB [m/s] and
+uB,SI following from Equation (1) with 𝜈SI = 1.01 × 10−6 [m2 /s]. Thus, the three parameters specifying the simulation are
+Re, NH , and Ma. The required simulation time is quantified by the so-called (nondimensional) flow-through time
+
+                                                                9 NH
+                                                    FT =                   [−],                                             (30)
+                                                             uB,LB ΔtLB
+
+which comprises the number of discrete time steps needed to advect a particle with the bulk velocity through the domain.
+Appropriate multiples of FT are used to ensure the statistical convergence of the processed results, compare Section 3.2. FT
+is independent of the Reynolds number and only depends on the particular spatial (NH ) and temporal (Ma) discretization.
+     The investigated flow is driven by a pressure gradient 𝜕p∕𝜕x acting in the longitudinal direction. The pressure gradient
+is imposed as a homogeneous body force Fx,LB , which is adjusted during runtime. To this end, an initial value is iteratively
+found during the preceding transient phase of the simulation. Subsequently, a reconciliation between the current Re and
+the targeted Ret is carried out ten times per FT. The latter employs the computation of an averaged inlet-plane velocity
+as described in (1). If the magnitude of the deviation between both Reynolds numbers exceeds 1.5%, the body force is
+scaled by Fx,LB = Fx,LB (1 − 0.1Re% ). This approach was found to be both robust and accurate enough to limit the Reynolds
+number deviations to the order of (‰).
+
+
+3.2       Data recording
+
+The simulation process includes an initial transient period of 50 flow-through times. The initial period is followed by
+another 50 FT to converge the temporally averaged velocity vector ui = (u, v, w)⊺ as indicated by the bar. Subsequently,
+                                                                                                                                             10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1120                                                                                                                    GEHRKE and RUNG
+
+
+
+the computation of the Reynolds stresses (u′i u′i ) is performed for approximately 100 FT. Thus, each simulation covers
+around 200 FT. In accordance with reference data sets sourced from Reference 24, mean velocity and Reynolds stress
+profiles are evaluated at ten different axial locations, see Figure 5. Profiles are obtained from the temporally averaged
+flow field, which is also spatially averaged in the homogeneous lateral (z) direction. Results are compared with experi-
+ments and data reported from two different Navier–Stokes procedures, namely, LESOCC25 based on curvilinear grids and
+MGLET 26 developed for nonequidistant Cartesian grids, compare Table 1. LES reference solutions employ the well-known
+(dynamic) Smagorinsky model with van Driest damping near solid walls. Additionally, instantaneous velocity data is
+recorded at four different characteristic points of the flow field over 150 FT to compute the energy spectra, compare
+Table 2 and Figure 5.
+
+
+3.3             Spatial and temporal resolution
+
+All utilized grids refer to homogeneous isotropic Cartesian grids. The baseline (medium) grid discretizes the height of
+the hill with NH = 28 nodes. With this choice, the distance between the bottom and top wall HBT also corresponds to
+
+
+
+
+F I G U R E 5 Locations of averaged profiles (lines) and instantaneous quantities (points) in the central x-y plane of the domain [Colour
+figure can be viewed at wileyonlinelibrary.com]
+
+
+
+  T A B L E 1 Utilized reference data sets with a classification of turbulence treatment and grid size
+                                                                                                                            ∑
+       Re                           Solver                                        Classification                                Ni [×106 ]
+
+       700                          LESOCC                                        DNS                                       13.1
+       2800                         LESOCC & MGLET                                DNS                                       13.1 & 48.0
+       10,600                       MGLET                                         LES                                       4.1
+       37,000                       MGLET                                         LES                                       4.1
+
+
+
+  T A B L E 2 Point probe positions for the instantaneous velocity recordings in the central x-y plane
+       Identifier                                     Position - (x, y)∕H                                       Flow characteristics
+
+       P-1                                            (2 , 0.3)                                                 Recirculation regime
+       P-2                                            (4.5 , 1.5)                                               Core flow
+       P-3                                            (6.5 , 0.5)                                               Reattached flow
+       P-4                                            (8 , 0.75)                                                Accelerated flow
+                                                                                                                                          10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                    1121
+
+
+
+even multiples of the step size Δx28 = 1.786 × 10−3 [m] with NBT = 85. In this grid, the subgrid distance mentioned in
+Section 2.3 matches qH | T | B = 0.5 at the crest of the hill (x = 0), the top wall, and the plane lower part of the bottom wall
+(1.93 ≤ x∕H ≤ 7.07). The grid arrangement aims to suppress influences from q ≠ 0.5, which can thus only occur at the
+curved hill boundary sections. Doubling the number of lattice nodes to NH = 56 results in a refined grid that satisfies the
+stated q = 0.5 condition.
+     Coarsening the NH = 28 grid, no configuration can be found for which integer multiples between both H and HBT
+exist. Applying a consistent refinement level of two leads to NH = 14, whereby the HBT discretization corresponds to
+NBT = 42.5 which results in qT = 0 for qH | B = 0.5. Therefore, the top wall is virtually shifted by Δx14 ∕2 to maintain qT =
+0.5, increasing the domain height by 1.15% and NBT = 43. Details of the investigated grids, including the number of lattice
+nodes and the number of discrete time steps per flow-through time (FT), for a baseline temporal resolution of Ma = 1∕30,
+are given in Table 3. Note that Ny = NBT + 2 applies due to the consideration of the additional solid boundary nodes,
+whereas Nx and Nz match 9H resp. 4.5H owing to periodicity. In addition to investigations of the diffusive scaling, that
+is, an NH variation, we also report an analysis concerning acoustic scaling through a Ma variation. The baseline temporal
+resolution refers to the Mach number of Ma = 1∕30. Scaling by a factor of three results in a finer (Ma = 1∕90) and a
+respectively coarser (Ma = 1∕10) temporal resolution. While linear relations, 𝜈LB ∝ (ΔNH ) and F x,LB ∝ (ΔNH ), apply for
+                                                                                                       (       )
+diffusive scaling, the acoustic scaling deviates by featuring a quadratic dependence on F x,LB ∝ ΔMa2 , whereas 𝜈LB ∝
+(ΔMa) holds.
+     Table 4 offers an overview of the main parameters for the investigation of the baseline Reynolds number Re = 2800 in
+conjunction with diffusive (column-wise) and acoustic (row-wise) scaling using 𝜆def = 10−2 . Mind that the experienced
+deviations from the target Reynolds numbers are fairly small.
+
+
+3.4        Turbulent flow analysis
+
+The evaluation of turbulent structures is based on the analyzes of the power spectral density (PSD) data at distinct point
+locations and the anisotropy of the Reynolds stress tensor for exemplary one-dimensional profiles.
+
+
+
+T A B L E 3 Investigated grids and related time steps per flow-through time (FT) at Ma = 1∕30
+                                                                                      ∑
+  NH                                     Nx × Ny × Nz                                     Ni                                  FT
+
+  14                                     126 × 45 × 63                                357,210                                 6,547
+  28                                     252 × 87 × 126                              2,762,424                                13,094
+  56                                     504 × 172 × 252                           21,845,376                                 26,188
+
+
+
+
+T A B L E 4 Simulation parameters for the baseline Reynolds number Re = 2800 using the default limiter value 𝜆def = 10−2 under
+acoustic and diffusive scaling
+
+                                                          NH = 14                   NH = 28                         NH = 56
+
+ Ma = 1∕10                       𝜈LB                      2.89 × 10−4               5.77 × 10−4                     1.15 × 10−3
+                                 Fx LB                    3.10 × 10−6               1.49 × 10−6                     7.07 × 10−7
+                                 Re                       2799.4 (−0.02%)           2802.2 (+0.08%)                 2798.0 (−0.07%)
+ Ma = 1∕30                       𝜈LB                      9.62 × 10−5               1.92 × 10−4                     3.85 × 10−4
+                                 Fx LB                    3.56 × 10−7               1.63 × 10−7                     7.85 × 10−8
+                                 Re                       2801.5 (+0.05%)           2799.5 (−0.02%)                 2796.4 (−0.13%)
+ Ma = 1∕90                       𝜈LB                      3.21 × 10−5               6.41 × 10−5                     1.28 × 10−4
+                                 Fx LB                    3.94 × 10−8               1.89 × 10−8                     9.00 × 10−9
+                                 Re                       2801.1 (+0.04%)           2806.8 (+0.24%)                 2802.4 (+0.09%)
+                                                                                                                                                        10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1122                                                                                                                                  GEHRKE and RUNG
+
+
+
+
+                   (A)   Raw data plots featuring all DFT data points                 (B) Moving average ﬁltered data set (ﬁlter width: 100
+                                                                                                 discrete frequency contributions)
+
+
+F I G U R E 6 Power spectral density PSD(f ) of the three velocity components (u (red), v (blue) and w (green)) at P-2 (core flow) for the
+configuration Re = 2800, NH = 28, Ma = 1∕30, and 𝜆def = 10−2 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+Energy spectra and filtering
+
+ The PSD follows from a discrete Fourier transform (DFT) of the instantaneous time series of the velocity components
+recorded at four different locations in the numerical domain, compare Table 2. The graphs provide information regarding
+the energy distribution of different scales. No comparison is performed with other research efforts as the related data is
+nonavailable. The data is processed to discuss the response of the cumulant LBM to the interplay between the resolution
+and the regularization parameter. In order to enable the comparison of different configurations, the displayed data is
+nondimensionalized with H and uB , PSD [m2 ∕s] ∕(uB H) resp. f [1/s] ⋅H∕uB .
+    Figure 6A depicts the exemplary raw data PSD(f ) for all three velocity components extracted at location P-2 (core flow)
+for Re = 2800, NH = 28, Ma = 1∕30, and 𝜆def = 10−2 . Due to distinct oscillations, the comparison between the graphs is
+hampered, and a moving average filter is applied to the underlying DFT raw data. The filter width spans 100 discrete
+frequency contributions and the filtered PSD(f ) graphs are depicted in Figure 6B.
+
+
+Reynolds stress invariant maps
+
+A widespread approach to analyze turbulent structures is the visual evaluation using the Q-criterion introduced by Dubief
+et al.54 Due to its qualitative nature, not all details can be revealed, and the present study opts to observe the tensor of
+(resolved) Reynolds stresses using anisotropy invariant maps (AIM). The starting point is the nondimensional anisotropy
+tensor55,56
+
+                                                                        u′i u′j       𝛿ij
+                                                                aij =             −                                                              (31)
+                                                                         2k           3
+
+with k = u′i u′i ∕2 representing the turbulent kinetic energy and 𝛿ij being the Kronecker delta. The graphical evaluation of
+the flow anisotropy introduced by Banerjee et al.57 refers to plotting the invariants of aij in a two-dimensional space,
+
+                                                                        3    1
+                                                          xB = Λ1 − Λ2 + Λ3 + ,                                                                  (32)
+                                                                        2    2
+                                                                  √        √
+                                                                   27        3
+                                                             yB =     Λ3 +     .                                                                 (33)
+                                                                   2        2
+                                                                                                                                10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                          1123
+
+
+
+Herein xB and yB denote barycentric (B) coordinates and Λi are the eigenvalues of aij , sorted in descending order Λ1 ≥
+Λ2 ≥ Λ3 . All possible points are bounded by an isosceles triangle whose vertices state one-component √     turbulence (1c
+at [1,0]), isotropic two-component turbulence (2c at [0,0]) and isotropic 3D turbulence (3c at [1/2, 3∕2]). The triangle
+edges indicate two-component turbulence (2c − 1c) and axisymmetric contraction (3c − 2c) or axisymmetric expansion
+(1c − 2c). The advantage of the barycentric map rests upon equal weighting of the vertex points, 1c, 2c, and 3c turbulence,
+whereby important details are crucially magnified. Further details will be given in Section 4.1.
+
+
+3.5       Error quantification
+
+To allow for a code-to-code-verification of the predicted velocity and Reynolds stress profiles and assess the global flow
+field, a relative L2 error norm of a specific flow quantity (𝜗) is introduced by
+
+                                                         ∑Ny (                    )2
+                                                              𝜗x∕H (n) − 𝜗ref (n)
+                                                  |       n=1             x∕H
+                                        Lref   (𝜗)|                                  .                                  (34)
+                                                             ∑Ny ( ref      )2
+                                                       =
+                                         2,rel    |x∕H
+                                                               n=1 𝜗x∕H (n)
+
+
+To this end, a cubic spline interpolation of the available reference (ref) data sets24 is taken as the ground truth, which
+is evaluated at each (n) discrete lattice node. As a result, each one-dimensional profile featuring Ny nodes is reduced
+to a single scalar. Graphs displayed in Section 4 include these ten (verification) “error” measures, one for each assessed
+x∕H location, as well as their respective (unweighted) mean value to characterize the overall accuracy of the flow field
+prediction.
+
+
+3.6       Nondimensional wall distance
+
+The classification of the grid resolution rests upon the nondimensional wall distance y+ . Its computation is based on the
+velocity gradient obtained at the first wall-adjacent fluid nodes using the averaged velocity vector components u and v
+in the centered x-y plane. The tangential part u|| is obtained by subtracting the projection of the 2D components in the
+direction of the wall normal. The velocity gradient follows from u|| ∕q with q being the subgrid distance, see Figure 4.
+The corresponding wall shear stress, the friction velocity, and the nondimensional wall distance are defined from linear
+relations and get inaccurate beyond y+ ≥ 12. Their definitions read
+                                                             √
+                                              u||                |𝜏w |                u𝜏 q
+                                       𝜏w = 𝜈     ,   u𝜏 =               and   y+ =        .                            (35)
+                                              q                    𝜌                   𝜈
+
+Visualized data is smoothed by a centered unweighted moving average with five points to account for the Cartesian
+discretization of the hill geometry. Mind that the y+ -distribution is generally smooth along the top wall and the plain
+center section of the bottom wall, due to the imposed q = 0.5 criterion, compare Section 2.3. A rougher distribution
+is experienced alongside the curved segments of the lower wall, x∕H ≤ 1.93 and x∕H ≥ 7.07, where q varies. For q =
+0.5, the evaluated y+ -distribution quantifies the resolution of the isotropic, homogeneous Cartesian grid by means of
+Δxi+ ∼ 2y+ .
+
+
+4       R E S U LTS
+
+The validation displayed in Section 4.1 refers to the results obtained for the chosen baseline Reynolds number of
+Re = 2800 combined with the fine grid (NH = 56), the medium Mach number (Ma = 1∕30), and the default regulariza-
+tion parameter value (𝜆def = 10−2 ). Subsequently, resolution studies for both acoustic (4.2) and diffusive scaling (4.3) are
+performed for Re = 2800, 𝜆def = 10−2 . Section 4.4 is devoted to assessing the influence of the regularization parameter
+for Re = 2800. Build upon the findings from Sections 4.1–4.4, results for the other Reynolds numbers are presented in
+Section 4.5.
+                                                                                                                                             10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1124                                                                                                                      GEHRKE and RUNG
+
+
+
+
+FIGURE 7          Nondimensional wall distance y+T|B under diffusive scaling with NH = {14; 28; 56} at the bottom (solid) and top (dashed)
+wall for the parameter set Re = 2800, Ma = 1∕30, and 𝜆def = 10−2 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+4.1        Baseline study for Re = 2800
+
+Figure 7 displays the nondimensional wall distance y+T|B of the wall-adjacent fluid lattice along the top (T - dashed lines)
+and bottom (B - solid lines) boundaries of the domain, obtained for Re = 2800, Ma = 1∕30, and 𝜆def = 10−2 . The vertical
+gray line at x∕H = 5.43 indicates the reattachment point (RP) position taken from Breuer et al.33 and serves as the first
+indicator for the resolution quality. It is evident that the coarse grid RP prediction significantly deviates from the prediction
+of the other two grids, which both agree much better with the reference data.
+    The maximum y+T,max values at the top wall occur above the crest, where the flow is accelerated, and refer to 7 (NH =14),
+4 (NH =28) and 2 (NH =56) wall units for the three grids. Due to the smaller velocities in the recirculation and reattachment
+region, the nondimensional resolution of the bottom wall is mostly better. However, it deteriorates when the flow accel-
+erates (x∕H ≳ 7), and the wall distances deviate from q = 0.5. The respective maxima refer to 10 (NH =14), 6 (NH =28),
+and 4 (NH =56) wall units and occur shortly upstream of the crest. In conclusion, all three resolutions correspond to LES
+grids, and the fine grid, where the field lattice spacing is around Δxi+ ≈ 3, is deemed close to a DNS resolution.
+
+
+Averaged data
+
+Figure 8 displays averaged profiles of the longitudinal velocity component (A) and the Reynolds shear stress (B) for Re =
+2800. The presented mean flow quantities refer to the fine grid (NH = 56), the medium temporal resolution (Ma = 1∕30),
+and 𝜆def = 10−2 . They are in fair predictive agreement with the DNS reference data sets from LESOCC (red) and MGLET
+(blue). The depicted Reynolds shear stress components reveal minor deviations around the extreme values of the profiles
+located at 2 ≤ x∕H ≤ 6. Overall, the WP LBM provides a remarkable predictive agreement with DNS data when using the
+fine grid.
+
+
+Turbulence quantities
+
+Figure 9 shows the turbulent energy spectra PSD(f ) of the longitudinal, vertical, and lateral direction. Each figure
+includes four spectra corresponding to the four reference points of the flow field, compare Table 2. In large parts,
+the spectra for the acceleration (P-4) and the reattachment (P-3) location overlap. As expected from the relatively low
+Reynolds number of Re = 2800, the inertial subrange, featuring the classical PSD(f ) ∝ f −5∕3 proportionality, is restricted
+to a narrow frequency regime of Δfinertial ≈ (101 ). The confinement is most pronounced in the recirculation regime
+(red), where the spectra’ energy-containing and energy dissipating parts tend to overlap and are less severe for the core
+flow position (blue). The sloping toward the dissipation range is almost identical for the three velocity components.
+Some deviations of the energy levels are observed in the production range, where the lateral component displays the
+                                                                                                                                               10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                         1125
+
+
+
+
+                                          (A) Normalized averaged longitudinal velocity ∕
+
+
+
+
+                                             (B) Normalized Reynolds shear stress ʹ ʹ ∕ 2
+
+F I G U R E 8 Comparison of averaged longitudinal velocities (top) and Reynolds shear stresses (bottom) predicted by the WP LBM
+(NH = 56, Ma = 1∕30, 𝜆def = 10−2 ) and the reference DNS24 data for Re = 2800 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+most distinct location-dependent variations, and the levels are generally augmented for the reattachment location (P-3),
+compare Figure 9C.
+    Figure 10 depicts anisotropy invariant maps (AIM) for four profiles located at x∕H = {0.05; 0.5; 3; 6}. The represen-
+tation of the discrete points distributed in y-direction employs a diverging color bar ranging from blue (bottom wall)
+to red (top wall). A commonality of all displayed maps includes the alignment of both wall near-wall regions with the
+two-component turbulence abscissa. As wall influences decrease, a trend toward isotropic 3c turbulence is formed and
+reaches a global yB maximum in the upper region of the domain at approximately y∕H = 2∕3 (orange).
+    For the sake of clarity the detailed discussion of the AIM begins at x∕H = 6 and is supported by characteristic markers
+added to Figure 10D. Close to the top wall, the trajectory [1] falls almost centered on the x-axis at xB = 0.45. In this
+regime, the vertical fluctuation vanishes, and the longitudinal contribution exceeds the lateral one. Away from the wall,
+the boundary layer gradient du/dy contributes to an increase of u′ 2 which shifts the trajectory in the 1c direction and yields
+the global xB maximum [2]. Subsequently, the wall damping attenuates, and the vertical component v′ 2 develops [3]. The
+3c trend ends at yB ≈ 0.55, where the AIM turns toward the right axisymmetric expansion edge of the triangle [4]. This
+is attributed to the longitudinal acceleration of the flow, whereby the lateral (w) dynamics gradually decrease concurrent
+to the decreasing influence of the top wall while the u′ 2 and v′ 2 are of a similar order of magnitude. In the center of the
+channel (green), the longitudinal component represents the major contribution [5]. As the lower wall is progressively
+                                                                                                                                               10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1126                                                                                                                         GEHRKE and RUNG
+
+
+
+
+             (A)     (longitudinal)                         (B)     (vertical)                           (C)     (lateral)
+
+
+F I G U R E 9 Computed turbulent energy spectra PSD(f ) of the three Cartesian velocity components evaluated at the four points outlined
+in Figure 5 for the parameter set Re = 2800, NH = 56, Ma = 1∕30, and 𝜆def = 10−2 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+                             (A) ∕      = 0.05                                            (B)    ∕   = 0.5
+
+
+
+
+                               (C) ∕      =3                                               (D)   ∕    =6
+
+F I G U R E 10     AIMs at four distinctive x∕H positions for the parameter set Re = 2800, NH = 56, Ma = 1∕30, and 𝜆def = 10−2 [Colour
+figure can be viewed at wileyonlinelibrary.com]
+                                                                                                                                 10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                           1127
+
+
+
+approached, the longitudinal and vertical normal stresses reduce, and the trajectory shifts toward the left edge associated
+with axisymmetric contraction [6]. The vertical normal stress component is negligible for 0.4 > y∕H > 0.1. The other two
+components are approximately equal and decrease at a similar rate as the bottom wall is approached. In the vicinity of
+the lower wall [7], a large gradient du/dy feeds an augmented level of longitudinal normal stress.
+    The AIM trajectory (C) of the recirculation zone profile located at x∕H = 3 displays two deviations from the map at
+x∕H = 6. These include a more pronounced and sharper 1c trend at the top wall (red) region, in response to the stronger
+flow confinement, and a greater distance from the axisymmetric contraction limit within the bottom, recirculating flow,
+region (blue) after touching this edge where the gradient du/dy vanishes in line with the u minimum, compare Figure 8A.
+Moving further upstream to x∕H = 0.5 (B), the part of the trajectory that is, located inside or near the recirculation zone
+(blue to cyan) is characterized by significant and sudden changes of the Reynolds stress anisotropy, which agrees with
+either local extrema or inflection points. The AIM closest to the crest (A) displays features which are supported by the
+corresponding u velocity profile in Figure 8. Due to strong acceleration above the crest, the bottom wall branch is shifted
+toward the 1c state. The upper wall behavior follows the behavior seen in (B) and the footprint of the two vanishing primal
+velocity gradient positions close to the bottom wall is observed again.
+
+
+4.2       Acoustic scaling (Re = 2800)
+
+To assess the sensitivity of the WP cumulant operator to the temporal resolution, three Mach numbers are investigated
+for the finest grid with NH = 56, compare Table 4. Investigations employ 𝜆def = 10−2 and refer to the baseline value of
+Ma = 1∕30, as well as one larger (Ma = 1∕10) and one smaller (Ma = 1∕90) Mach number, respectively.
+
+
+Averaged data
+
+Figure 11 displays representative exemplary longitudinal velocity and Reynolds shear stress results at two positions of
+the flow field. While the left column shows a profile close to the separation point at the crest (x∕H = 0.5), the right
+column refers to a location slightly downstream of the reattachment point (x∕H = 6). The DNS-MGLET result (black line)
+serves as a reference. Predictive differences induced by the variation of the Mach number are small, and LB results agree
+reasonably well with the DNS results. A minor but noticeable deviation arises for the Reynolds shear stress, more distinct
+for the finest time step at y∕H = 0.85.
+    A more comprehensive analysis assesses the relative L2 error norm against reference DNS-MGLET results. Table 5
+summarizes the (unweighted) integral error norms of the ten selected profiles for the longitudinal and vertical velocity
+component. Its almost constant value confirms the minor influence of the underlying temporal resolution. It is noted
+that spatial resolution changes do not alter this finding, and similar results were obtained from NH = 28 or NH = 14 but
+are not displayed to save the space. Moreover, and again not displayed to safe space, the AIMs shown in Figure 10 do not
+depict any significant differences in response to a Mach number variation.
+
+
+Turbulent spectra
+
+Supplementary to the averaged data, Figure 12 shows the PSD(f ) based on a DFT of the instantaneous velocity signal. To
+this end, the PSD(f ) of the longitudinal (u) component is exemplary depicted at two locations, in the core flow (P-2) and the
+reattaching flow (P-3), compare Figure 5. No substantial differences are observed between the three Mach numbers. Both
+the length and the slope of the inertial range are identical for all displayed spectra. Minor deviations in the high-frequency
+cut-off range are attributed to the data processing scheme and have no physical meaning.
+
+
+4.3       Diffusive scaling (Re = 2800)
+
+The next part reports the sensitivity of the results to the spatial resolution, achieved by a variation of the resolution
+parameter NH for the medium Mach number Ma = 1∕30 and the default regularization (𝜆def = 10−2 ). Three consecutive
+resolutions are investigated, NH = {14; 28; 56}, and compared with DNS-MGLET results.
+                                                                                                                                              10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1128                                                                                                                        GEHRKE and RUNG
+
+
+
+
+                    (A) Longitudinal velocity at ∕         = 0.5            (B) Longitudinal velocity at ∕          =6
+
+
+
+
+                    (C) Reynolds shear stress at ∕         = 0.5            (D) Reynolds shear stress at ∕         =6
+
+F I G U R E 11          WP versus DNS- MGLET reference: averaged longitudinal velocity component u∕uB (left) and Reynolds shear stress
+u′ v′ ∕u2B (right) profiles under acoustic scaling with Ma = {1∕10; 1∕30; 1∕90} exemplarily depicted at two positions (downstream locations
+close to the crest (left) and the reattachment point (right)) for Re = 2800, NH = 56, and 𝜆def = 10−2 [Colour figure can be viewed at
+wileyonlinelibrary.com]
+
+
+
+T A B L E 5 Relative integral L2 (𝜗) error norm (WP vs. DNS-MGLET) under acoustic scaling of selected flow quantities for the parameter
+set Re = 2800, NH = 56, and 𝜆def = 10−2
+
+  𝝑                                    Ma = 1∕90                                    Ma = 1∕30                                   Ma = 1∕10
+                                                   −3                                        −3
+  u∕uB                                 7.71 × 10                                    6.83 × 10                                   7.61 × 10−3
+  v∕uB                                 5.15 × 10−2                                  4.96 × 10−2                                 4.20 × 10−2
+
+
+
+
+Averaged data
+
+Figure 13 outlines the averaged flow results at four x∕H locations. Compared with the DNS reference solution (black),
+the coarse grid results (red) significantly overpredict the longitudinal velocity component above the crest at x∕H = 0.05
+and y∕H ≈ 1.2 (A). This defect is due to under-resolving the thin boundary layer in the acceleration regime upstream the
+crest and mitigates with increasing wall distance for y∕H > 1.75. The associated larger shear stress gradient magnitude
+(E) delays flow separation and no substantial recirculation regime is formed at x∕H = 0.5 (B). At x∕H = 3 (C) all mean
+velocity data agree. At the same time, Reynolds shear stress magnitudes predicted on the coarse grid reveal again larger
+gradients and peak values around the dividing streamline (G). This, in turn, enhances the recovery of the reattaching shear
+flow for the coarse grid at x∕H = 6 (D). The predictive agreement of the fine grid u-results with the reference solution is
+marginally better than the medium grid results in the recovery regime. These improvements also yield small changes in
+the upper boundary layer for continuity reasons.
+                                                                                                                                                   10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                             1129
+
+
+
+
+                                 (A)   -2 (core ﬂow)                                       (B)   -3 (reattached ﬂow)
+
+
+F I G U R E 12 Longitudinal (u) turbulent energy spectra PSD(f ) under acoustic scaling with Ma = {1∕10; 1∕30; 1∕90} exemplarily
+depicted at two points for the parameter set Re = 2800, NH = 56, and 𝜆def = 10−2 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+        (A) ∕       = 0.05                  (B)    ∕    = 0.5                    (C) ∕      =3                         (D)   ∕   =6
+
+
+
+
+         (E)   ∕    = 0.05                   (F) ∕      = 0.5                    (G) ∕      =3                         (H)   ∕   =6
+
+F I G U R E 13        WP versus DNS-MGLET reference: averaged longitudinal velocity component u∕uB (top) and Reynolds shear stress
+u′ v′ ∕u2B (bottom) at four distinctive x∕H positions under diffusive scaling with NH = {14; 28; 56} for the parameter set Re = 2800, Ma = 1∕30,
+and 𝜆def = 10−2 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+    With attention given to the resolution influences on the integral L2 error norm displayed in Figure 14, the more
+subtle vertical velocity component v depicts an almost linear dependency of the error norm across the total resolution
+spectrum. The dashed blue lines indicate the relative error norms for the ten selected profiles, and the solid red line
+represents their (unweighted) mean value. As could be expected by the Reynolds stresses displayed in Figure 13, they
+reveal a stronger sensitivity to the resolution, which is of the order two in the coarse grid regime and lower in the
+fine grid regime. This trend is representative and also relates to the influence of the limiter 𝜆, as will be outlined in
+Section 4.4.
+                                                                                                                                                 10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1130                                                                                                                        GEHRKE and RUNG
+
+
+
+
+                           (A) Vertical velocity ∕                                 (B)   Reynolds shear stress   ʹ ʹ∕ 2
+
+
+
+
+F I G U R E 14 Relative L2 error norm (WP vs. DNS-MGLET) of selected flow quantities under diffusive scaling with NH = {14; 28; 56}
+for the parameter set of Re = 2800, Ma = 1∕30, and 𝜆def = 10−2 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+                              (A) ∕      = 0.05                                               (B) ∕       =6
+
+F I G U R E 15       Influence of diffusive scaling NH = {14; 28; 56} on the Reynolds stress anisotropies depicted at two positions,downstream
+locations close to the crest (left) and the reattachment point (right), for the parameter set Re = 2800, Ma = 1∕30, and 𝜆def = 10−2 [Colour
+figure can be viewed at wileyonlinelibrary.com]
+
+
+
+Turbulent structures
+
+The observation made for the averaged data are confirmed by the AIM trajectories depicted in Figure 15 for a near
+crest location at x∕H = 0.05 (A) and a recovery location at x∕H = 6 (B). Resolution-related differences are more pro-
+nounced for the near crest location, where the reduction of the resolution confines the AIM pathway toward the
+vicinity of the plane strain line, and at least one of the eigenvalues equals zero. The axisymmetric states above
+the bottom wall are not well resolved. Moreover, the augmentation of the primary normal stress component close
+to the top wall and the related shift toward the one-component regime is suppressed, particularly at x∕H = 6. Much
+smaller deviations between the medium and the fine grid are seen for all the above-discussed aspects. In general, the
+ability to resolve flow anisotropies is enhanced with the resolution. This observance might hint at an earlier onset
+of dissipative structures in frequency space and a corresponding reduction of the inertial range when coarsening the
+grid.
+    Figure 16 shows the predicted turbulent spectra obtained for all three velocity components at a core flow location
+P-2, compare Figure 5. The graphs reveal a shift of the upper end of the inertia regime by almost one order of magnitude
+when increasing the resolution from NH = 14 to NH = 56. Comparing the medium and the fine grid, a more gradual onset
+of dissipative influences is observed in combination with a small increase of the upper inertial subrange frequency for
+                                                                                                                                             10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                       1131
+
+
+
+
+             (A)    (longitudinal)                         (B)     (vertical)                           (C)     (lateral)
+
+F I G U R E 16 Turbulent energy spectra PSD(f ) under diffusive scaling with NH = {14; 28; 56} exemplarily depicted at P-2 (core flow) for
+the parameter set Re = 2800, Ma = 1∕30, and 𝜆def = 10−2 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+the fine grid. The resolution-induced differences are similar for other locations, albeit slightly more pronounced for the
+recirculation regime (P-1).
+    We also show illustrative snapshots of the velocity magnitude and the averaged (resolved) turbulent kinetic energy
+in the centered x-y plane for all three resolutions in Figure 17. Apparently, the coarse mesh (NH = 14; top row) features
+relatively large structures and misses many details. As outlined by the black boxes in Figure 17A, the coarse grid sim-
+ulation fails to resolve the shear layer while approaching the crest of the hill at the downstream end of the domain.
+For the coarse grid, the large structures are associated with a stable, almost horizontal, perhaps even upward-directed,
+separated shear layer downstream of the crest as well as an increased mean turbulence intensity above the dividing
+streamline, consistent with Figure 13. The observed deficits are induced by the inability to resolve the thin shear flow
+in the accelerated regime accurately. Increasing the resolution reduces the thickness of the predicted shear layer at the
+crest and changes the direction of the streamlines, as additionally outlined in Figure 18. When approaching the crest,
+the coarse grid streamlines do not follow the curved hill shape like the fine grid streamlines, and an upward motion is
+seen for NH = 56 around x∕H = 1, which reduces the turbulence producing mean flow gradients and cannot be observed
+for the coarse grid NH = 14. Moreover, coarse grid streamlines indicate a stronger thickening of the top boundary layer
+until x∕H ≈ 7, which is compensated during the acceleration section. The flow is more inclined toward the top on the
+coarse grid. Albeit the fine grid snapshot (E) reveals more details of the turbulent structures than the medium grid
+results (C), the mean turbulence intensities agree rather well. Mind that the evaluation point used for the spectra in
+Figure 16 is located in the core flow (P-2) regime, where no substantial resolution-based differences occur for the large
+structure.
+
+
+4.4        Regularization parameter analysis (Re = 2800)
+
+This section addresses the impact of the value assigned to the regularization parameter 𝜆 under diffusive scaling. Reported
+results are confined to Re = 2800 and the baseline Mach number of Ma = 1∕30.
+
+
+Averaged data
+
+Figure 19 depicts the nondimensional wall distance y+T along the top wall of the domain. The plot involves information for
+three 𝜆-values and three spatial resolutions, NH = {14; 28; 56} displayed in red, blue, and green. The first fluid node does
+not exceed the buffer layer for all simulations with y+T < 7.5 and y+B < 12. Next to the default value of 𝜆def = 10−2 (dashed),
+two supplementary values which differ by four orders of magnitude from the default value are used, 𝜆 = 10−6 (solid) and
+𝜆 = 102 (dotted). Bearing in mind the information on the general level of unregularized 𝜔i -values mentioned at the end
+of Section 2.2, the investigated 𝜆-values refer to the AO cumulant model (𝜆 = 10−6 ), as well as modifications in the order
+of 100% (𝜆def ) and 1% (𝜆 = 102 ) of the unregularized 𝜔i -value, respectively.
+                                                                                                                                               10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1132                                                                                                                      GEHRKE and RUNG
+
+
+
+
+                          (A)       = 14                                                         (B)       = 14
+
+
+
+
+                          (C)       = 28                                                         (D)       = 28
+
+
+
+
+                          (E)       = 56                                                         (F)       = 56
+
+F I G U R E 17     Normalized instantaneous velocity magnitude |u|∕uB (left) and normalized turbulent kinetic energy k∕u2B (right) in the
+centered x-y plane under diffusive scaling with NH = {14; 28; 56} for the parameter set Re = 2800, Ma = 1∕30, and 𝜆def = 10−2 [Colour figure
+can be viewed at wileyonlinelibrary.com]
+
+
+
+
+F I G U R E 18 Comparison of averaged flow field streamlines obtained with the coarse (red, NH = 14) and the fine grid (green, NH = 56)
+in the centered x-y plane for the parameter set Re = 2800, Ma = 1∕30, and 𝜆def = 10−2
+
+
+
+     As indicated by Figure 19, the regularization influence increases distinctly in under-resolved conditions. Decreasing
+the limiter value introduces numerical diffusion and reduces the dynamics as well as the wall shear stress. Along the top
+wall, the y+T -variation amounts up to approximately 60% for the coarse grid and 30% for the medium grid in response to
+the limiter’s variation. On the contrary, the variations returned by the fine grid computation remain fairly moderate and
+fall below 10% over the entire domain.
+     Figure 20 shows the relative L2 error norm of longitudinal (A) and vertical (B) mean velocity components as
+a function of the resolution. For brevity, the plots are limited to the integral values of all profiles. Results are
+again compiled for 𝜆 = {10−6 ; 10−2 ; 102 }. Overall, the default value 𝜆def = 10−2 (orange) yields the smallest errors
+for the observed quantities over the investigated range of spatial resolutions. Using 𝜆 = 10−6 (dark red), provides
+                                                                                                                                                  10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                            1133
+
+
+
+
+F I G U R E 19   Influence of limiter the value 𝜆 = {10−6 ; 10−2 ; 102 } on the nondimensional wall distance y+T at the top wall for Re = 2800
+and Ma = 1∕30 under diffusive scaling with NH = {14; 28; 56} [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+                         (A) Longitudinal velocity ∕                                    (B) Vertical velocity ∕
+
+F I G U R E 20   Influence of the limiter value 𝜆 = {10−6 ; 10−2 ; 102 } on the integral L2 error norm (WP vs. DNS-MGLET) for Re = 2800 and
+Ma = 1∕30 under diffusive scaling with NH = {14; 28; 56} [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+a constant slope of |m| ≈ 1.4 for both quantities. Increasing the limiter value reveals a different behavior. For 𝜆 =
+102 (green), all error norms feature a pronounced slope change. In the fine grid regime, the convergence primar-
+ily improves toward |m| ≈ 2, while a lower inclination (|m| ≤ 1) is seen for the coarse grid regime. The observed
+resolution reduction influences the convergence behavior for the coarser grids, which suggests that the regular-
+ization of 𝜔i in the investigated regime is insufficient. We therefore supplement results obtained from a narrower
+range of regularization parameter values featuring 𝜆 = {10−2 ; 10−1 ; 100 } in Figure 21. The figure reveals that 𝜆 = 10−1
+seems a reasonable choice. This finding is also confirmed by the below-discussed assessment of spectra for different
+𝜆-values.
+
+
+Turbulent structures
+
+The influence of the limiter on the characteristics of the resolved Reynolds stress tensor is outlined by Figure 22. The figure
+depicts the AIM for the three investigated spatial resolutions using the broader limiter spectrum assessed in Figure 20.
+The reported results refer to a profile extracted at x∕H = 6, located close to the reattachment point along the bottom wall.
+Similar results were observed for the other locations. Again, the most pronounced response to a choice of the limiter
+                                                                                                                                               10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1134                                                                                                                         GEHRKE and RUNG
+
+
+
+
+                        (A) Longitudinal velocity ∕                                    (B) Vertical velocity ∕
+
+F I G U R E 21 Influence of the limiter value 𝜆 = {10−2 ; 10−1 ; 100 } on the integral L2 error norm (WP vs. DNS-MGLET) for Re = 2800 and
+Ma = 1∕30 under diffusive scaling with NH = {14; 28; 56} [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+                 (A)      = 14                                 (B)      = 28                                 (C)      = 56
+
+
+F I G U R E 22   Influence of the limiter value 𝜆 = {10−6 ; 10−2 ; 102 } on the Reynolds stress anisotropies at x∕H = 6 for Re = 2800 and
+Ma = 1∕30 under diffusive scaling with NH = {14; 28; 56} [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+value occurs for the coarse resolution (NH = 14), whereas the trajectories for the different limiter values converge for
+the fine grid (NH = 56). The figure reveals that 𝜆 distinctly alters the turbulence characteristics of the top wall boundary
+layer. Here, significant deviations occur along the 2c − 1c abscissa and propagate into the core flow when the resolution is
+reduced. For the coarser meshes, results obtained for 𝜆 = 10−1 (light green) provide, perhaps, the best overall agreement
+with the fine mesh data.
+     Figure 23 depicts representative energy spectra PSD(f ) of the vertical (v) velocity component in the core flow regime
+(P-2). Each subfigure refers to a fixed resolution NH and displays data obtained for 𝜆 = {10−6 ; 10−2 ; 10−1 ; 102 }. The abscissa
+is limited to 10−1 ≤ f ≤ 102 to support the discussion of details. While an increase of the resolution generally yields a more
+gradual sloping toward the dissipative scales, many details are identical for all three resolutions. The low frequency (f ≤ 1)
+production regime is deemed independent of both the resolution and the limiter value, and all curves approximately orig-
+inate from PSD(f = 10−1 ) ≈ 10−2 . When the normalized frequencies approach unity, the graphs enter the inertia regime,
+where the slope is close to the expected value of −5∕3, irrespective of the resolution and the limiter value. As alluded to
+earlier, a grid refinement results in an extension of the inertial range. However, the extent of the inertia regime is also
+linked to the choice of the limiter value, which distinctly occurs for the coarse grid (A). In particular, low 𝜆-values atten-
+uate the dynamics and significantly reduce the width of the inertial subrange. On the other hand, increasing 𝜆 above the
+default value might help extend the inertial subrange. Considering the fine grid results (C), the variation of the spectrum
+in response to the 𝜆-value diminishes, and only the AO approach (𝜆 = 10−6 , (dark red)) deviates from the other three
+curves.
+                                                                                                                                                   10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                             1135
+
+
+
+
+                  (A)     = 14                                 (B)      = 28                                 (C)      = 56
+
+
+F I G U R E 23 Influence of the limiter value 𝜆 = {10−6 ; 10−2 ; 10−1 ; 102 } on the turbulent energy spectra PSD(f ) of the vertical (v)
+component at P-2 (core flow regime) for Re = 2800 and Ma = 1∕30 under diffusive scaling with NH = {14; 28; 56} [Colour figure can be
+viewed at wileyonlinelibrary.com]
+
+
+
+4.5         Reynolds number study
+
+This section addresses a Reynolds number variation and analysis of the prospects of adjusting the value of the regulariza-
+tion parameter 𝜆.
+
+
+Re = 700
+
+For the lowest considered Reynolds number of Re = 700 the resolution of the near-wall flow is displayed in Figure 24. The
+maximum y+B,max values of the three grids span 5 (NH = 14), 3 (NH = 28), and 2 (NH = 56) wall units. The figure suggests
+that the fine grid (green) fully resolves the Kolmogorov scales except for a small interval within the accelerated flow region,
+8.25 ≤ x∕H ≤ 8.75 . The y+T|B evolution confirms the results of the baseline study for Re = 2800, compare Figure 7, and
+approximately scales with the Reynolds number ratio. Minor deviations thereof are attributed to 𝜆-influences, which take
+effect in under-resolved conditions. Grid convergence toward the referenced reattachment point34 at x∕H = 5.34 (gray
+vertical) is noted from Figure 24.
+    The averaged profiles of the longitudinal velocity and Reynolds shear stress are depicted in Figure 25. They display
+an excellent agreement between the medium (blue) and fine (green) grid results and also reproduce the DNS reference
+data obtained from LESOCC24,25 (black). Only the coarse grid (red) produces substantial deviations in all four plots. Most
+apparent defects occur in the vicinity of the crest due to a misrepresentation of the accelerated shear upstream of the
+crest. As the flow recovers from separation, results of all three resolutions almost coincide at x∕H = 6 (B).
+    Based on this evaluation, NH = 28 (blue) is deemed to provide an adequate spatial resolution for Re = 700 as the finer
+grid does not alter the solution. This conclusion is supported by the energy spectra extracted at the core flow position (P-2)
+depicted in Figure 26. While the spectra returned by the medium (blue) and the fine (green) grid are almost identical,
+the coarse grid spectrum (red) shows a smaller equilibrium range and a slightly smaller extent of the inertial subrange.
+This is similar to the characteristics observed for Re = 2800 in Figure 16. Figure 27 displays the response of the energy
+spectra of the v-velocity at P-2 to a variation of 𝜆 for the three grids. For a fixed spatial resolution (NH ), the spectra are
+deemed to be practically converged for 𝜆 = 10−1 , 𝜆 = 10−3 , and 𝜆 = 10−4 on the coarse, medium and fine grid, respectively.
+The limit 𝜆-value gradually decreases as the grid is refined, nonetheless 𝜆 = 10−1 appears as an adequate and almost
+resolution-independent choice for this fairly low Reynolds number.
+
+
+Re = 10,600
+
+Re = 10,600 studies are of interest due to the availability of both experimental27 and numerical25,26 (LES) data sourced
+from the ERCOFTAC data base.24 The predicted nondimensional wall distances along the bottom, and top walls are not
+                                                                                                                                                 10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1136                                                                                                                         GEHRKE and RUNG
+
+
+
+
+F I G U R E 24     Nondimensional wall distance y+T|B under diffusive scaling with NH = {14; 28; 56} at the bottom (solid) and top (dashed)
+wall for the parameter set Re = 700, Ma = 1∕30, and 𝜆def = 10−2 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+                                  (A)    ∕   = 0.05                                         (B)   ∕   =6
+
+
+
+
+                                  (C)    ∕   = 0.05                                         (D)   ∕   =6
+
+
+F I G U R E 25        WP versus DNS-LESOCC reference: averaged longitudinal velocity component u∕uB (top) and Reynolds shear stress
+u′ v′ ∕u2B (bottom) at two distinctive x∕H positions under diffusive scaling with NH = {14; 28; 56} for the parameter set Re = 700, Ma = 1∕30,
+and 𝜆def = 10−2 [Colour figure can be viewed at wileyonlinelibrary.com]
+                                                                                                                                                   10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                             1137
+
+
+
+
+                 (A) (longitudinal)                              (B)   (vertical)                              (C)    (lateral)
+
+
+F I G U R E 26 Turbulent energy spectra PSD(f ) under diffusive scaling with NH = {14; 28; 56} exemplarily depicted at P-2 (core flow) for
+the parameter set Re = 700, Ma = 1∕30, and 𝜆def = 10−2 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+                (A)       = 14                                (B)      = 28                                 (C)      = 56
+
+
+F I G U R E 27 Influence of the limiter value 𝜆 = {10−6 ; 10−2 ; 10−1 ; 102 } on the turbulent energy spectra PSD(f ) of the vertical (v)
+component at P-2 (core flow) for Re = 700 and Ma = 1∕30 under diffusive scaling with NH = {14; 28; 56} [Colour figure can be viewed at
+wileyonlinelibrary.com]
+
+
+
+displayed to safe space. For 𝜆def = 10−2 , they resemble the results for Re = 2800 displayed in Figure 7, but y+ -levels are of
+course higher. The global maxima of y+B,max for the three grids occur slightly upstream of the crest along the lower wall and
+refer to 18 (NH = 14), 14 (NH = 28) and 10 (NH = 56) wall units. Peak values along the top wall are subjected to smaller
+variations and read y+T,av ≈ {15, 8, 5} on average. Using an exemplary log-law correlation,58 u+ (y+ ) = 8.3 (y+ )1∕7 , reveals an
+underprediction of y+ of approximately 15% for the coarse grid when using a linear relation u+ ∼ y+ , while the medium
+and fine grid predictions seem realistic. The grid resolution is deemed to be in the range of LES for NH = 56 and VLES
+for NH = {14; 28}.
+     Figure 28 depicts selected averaged flow quantities, u, v, and u′ v′ , at two upstream (x∕H = {0.05, 1}) and two down-
+stream positions (x∕H = {7, 8}) of the crest. The fine grid appears adequate and provides a fair resolution of the separating
+flow, the initial separation, the recovery, and the accelerating flow regime. Mean flow predictions are slightly closer to the
+experimental data than the reference LES data, for which displayed Reynolds stresses only include resolved contributions.
+The most evident differences between the LBM results and the experimental data occur on the top of the hill. They are
+attributed to misrepresenting the accelerated upstream flow, which would benefit from finer grids. The predictive accu-
+racy for the Reynolds stress is also fair, particularly in the downstream region. A peculiar feature is the sign difference of
+u′ v′ predicted around y∕H = 1.2 for the separating flow at x∕H = 0.05 (I). This is attributed to curvature effects and an
+erroneous upward-directed mean flow near the bottom wall shortly behind the inlet, compare Figure 29.
+     When attention is directed to the medium grid (blue), detrimental effects of the resolution occur between the hills.
+The strong acceleration of the flow at x∕H = 8 and the related pronounced, thin shear layer is not as well captured as
+for NH = 56. The global flow is noticeably displaced toward the top wall, and the recovery at x∕H = 7 is likewise weaker.
+                                                                                                                                                   10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1138                                                                                                                         GEHRKE and RUNG
+
+
+
+
+         (A) ∕      = 0.05                    (B) ∕      =1                      (C) ∕      =7                      (D) ∕       =8
+
+
+
+
+         (E) ∕      = 0.05                    (F) ∕      =1                      (G) ∕      =7                      (H) ∕       =8
+
+
+
+
+         (I)   ∕    = 0.05                    (J)   ∕    =1                      (K) ∕      =7                      (L) ∕      =8
+
+F I G U R E 28 WP versus LES-MGLET and experimental references: averaged longitudinal u∕uB (top) and vertical v∕uB (middle) velocity
+component and Reynolds shear stress u′ v′ ∕u2B (bottom) at four distinctive x∕H positions under diffusive scaling with NH = {14; 28; 56} for the
+parameter set Re = 10,600, Ma = 1∕30, and 𝜆def = 10−2 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+As a result, the bottom boundary layer thickens, the intensity of the wall-normal velocity weakens, and u-gradients are
+reduced. These trends continue for the coarse grid (red) results. Due to the inadequate resolution, the displacement of
+the global flow field toward the top wall becomes more pronounced, and gradients of the bottom longitudinal velocity are
+further reduced. Neglecting a turbulence model and wall modeling strategies, the prediction of the u-velocity along the top
+wall is insufficient. It exceeds the resolution limits, as indicated by the kinks in Figure 28. Mind that discontinuous upper
+wall u-profiles are also seen for smaller 𝜆-values on the coarse grid. Such inaccuracies were also observed in previous
+studies of simple channel flows18,19 for y+ -values situated in the logarithmic regime.
+    Introducing an SGS model adjusts 𝜔1 and helps to avoid discontinuous velocity profiles. Though eddy viscosity models
+of turbulence are somewhat debatable in the context of LBM,59 they are often employed in practical simulations. Figure 30
+shows the influence of a simple Smagorinsky subgrid-scale eddy viscosity model60 which alters 𝜔1 by a modification
+     √ 𝜔1 = 1∕(𝜈g ∕cs + Δt∕2). Here, 𝜈g = 𝜈 + (CS Δ) S is an effective viscosity, Δ corresponds to the lattice spacing Δxi ,
+                        2                                2
+of (13),
+S = 2Sij Sij is a strain-rate measure and CS = 0.1 denotes the Smagorinsky constant. Present SGS simulations do not
+substantially improve the acceleration prediction but support the predictions along the top wall. Here, the resolution is
+too coarse without the SGS for NH = 14 along the entire wall, and the use of an SGS yields approximately 20% smaller y+
+values, but much fewer changes along the bottom wall. Increasing the resolution attenuates the SGS influences, which
+mainly refer to the upper boundary layer, as outlined by Figure 30.
+    A note of caution is necessary as regards the influence of the SGS on the regularized WP cumulant. According to
+Equations (14)–(16), the relaxation rates 𝜔3,4,5 depend on 𝜔1 . Hence, two options exist to compute 𝜔3,4,5 in combination
+with an eddy-viscosity model, one using the SGS-modified 𝜔1 and one using the unmodified 𝜔1 . Related differences
+were examined and deemed negligible for the default value 𝜆def . Moreover, present SGS results match the findings of
+                                                                                                                                              10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                        1139
+
+
+
+
+F I G U R E 29 Comparison of averaged flow field streamlines obtained with the coarse (red, NH = 14) and the fine grid (green, NH = 56)
+in the centered x-y plane for the parameter set Re = 10,600, Ma = 1∕30, and 𝜆def = 10−2
+
+
+
+
+                                (A) ∕       = 0.05                                      (B)   ∕    =1
+
+
+
+
+                                  (C) ∕      =7                                         (D)   ∕    =8
+
+F I G U R E 30 WP versus LES-MGLET reference: Averaged longitudinal u∕uB velocity component at four distinctive x∕H positions
+under diffusive scaling with additional consideration of a SGS model for the parameter set Re = 10,600, Ma = 1∕30, and 𝜆def = 10−2 [Colour
+figure can be viewed at wileyonlinelibrary.com]
+
+
+
+Chang et al.,61 who employed an immersed boundary Navier–Stokes procedure with a dynamic Smagorinsky model on
+an anisotropic Cartesian grid with a resolution close to our medium grid. The authors conclude that predictions without
+wall modeling return better results and report similar predictive trends as the present study.
+    In line with the results obtained for the lower Reynolds numbers, the spectra displayed in Figure 31 indicate a
+substantial widening of the inertial subrange with an increase of the resolution. All spectra show a kink within the dissi-
+pation range, which indicates the activity of the regularization and is shifted toward higher frequencies as the resolution
+increases. For sufficiently large values of 𝜆, the regularization is confined to the dissipative scales at the upper bounds of
+                                                                                                                                         10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1140                                                                                                                   GEHRKE and RUNG
+
+
+
+
+            (A)     (longitudinal)                         (B)    (vertical)                           (C)     (lateral)
+
+F I G U R E 31 Turbulent energy spectra PSD(f ) under diffusive scaling with NH = {14; 28; 56} exemplarily depicted at P-2 (core flow
+regime) for the parameter set Re = 10,600, Ma = 1∕30, and 𝜆def = 10−2 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+the spectra. When decreasing the value of 𝜆, the regularization influences overlap with the inertia subrange, compare the
+previous Figure 23. This effect will subsequently be discussed in more detail for the medium (NH = 28) grid, making the
+related differences more apparent.
+    Figure 32 outlines the sensitivity of u profiles to changes of 𝜆-value at x∕H = {0.05, 1, 7, 8} on the medium grid. The
+dashed lines represent the default limiter solution 𝜆def = 10−2 , where the flow field starts to be globally displaced, and
+the recovery is delayed. The regularization suppressed flow dynamics are less when increasing the 𝜆-value. The dynamics
+release significantly improves agreement with both the numerical reference and the fine grid LBM results. On the con-
+trary, a decrease of 𝜆 restrains the resolved dynamics and thus promotes the global displacement toward the top wall. The
+                                  10,600
+stability limit for this grid is 𝜆max,28 = 100 .
+    In order to pursue the previous quantitatively, Figure 33 contains plots of the respective L2 error norm for the entire
+predicted flow field. Figure 33A reveals a gradually improved agreement of the predicted longitudinal (u∕uB ) velocities for
+𝜆 > 10−2 , whereby the mean integral error (red) is reduced by a factor of 4 between 𝜆 = 10−2 and 𝜆 = 100 . The sensitivity
+decreases for 𝜆 > 1.5 ⋅ 10−1 and L2 ≈ 2 ⋅ 10−2 appears as the converged value before reaching the stability limit. The graph
+features two additional horizontal lines representing the integral L2 norm of the coarse (orange) and the fine (green) grid
+for the default 𝜆-value. A similar trend is observed for the vertical (v∕uB ) velocity component depicted in (B). Hence,
+the predictive accuracy is substantially governed by the interplay between the 𝜆-value and the resolution, provided that
+the resolution is not too coarse. Present results indicate a required lattice distance based (local) Reynolds number of
+Re∕NH ≤ 750 or near-wall resolutions around y+ ≈ 15.
+    The resolution-regularization interplay is somewhat critical, as outlined by Figure 34A, which displays the energy
+spectra of the lateral velocity (w) component in an accelerated flow location (P-4) for a variation of 𝜆 on the coarse grid
+(NH = 14). The nonphysical increase of energy in the high-frequency regime for 𝜆 = 100 , which refers to the optimal value
+on the medium mesh, clearly indicates the limits of an adjustment. Similar to the findings for Re = 2800, the optimal
+                                                    10,600             10,600
+𝜆-value increases with the resolution and reads 𝜆opt,56    = 10−1 and 𝜆opt,14 = 5 × 10−1 for the fine and the coarse grid.
+    Figure 35 depicts two longitudinal (u) energy spectra in response to the variation of the value of the regularization
+parameter 𝜆 = {10−6 ; 100 } and the resolution NH = {28; 56} at a core (P-2; left) and accelerated (P-4; right) flow location.
+While the slopes of the inertial and dissipation range depend only marginally on 𝜆 and NH , both parameters influence the
+width of the inertial range. For a fixed resolution, the 𝜆-dependent widening is more pronounced for the coarser grid as
+indicated by the blue arrows (𝜆 ↑) connecting the green (NH = 28) and red (NH = 56) colored verticals. In conjunction with
+fixed 𝜆-values, the impact of grid refinement (NH ↑) is larger (red arrows) for 𝜆 = 10−6 which verifies the strict dependence
+on NH identified in the scope of the baseline analysis for the lowest employed limiter value, compare L2 error norm
+plots of Figure 20 (dark red). For 𝜆 = 100 the extent of the inertial subrange changes only marginally when increasing
+the resolution from NH = 28 (dark green) to NH = 56 (dark red). Nevertheless, the spatial resolution strongly affects the
+dissipation regime and the width of the equilibrium range. This dependence is also characterized by the enrichment with
+higher-frequency contributions and shifting the f -kink position within the dissipation range.
+    Figure 36 compares the velocity magnitude (|u|∕uB ) and the (resolved) Reynolds-averaged turbulent kinetic energy
+(k∕u2B ) in the centered x-y plane for the optimal and the lowest value of 𝜆 on the medium grid with NH = 28. Subtle but
+                                                                                                                                                 10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                           1141
+
+
+
+
+                                 (A) ∕       = 0.05                                       (B)    ∕    =1
+
+
+
+
+                                   (C) ∕      =7                                          (D)    ∕    =8
+
+F I G U R E 32 WP versus LES-MGLET reference: Averaged longitudinal u∕uB velocity component predicted with five values of the
+regularization parameter 𝜆 depicted at four x∕H locations for Re = 10,600, NH = 28 (medium grid) and Ma = 1∕30 [Colour figure can be
+viewed at wileyonlinelibrary.com]
+
+
+
+
+                   (A) Longitudinal velocity ∕                                          (B) Vertical velocity ∕
+
+F I G U R E 33 Influence of the regularization parameter on the L2 error norm (WP cumulant LBM vs. LES-MGLET) for
+𝜆 = {10−6 , ..., 100 }, Re = 10,600, NH = 28 (medium grid) and Ma = 1∕30. The horizontal lines indicate the integral L2 norm using the default
+limiter 𝜆def = 10−2 (purple vertical) for the coarse (orange) resp. fine (green) grid [Colour figure can be viewed at wileyonlinelibrary.com]
+                                                                                                                                                    10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1142                                                                                                                          GEHRKE and RUNG
+
+
+
+
+                               (A)       = 14                                                   (B)       = 28
+
+F I G U R E 34   Influence of the limiter value 𝜆 on the turbulent energy spectra of the lateral (w) component at P-4 (accelerated flow) for
+Re = 10,600 and Ma = 1∕30 on the coarse and medium grid [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+                            (A)    -2 (core ﬂow)                                        (B)     -4 (accelerated ﬂow)
+
+F I G U R E 35      Influence of the limiter value 𝜆 = {10−6 ; 100 } and spatial resolution NH = {28; 56} on the turbulent energy spectra PSD(f )
+of the longitudinal (u) component at two locations for Re = 10,600 and Ma = 1∕30 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+influential differences are evident for the optimal 𝜆-value associated with the smallest possible regularization, compare
+white markings in (A) and (B). The structures displayed by 𝜆opt are essentially smaller than for 𝜆 = 10−6 , and the mixing of
+low and high momentum fluid close to the reattachment point at x∕H = 4.7 is enhanced. Also, the separating shear layer
+is less upward-directed in the inlet section and remains much thinner in the acceleration regime. The strong shearing
+causes a more pronounced turbulence intensity in the inlet section with an enhanced early mixing in the upstream zone
+of the separation. However, far less turbulence intensity arises in the vicinity of the (mean) dividing streamline.
+     Exchanging the default value 𝜆 = 10−2 by the optimal one 𝜆 = 100 significantly improves the predictive performance
+for NH = 28, as outlined in Figure 37. Results of the model-free simulation for 𝜆 = 100 match reference LES and experi-
+mental data surprisingly fair. A substantial change is noticed for the increased 𝜆-value at the x∕H = 0.05 location. The flow
+is directed downwards and not upwards, in line with LES reference data, and the Reynolds shear stress is no longer chang-
+ing sign near the bottom wall. A key advantage of the WP cumulant LBM seems the explicit control through 𝜆 without
+generating further artificial interference, provided that the spatial resolution is reasonably adequate, with y+ ≈ 10 − 15
+matching the lower half of the buffer layer region.
+                                                                                                                                              10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                        1143
+
+
+
+
+                          (A)     = 100                                                          (B)     = 100
+
+
+
+
+                          (C)    = 10−6                                                         (D)     = 10−6
+
+F I G U R E 36 Influence of the limiter value 𝜆 = {10−6 ; 100 } on the instantaneous velocity magnitude |u|∕uB (left) and turbulent kinetic
+energy k∕u2B (right) in the centered x-y plane for Re = 10,600 on the medium grid (NH = 28) and Ma = 1∕30 [Colour figure can be viewed at
+wileyonlinelibrary.com]
+
+
+
+Re = 37,000
+
+Figure 38A shows the y+T|B pathways for the three grids when the Reynolds number is increased to Re = 37,000. Obviously,
+only the fine grid is sufficient, and results for the medium and the coarse grid indicate the same resolution induced failures
+that were already intensively discussed for Re = 10,600 (NH = 14), compare Figure 38B. Brief verifications of the predicted
+shear stresses using a more realistic wall function, for example u+ (y+ ) = 8.4 (y+ )1∕7 , indicate a substantial underprediction
+of the shear stress by approximately 100% and 40% for the coarse and the medium mesh. Hence, both meshes are deemed
+inadequate. Due to the coarser resolution for this Reynolds number and the associated lower stability limit, the deviation
+                         37,000
+of the optimal value 𝜆opt,56    = 5 × 10−1 from the default value is small. Analog to the changes observed for Re = 10,600,
+an increase of 𝜆 from the default value to the optimum value results in substantial improvements. Again, predictions of
+the recovery, acceleration, and near crest regions improve qualitatively and quantitatively. Figure 39 compares exemplary
+                                                                                   37,000
+longitudinal velocity profiles returned by 𝜆def = 10−2 as well as the optimal 𝜆opt,56      with reference LES and experimental
+data. Overall, the present WP cumulant LBM slightly outperforms the reference LES in combination with the optimal
+𝜆-value, though the respective grid is about five times larger. Figure 40 motivates the choice of the optimal 𝜆-value from
+the evolution of the L2 integral error with 𝜆, which is approximately reduced by a factor of two for the longitudinal velocity
+and 1.5 for the vertical velocity. The green dashed lines indicate the error level obtained for Re = 10,600 when using the
+optimal medium grid 𝜆-value, which are close to the fine grid accuracy for Re = 37,000 applying the optimal limiter 𝜆37,000 opt,56
+                                                                                                                                   .
+Mind that the analysis of the spectral convergence might reveal slightly different optimal values.
+
+
+4.6        Synopsis
+
+A comparative analysis of the four Reynolds numbers under diffusive scaling is conducted to condense the results. To
+this end, Figure 41 depicts the integral L2 error norms of the longitudinal velocity as a function of the Reynolds (A) and
+Mach number (B).
+    For the acoustic scaling summarized in (B), results refer to the default value 𝜆def = 10−2 and medium grid results are
+omitted to improve the clarity. It is evident that the acoustic scaling is not intertwined with either Re or NH influences.
+The variation of the error level with Ma is very moderate, with the largest slopes in the range of m ≈ 0.2.
+    As regards the diffusive scaling aspects summarized in (A), solid lines depict results obtained with the default 𝜆-value,
+and dashed lines refer to results obtained with an optimal choice of 𝜆 for the two higher Reynolds numbers. A large
+                                                                                                                                                10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1144                                                                                                                          GEHRKE and RUNG
+
+
+
+
+        (A) ∕        = 0.05                    (B)     ∕    =1                 (C) ∕       =7                     (D)     ∕     =8
+
+
+
+
+        (E)    ∕    = 0.05                      (F) ∕       =1                 (G) ∕       =7                     (H)     ∕     =8
+
+F I G U R E 37 WP versus LES-MGLET / LESOCC and experimental references: Averaged vertical v∕uB (top) velocity component and
+Reynolds shear stress u′ v′ ∕u2B (bottom) predicted with two values (default and maximum) of the regularization parameter 𝜆 depicted at four
+x∕H locations for Re = 10,600 on the medium grid (NH = 28) with Ma = 1∕30 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+              (A) Computed nondimensional wall distance +T | B at the             (B) Averaged longitudinal velocity component ∕
+                         bottom [solid] and top [dashed] wall                                   extracted at ∕   = 0.05
+
+
+F I G U R E 38     Selected diffusive scaling results for Re = 37,000 with Ma = 1∕30 and 𝜆def = 10−2 [Colour figure can be viewed at
+wileyonlinelibrary.com]
+
+
+
+sensitivity to the Reynolds number and thereby the resolution is observed between Re = 2800 and Re = 10,600. Both
+decreasing (Re = 700) and increasing (Re = 37,000) the Reynolds number reduces the L2 slope. For the low Reynolds
+number regime, the resolution seems to reach grid convergence, and the details of the approach, particularly the influence
+of the regularization, become less vital. For this reason, results for an optimal choice of 𝜆 are only given for the larger
+Reynolds numbers. For the high Reynolds number, the opportunities of adjusting the regularization diminish in line
+with smaller stability preserving upper limits of 𝜆, and improvements are only detected for the more stable fine grid.
+Figure 42 complements the diffusive scaling results of Figure 41A by observing the change of predictive agreement over
+the (local) cell Reynolds number Rec = uB Δx∕𝜈 for the mean axial velocity and the mean turbulent shear stress. Here,
+improvements of a change of the regularization parameter become more obvious.
+                                                                                                                                           10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                     1145
+
+
+
+
+                               (A)     ∕       = 0.05                                (B)    ∕    =1
+
+
+
+
+                                 (C)       ∕    =7                                   (D)    ∕    =8
+
+F I G U R E 39 WP versus LES-MGLET and experimental references: Averaged longitudinal u∕uB velocity component predicted with two
+values (default and optimum) of the regularization parameter 𝜆 depicted at four x∕H locations for Re = 37,000 on the fine grid (NH = 56)
+with Ma = 1∕30 [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+                   (A) Longitudinal velocity ∕                                        (B) Vertical velocity ∕
+
+F I G U R E 40 Influence of the limiter value 𝜆 = {10−6 ; … ; 5 ⋅ 10−1 } on the integral L2 error norm (WP vs. LES-MGLET /Experiment)
+for Re = 37,000, NH = 56 (fine grid) and Ma = 1∕30. The dashed green lines indicate the integral L2 norm using the optimal limiter
+determined for the medium grid and Re = 10,600, compare Figure 33 [Colour figure can be viewed at wileyonlinelibrary.com]
+                                                                                                                                                     10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1146                                                                                                                               GEHRKE and RUNG
+
+
+
+
+                 (A) Diﬀusive scaling for the default [solid] and optimal     (B) Acoustic scaling on the coarse [dashed] and ﬁne
+                   [dashed for Re = {10,600; 37,000}, cf. Table 7] limiter                   [solid] grid for   def = 10
+                                                                                                                           −2 .
+
+                                          value.
+
+
+F I G U R E 41 Integral L2 error norm (WP vs. LESOCC / MGLET references) of the longitudinal velocity component u∕uB for varying
+Reynolds numbers Re = {700; 2800; 10,600; 37,000} under diffusive and acoustic scaling [Colour figure can be viewed at
+wileyonlinelibrary.com]
+
+
+
+        T A B L E 6 Stability limits 𝜆Re
+                                      max,N
+                                            for Ma = 1∕30
+                                                 H
+
+
+          Re                                         NH = 14                       NH = 28                                        NH = 56
+                                                       6                             6
+          700                                        10                            10                                             106
+          2800                                       103                           106                                            106
+          10,600                                     100                           100                                            101
+          37,000                                     10−1                          5 × 10−1                                       5 × 10−1
+
+
+
+
+                               (A) Longitudinal velocity ∕                              (B) Reynolds shear stress ʹ ʹ ∕ 2
+
+F I G U R E 42 Influence of the cell Reynolds number Rec = Re∕NH = {12.5; ...; 2640} on the integral L2 error norm for the default
+(solid) and optimal (dashed) limiter values for two selected flow quantities. Due to the discontinuous overlap of Rec (Re, NH ) for the
+investigated test case matrix, compare Table 7, lines are additionally colored by the underlying Reynolds numbers [Colour figure can be
+viewed at wileyonlinelibrary.com]
+                                                                                                                                                10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                          1147
+
+
+
+
+                  (A)       = 14                              (B)       = 28                              (C)       = 56
+
+F I G U R E 43 Turbulent energy spectra PSD(f ) in vertical (v) direction for Re = {700; 2800; 10,600; 37,000} on each grid at P-2 (core flow
+regime) for Ma = 1∕30 using the default limiter value 𝜆def = 10−2 . The circled areas display the change of the dissipation range when
+applying the optimal limiter value 𝜆opt in each case [Colour figure can be viewed at wileyonlinelibrary.com]
+
+
+
+
+F I G U R E 44 Optimal limiter dependency 𝜆opt for varying grid types ranging from DNS to RANS [Colour figure can be viewed at
+wileyonlinelibrary.com]
+
+
+
+    Table 6 offers a summary of the stability limits with respect to the maximum possible value of 𝜆Re  max,NH
+                                                                                                               for the respective
+Reynolds number and resolution NH at Ma = 1∕30. For Re = 700 all resolutions feature inherent stability over the entire
+range of investigated 𝜆 ∈ [10−6 , 106 ]. Maximum possible values reduce when the Reynolds number increases and the
+resolution decreases. It is noted that maximum values are not necessarily optimal, compare Section 5.
+    The turbulent energy spectra of the v-component are illustrated in Figure 43. Each graph displays the results of the four
+different Reynolds numbers for a fixed grid. Here, the entire frequency range plots correspond to 𝜆def = 10−2 . In contrast,
+companion cutouts describe the changes in the dissipation range when increasing the limiter value to the case-specific
+optimum. For Re = 700, the spectra are deemed grid (NH ), and limiter (𝜆) converged since a variation of 𝜆 does not
+significantly alter the spectra. In all cases, applying 𝜆opt eliminates the kink associated with the onset of the regularization,
+which is distinctly seen for Re ≥ 2800 using 𝜆def . An indication of the resolution requirements for Re = 37,000 is outlined
+by the almost congruent spectra for Re = 10,600 (orange) and Re = 37,000 (red) for all grids. Just for the fine grid (C),
+small extensions of the inertial subrange are observed when increasing Re.
+                                                                                                                                             10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1148                                                                                                                       GEHRKE and RUNG
+
+
+    T A B L E 7 Optimal limiter choice 𝜆opt and classification of the grid types based on the particular y+ maxima for the investigated
+    parameter space (Re, NH )
+                                                                                   +                  +
+     Re             NH          Rec          𝝀max            𝝀opt                 yT,av (𝝀def )      yT,av (𝝀opt )      Grid type
+
+     700            56          12.5         106             No influence         0.5                ≡                  DNS
+                    28          25           106             No influence         1.0                ≡                  LES
+                    14          50           106             10−1                 2.0                ≡                  LES
+     2800           56          50           106             10−1                 1.6                ≡                  LES
+                    28          100          10   6
+                                                             10  −1
+                                                                                  3.2                ≡                  LES
+                    14          200          10   3
+                                                             10  −1
+                                                                                  6.3                ≡                  LES
+                                                  1              −1
+     10,600         56          190          10              10                   4.8                5.0                LES
+                                                  0              0
+                    28          380          10              10                   8.9                9.7                VLES
+                                                  0                   −1
+                    14          760          10              5 × 10               14.5 [16.7]        15.9 [18.3]        VLES/RANS limit
+                                                       −1             −1
+     37,000         56          660          5 × 10          5 × 10               11.1               12.4               VLES
+                    28          1320         5 × 10    −1
+                                                             ✗                    19.0 [26.6]        ✗                  RANS (†)
+                    14          2640         10   −1
+                                                             ✗                    30.5 [61.0]        ✗                  RANS (†)
+
+
+
+
+5           S U M M ARY AN D CON CLU SION
+
+Based on the periodic hill test case results, the WP cumulant LBM is considered a robust and efficient opportunity to
+simulate separated turbulent flows without using a classical turbulence model. In line with a former study on simple
+channel flows,19 the WP cumulant outperforms previous nonparameterized and AllOne cumulant collision operators,
+and the use of the regularization ensures a sufficient level of numerical stability. This applies for wall-resolved DNS
+and LES grids up to resolution of Δxi+ ≈ 30 (y+ ≈ 15). Moreover, the results of the acoustic scaling studies did reflect
+a negligible sensitivity to the Mach number in the range of 1∕10 ≤ Ma ≤ 1∕90 for all tested resolutions and Reynolds
+numbers.
+    The seamless blend from DNS to (V)LES is a distinct advantage of the regularized WP cumulant collision operator,
+and the resolution requirements are relatively moderate, as already pointed out by Geier et al.43 On the downside, the
+above-mentioned resolution requirements still pose severe feasibility restrictions in an engineering context. However,
+recent distributed-memory CPU computations62 for up to 2.0 × 1011 grid nodes or state-of-the-art GPU-based AI systems,
+for example, NVIDIA DGX A100, with up to 640GB shared-memory and (105 ) CUDA cores enabling computations with
+up to (109 ) grid nodes in a single server setup, demonstrate a considerable reduction of hardware related limitations.
+Furthermore, recent LBM related studies63,64 executed on a distributed-memory HPC cluster also involve up to 3.3 × 109
+nodes processed by maximal 256 GPUs in parallel.
+    The stability preserving regularization might be interpreted as a dynamic turbulence model mostly confined to the
+upper dissipative frequencies by addressing the higher relaxation rates. The related regularization parameter 𝜆 is usu-
+ally assigned to a constant value with 𝜆def = 10−2 and modifications were barely discussed in detail. This default value
+seems conservative. A lower 𝜆-value rapidly drives the simulation toward the AllOne approach and hampers the resolu-
+tion of the flow dynamics. In contrast, results might benefit from increasing the 𝜆-value as the resolution transits from
+Δxi+ ≈ 10 to coarser resolutions Δxi+ ≈ 30 (VLES resolutions) to avoid the damping of intensive turbulence generation in
+the buffer layer. The risks to impede the stability and robustness of the simulation are moderate for lower Reynolds num-
+bers but increase for higher Reynolds numbers where the stability limits approach 𝜆max = 10−1 in the present studies.
+Given the attainable predictive accuracy, this value seems more appropriate than the default value 𝜆def = 10−2 . In severely
+under-resolved cases, for example, Δxi+ ≥ 30, the additional use of a traditional SGS model may help in parts but was no
+panacea for the investigated flow.
+    Supplementary to the resolution of near-wall flows, an upper threshold of the regularization parameter 𝜆 might be
+judged by the cell Reynolds number. For the investigated flows, Rec = uB Δx∕𝜈 = Re∕NH ≲ 750 seems a viable criterion to
+run simulations with an increased 𝜆 = 10−1 , compare Table 7. As outlined in this table, maximal values of 𝜆 increase from
+the finest (Re = 700, NH = 56) to the coarsest (Re = 37,000, NH = 14) resolution. Unlike 𝜆max , optimal 𝜆-values identified
+                                                                                                                                               10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                         1149
+
+
+
+in the present study focus on a narrow range 𝜆opt ∈ [10−1 ; 100 ] and the lower value seems a good candidate. The sixth and
+seventh column of Table 7 display the nondimensional wall distances y+T,av (𝜆𝛿 ) along the top wall. Respective deviations
+due to the different choice of 𝜆 remain rather small. However, as the resolution deteriorates, the imposed wall boundary
+condition and the related assumption on the wall shear become a major source of error beyond y+ ≥ 15, as indicated
+by the square bracketed values obtained from an alternative profile, for example u+ (y+ ) = 8.4 (y+ )1∕7 . In such cases, the
+investigated grids (†) featuring 40 [50] ≤ Δxi+ ≤ 60 [120] are classified as too coarse since any limiter choice does not
+remedy prevailing upper wall defects.
+    Figure 44 offers a supplementary visualization of the tabulated data. Analyzing the modifications of the relaxation
+rates 𝜔3,4,5 due to the influence of the regularization parameter 𝜆, it appears that an alternative regularization approach
+that automatically restrains a low level of dynamics might refer to relative changes of the parameterized relaxation rates
+𝜔3,4,5 and is the subject of future research. Moreover, the WP properties for simulating the PHTC at higher Reynolds
+numbers in conjunction with a wall function17,65 are of interest.
+
+ACKNOWLEDGEMENT
+Open Access funding enabled and organized by Projekt DEAL.
+
+ORCID
+Martin Gehrke       https://orcid.org/0000-0002-5073-397X
+Thomas Rung        https://orcid.org/0000-0002-3454-1804
+
+REFERENCES
+ 1. Niedermeier CA, Janßen CF, Indinger T. Massively-parallel multi-GPU simulations for fast and accurate automotive aerodynamics.
+    Proceedings of the 7th European Conference on Computational Fluid Dynamics; June 11–15, 2018; Glasgow.
+ 2. Pasquali A, Schönherr M, Geier M, Krafczyk M. Simulation of external aerodynamics of the DrivAer model with the LBM on GPGPUs. In:
+    Joubert GR, Leather H, Parsons M, Peters F, Sawyer M, eds. Parallel Computing: On the Road to Exascale. Vol 27. IOS Press; 2016:391-400.
+ 3. Lenz S, Schönherr M, Geier M, et al. Towards real-time simulation of turbulent air flow over a resolved urban canopy using the cumulant
+    lattice Boltzmann method on a GPGPU. J Wind Eng Ind. 2019;189:151-162.
+ 4. Bhatnagar PL, Gross EP, Krook M. A model for collision processes in gases. I. Small amplitude processes in charged and neutral
+    one-component systems. Phys Rev. 1954;94:511-525.
+ 5. Coreixas C, Wissocq G, Chopard B, Latt J. Impact of collision models on the physical properties and the stability of lattice Boltzmann
+    methods. Philos Trans A Math Phys Eng Sci. 2020;378:20190397.
+ 6. Ginzburg I, Verhaeghe F, d’Humières D. Two-relaxation-time lattice Boltzmann scheme: about parametrization, velocity, pressure and
+    mixed boundary conditions. Commun Comput Phys. 2008;3(2):427-478.
+ 7. Ginzburg I, Verhaeghe F, d’Humières D. Study of simple hydrodynamic solutions with the two-relaxation-times lattice Boltzmann scheme.
+    Commun Comput Phys. 2008;3(3):519-581.
+ 8. d’Humières D, Ginzburg I, Krafczyk M, Lallemand P, Luo LS. Multiple-relaxation-time lattice Boltzmann models in three dimensions.
+    Philos Trans R Soc A. 2002;360:437-451.
+ 9. Tölke J, Freudiger S, Krafczyk M. An adaptive scheme using hierarchical grids for lattice Boltzmann multi-phase flow simulations. Comput
+    Fluids. 2006;35(8):820-830.
+10. Geier M, Greiner A, Korvink JG. Cascaded digital lattice Boltzmann automata for high Reynolds number flow. Phys Rev E.
+    2006;73(6):066705.
+11. Latt J, Chopard B. Lattice Boltzmann method with regularized pre-collision distribution functions. Math Comput Simul.
+    2006;72(2):165-168.
+12. Karlin IV, Bösch F, Chikatamarla SS. Gibbs’ principle for the lattice-kinetic theory of fluid dynamics. Phys Rev E. 2014;90(3):031302.
+13. Bösch F, Chikatamarla SS, Karlin IV. Entropic multirelaxation lattice Boltzmann models for turbulent flows. Phys Rev E.
+    2015;92(4):043309.
+14. Dorschner D, Bösch F, Chikatamarla SS, Karlin IV. Entropic multi-relaxation time lattice Boltzmann model for complex flows. J Fluid
+    Mech. 2016;801:623-651.
+15. Geier M, Schönherr M, Pasquali A, Krafczyk M. The cumulant lattice Boltzmann equation in three dimensions: theory and validation.
+    Comput Math Appl. 2015;70(4):507-547.
+16. Geier M, Pasquali A, Schönherr M. Parametrization of the cumulant lattice Boltzmann method for fourth order accurate diffusion part I:
+    derivation and validation. J Comput Phys. 2017;348:862-888.
+17. Pasquali A, Geier M, Krafczyk M. Near-wall treatment for the simulation of turbulent flow by the cumulant lattice Boltzmann method.
+    Comput Math Appl. 2020;79:195-212.
+18. Gehrke M, Janßen CF, Rung T. Scrutinizing lattice Boltzmann methods for direct numerical simulations of turbulent channel flows.
+    Comput Fluids. 2017;156:247-263.
+                                                                                                                                                 10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1150                                                                                                                       GEHRKE and RUNG
+
+
+
+19. Gehrke M, Banari A, Rung T. Performance of under-resolved, model-free LBM simulations in turbulent shear flows. In: Hoarau Y, Peng
+    SH, Schwamborn D, Revell A, Mockett C, eds. Progress in Hybrid RANS-LES Modelling. Springer International Publishing; 2020:3-18.
+20. Nathen P, Gaudlitz D, Krause MJ, Adams NA. On the stability and accuracy of the BGK, MRT and RLB Boltzmann schemes for the
+    simulation of turbulent flows. Commun Comput Phys. 2018;23:846-876.
+21. Geier M, Lenz S, Schönherr M, Krafczyk M. Under-resolved and large eddy simulations of a decaying Taylor-Green vortex with the
+    cumulant lattice Boltzmann method. Theor Comput Fluid Dyn. 2020.
+22. Mellen CP, Fröhlich J, Rodi W. Large eddy simulation of the flow over periodic hills. Proceedings of the 16th IMACS World Congress;
+    August 21–25, 2000; International Association for Mathematics and Computers in Simulation, Lausannes.
+23. Silva G, Semiao V. Truncation errors and the rotational invariance of three-dimensional lattice models in the lattice Boltzmann method.
+    J Comput Phys. 2014;269:259-279.
+24. Rapp C, Breuer M, Manhart M, Peller N. 2D periodic hill flow (UFR 3-30 Test Case), ERCOFTAC; 2009. Accessed January 10, 2021 https://
+    www.kbwiki.ercoftac.org/w/index.php?title=UFR_3-30_Test_Case
+25. Breuer M, Rodi W. Large eddy simulation for complex turbulent flows of practical interest. In: Hirschel EH, ed. Flow Simulation with
+    High-Performance Computers II: DFG Priority Research Programme Results 1993–1995. Vieweg+Teubner Verlag; 1996:258-274.
+26. Manhart M, Tremblay F, Friedrich R. MGLET: a parallel code for efficient DNS and LES of complex geometries. In: Jenssen CB, Andersson
+    HI, Ecer A, et al., eds. Parallel Computational Fluid Dynamics 2000. North-Holland; 2001:449-456.
+27. Rapp C, Manhart M. Flow over periodic hills: an experimental study. Exp Fluids. 2011;51(1):247-269.
+28. Almeida GP, Durão DFG, Heitor MV. Wake flows behind two-dimensional model hills. Exp Therm Fluid Sci. 1993;7(1):87-101.
+29. Bonnin JC, Buchal T, Rodi W. Revised test case descriptions and calculation results. Proceedings of the ERCOFTAC Workshop on Data
+    Bases and Testing of Calculation Methods for Turbulent Flows in Association with 4th ERCOFTAC/IAHR Workshop on Refined Flow
+    Modeling; April 3–7, 1995; Karlsruhe.
+30. Rapp C, Manhart M. Experimental investigations on the turbulent flow over a periodic hill geometry. Proceedings of the 5th International
+    Symposium on Turbulence and Shear Flow Phenomena; 2007:649-654; München, Begell House Inc.
+31. Fröhlich J, Mellen CP, Rodi W, Temmerman L, Leschziner MA. Highly resolved large-eddy simulation of separated flow in a channel with
+    streamwise periodic constrictions. J Fluid Mech. 2005;526:19-66.
+32. Kähler CJ, Scharnowski S, Cierpka C. Highly resolved experimental results of the separated flow in a channel with streamwise periodic
+    constrictions. J Fluid Mech. 2016;769:257-284.
+33. Breuer M, Jaffrézic B, Peller N, et al. A comparative study of the turbulent flow over a periodic arrangement of smoothly contoured hills.
+    In: Lamballais E, Friedrich R, Geurts BJ, Métais O, eds. Direct and Large-Eddy Simulation VI. Springer Netherlands; 2006:635-642.
+34. Breuer M, Peller N, Rapp C, Manhart M. Flow over periodic hills–Numerical and experimental study in a wide range of Reynolds numbers.
+    Comput Fluids. 2009;38(2):433-457.
+35. Xia Z, Shi Y, Hong R, Xiao Z, Chen S. Constrained large-eddy simulation of separated flow in a channel with streamwise-periodic
+    constrictions. J Turbul. 2013;14(1):1-21.
+36. Gloerfelt X, Cinnella P. Large eddy simulation requirements for the flow over periodic hills. Flow Turbul Combust. 2019;103:55-91.
+37. Gao W, Cheng W, Samtaney R. Large-eddy simulations of turbulent flow in a channel with streamwise periodic constrictions. J Fluid
+    Mech. 2020;900:A43.
+38. Xiao H, Wu JL, Laizet S, Duan L. Flows over periodic hills of parameterized geometries: a dataset for data-driven turbulence modeling
+    from direct simulations. Comput Fluids. 2020;200:104431.
+39. Seeger S, Hoffmann KH. The cumulant method for computational kinetic theory. Contin Mech Thermodyn. 2000;12:403-421.
+40. Far EK, Geier M, Kutscher K, Krafczyk M. Simulation of micro aggregate breakage in turbulent flows by the cumulant lattice Boltzmann
+    method. Comput Fluids. 2016;140:222-231.
+41. Asmuth H, Olivares-Espinosa H, Nilsson K, Ivanell S. The actuator line model in lattice Boltzmann frameworks: numerical sensitivity
+    and computational performance. J Phys Conf Ser. 2019;1256:012022
+42. Banari A, Gehrke M, Janßen CF, Rung T. Numerical simulation of nonlinear interactions in a naturally transitional flat plate boundary
+    layer. Comput Fluids. 2020;203:104502.
+43. Geier M, Pasquali A, Schönherr M. Parametrization of the cumulant lattice Boltzmann method for fourth order accurate diffusion part II:
+    application to flow around a sphere at drag crisis. J Comput Phys. 2017;348:889-898.
+44. Asmuth H, Olivares-Espinosa H, Ivanell S. Actuator line simulations of wind turbine wakes using the lattice Boltzmann method. Wind
+    Energy Sci. 2020;5(2):623-645.
+45. Janßen CF, Mierke D, Überrück M, Gralher S, Rung T. Validation of the GPU-accelerated CFD solver ELBE for free surface flow problems
+    in civil and environmental engineering. Computation. 2015;3(3):354-385.
+46. Qian Y, d’Humières D, Lallemand P. Lattice BGK models for Navier Stokes equation. Europhys Lett. 1992;17(6):479-784.
+47. Yu D, Mei R, Luo LS, Shyy W. Viscous flow computations with the method of lattice Boltzmann equation. Prog Aerosp Sci. 2003;39:329-367.
+48. Chapman S, Cowling TG. The Mathematical Theory of Non-Uniform Gases. An Account of the Kinetic Theory of Viscosity, Thermal
+    Conduction and Diffusion in Gases. Cambridge University Press; 1970.
+49. Tölke J. Implementation of a lattice Boltzmann kernel using the compute unified device architecture developed by nVIDIA. Comput Vis
+    Sci. 2008;13:29-39.
+50. Pasquali A. Enabling the Cumulant Lattice Boltzmann Method for Complex CFD Engineering Problems. PhD. thesis. Technische Universität
+    Carolo-Wilhelmina zu Braunschweig; 2016.
+                                                                                                                                               10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                                         1151
+
+
+
+51. Mierke D, Janßen CF, Rung T. An efficient algorithm for the calculation of sub-grid distances for higher-order LBM boundary conditions
+    in a GPU simulation environment. Comput Math Appl. 2020;79(1):66-87.
+52. Yu D, Mei R, Shyy W. A Unified boundary treatment in lattice Boltzmann method. Proceedings of the 41st Aerospace Sciences Meeting
+    and Exhibit AIAA 3003-0953; January 6–9, 2003; Reno, NV.
+53. Bouzidi M, Firdaouss M, Lallemand P. Momentum transfer of a Boltzmann-lattice fluid with boundaries. Phys Fluids.
+    2001;13(11):3452-3459.
+54. Dubief Y, Delcayre F. On coherent-vortex identification in turbulence. J Turbul. 2000;11:N11.
+55. Lumley JL, Newman GR. The return to isotropy of homogeneous turbulence. J Fluid Mech. 1977;82(1):161-178.
+56. Choi KS, Lumley JL. The return to isotropy of homogeneous turbulence. J Fluid Mech. 2001;436:59-84.
+57. Banerjee S, Krahl R, Durst F, Zenger C. Presentation of anisotropy properties of turbulence, invariants versus eigenvalue approaches.
+    J Turbul. 2007;8:N32.
+58. Werner H, Wengle H. Large-eddy simulation of turbulent flow over and around a cube in a plate channel. In: Durst F, Friedrich R, Launder
+    BE, Schmidt FW, Schumann U, Whitelaw JH, eds. Turbulent Shear Flows. Vol 8. Springer; 1993:155-168.
+59. Girimaji SS. Boltzmann kinetic equation for filtered fluid turbulence. Phys Rev Lett. 2007;99(3):034501.
+60. Smagorinsky J. General circulation experiments with the primitive equations. Mon Weather Rev. 1963;91(3):99-164.
+61. Chang PH, Liao CC, Hsu HW, Liu SH, Lin CA. Simulations of laminar and turbulent flows over periodic hills with immersed boundary
+    method. Comput Fluids. 2014;92:233-243.
+62. Schornbaum F, Rüde U. Massively parallel algorithms for the Lattice Boltzmann method on nonuniform grids. SIAM J Sci Comput.
+    2016;38:96-126.
+63. Hasegawa Y, Aoki T, Kobayashi H, Shirasaki K. Large-scale LES analysis for aerodynamics of a group of racing bicycles by lattice
+    Boltzmann method. Trans Jpn Soc Mech Eng. 2019;85(870):18-00441.
+64. Watanabe S, Aoki T. Large-scale flow simulations using lattice Boltzmann method with AMR following free-surface on multiple GPUs.
+    Comput Phys Commun. 2021;264:107871.
+65. Wilhelm S, Jacob J, Sagaut P. An explicit power-law-based wall model for lattice Boltzmann method-Reynolds-averaged numerical
+    simulations of the flow around airfoils. Phys Fluids. 2018;30(6):065111.
+
+
+
+
+   How to cite this article: Gehrke M, Rung T. Periodic hill flow simulations with a parameterized cumulant
+   lattice Boltzmann method. Int J Numer Meth Fluids. 2022;94(8):1111-1154. doi: 10.1002/fld.5085
+
+
+
+
+APPENDIX A. GEOMETRY DEFINITION
+
+The underlying test case geometry initially published by Almeida et al.28 is defined piecewise via six polynomials si (x)
+given in a nondimensional representation rounded to three decimal places as
+
+
+
+
+F I G U R E A1 Hill geometry piecewisely defined via six polynomials si (x) normalized by the hill height H [Colour figure can be viewed
+at wileyonlinelibrary.com]
+                                                                                                                                                                                         10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1152                                                                                                                                                                   GEHRKE and RUNG
+
+
+
+
+                              ⎧min (1, 1.000 + 0.190 x2 − 1.666 x3 )                                                          x ∈ [0, 0.321] H
+                              ⎪
+                              ⎪0.896 + 0.975 x − 2.845 x2 + 1.482 x3                                                          x ∈ ]0.321, 0.500] H
+                              ⎪
+                              ⎪0.921 + 0.821 x − 2.536 x2 + 1.275 x3                                                          x ∈ ]0.500, 0.714] H
+                   si (x)∕H = ⎨                                                                                                                                                  (A1)
+                                                        2            3
+                              ⎪1.445 − 1.380 x + 0.545 x − 0.162 x                                                            x ∈ ]0.714, 1.071] H
+                              ⎪0.640 + 0.874 x − 1.559 x2 + 0.492 x3                                                          x ∈ ]1.071, 1.429] H
+                              ⎪
+                              ⎪max (0, 2.014 − 2.011 x + 0.461 x2 + 0.021 x3 )                                                x ∈ ]1.429, 1.929] H
+                              ⎩
+
+where the hill height H is equal to unity within this notation. The resulting contour of the hill is shown in Figure A1 (red
+graph).
+
+APPENDIX B. CUMULANT COLLISION OPERATOR - IMPLEMENTATION
+
+The following part of the appendix includes the implementation of the Cumulant collision operator within the elbe45
+LBM framework. The documentation is mainly close to the publications of Geier et al.15,16 Firstly, details regarding
+the well-conditioning context of the approach are considered in Section B.1, followed by the one-to-one collision step
+implementation for the underlying fixed set of relaxation rates in Section B.2.
+
+
+B.1 Conditioning
+The conditioning modifications refer to two major improvements suggested by Geier et al.15 The first modification
+addresses reducing rounding errors. These can significantly impact the quality of results for single and double precision
+simulations in low-velocity regimes. Therefore, to reduce rounding errors, which originate from the compressible nature
+of the cumulant approach, the so-called well-conditioned (W) PDFs are obtained by subtracting the weights wijk from the
+compressible (c) defined PDFs
+
+                                                                              fijk = fijkc − wijk .                                                                              (B1)
+
+The respective weights of the D3Q27 velocity space are given by
+
+                                ⎧8                  ijk = {000}
+                                ⎪ 27
+                                   2
+                                ⎪ 27                ijk = {100,010, 001, 100, 010, 001}
+                         wijk = ⎨ 1                                                                                                                         .                    (B2)
+                                ⎪ 54                ijk = {110, 110, 110 110,101, 101, 101, 101, 011, 011, 011, 011}
+                                ⎪ 1
+                                ⎩ 216               ijk = {111, 111, 111, 111, 111, 111, 111, 111}
+
+Based on the discrete velocity space, compare Figure 3 and matrix (4), the center is weighted by 8/27 (orange), the main
+axes by 2/27 (green), the medians (blue) of the cube by 1/54 and its vertices (red) by 1/216.
+   The second modification comprises an explicit prescription for computing macroscopic quantities. This essentially
+involves a favorable pairwise summation and subtraction of inverse PDF directions as well as a separation of the different
+cube contributions (vertices, medians, main axes, and center). To this end, the density fluctuation is given by
+
+                   ⎡
+                   ⎢
+              𝛿𝜌 = ⎢ (((f111 + f111 ) + (f111 + f111 )) + ((f111 + f111 ) + (f111 + f111 )))
+                   ⎢ ⏟⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏟⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏟
+                   ⎣                                              Vertices
+
+                      +(((f011 + f011 ) + (f011 + f011 )) + ((f101 + f101 ) + (f101 + f101 )) + ((f110 + f110 ) + (f110 + f110 )))
+                       ⏟⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏟⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏟
+                                                                                            Medians
+
+                                                                                       ⎤
+                                                                                       ⎥
+                      +((f100 + f100 ) + (f010 + f010 ) + (f001 + f001 )) ⎥ + f000 ,                                                                                             (B3)
+                       ⏟⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏟⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏞⏟ ⎥ ⏟⏟⏟
+                                                  Main Axes                            ⎦  Center
+                                                                                                                                   10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+GEHRKE and RUNG                                                                                                             1153
+
+
+
+and the velocity components follow from
+
+                     u = [(((f111 − f111 ) + (f111 − f111 )) + ((f111 − f111 ) + (f111 − f111 )))
+                          + (((f101 − f101 ) + (f101 − f101 )) + ((f110 − f110 ) + (f110 − f110 ))) + (f100 − f100 )]∕𝜌,    (B4)
+
+                     v = [(((f111 − f111 ) + (f111 − f111 )) + ((f111 − f111 ) + (f111 − f111 )))
+                          + (((f011 − f011 ) + (f011 − f011 )) + ((f110 − f110 ) + (f110 − f110 ))) + (f010 − f010 )]∕𝜌,    (B5)
+
+                    w = [(((f111 − f111 ) + (f111 − f111 )) + ((f111 − f111 ) + (f111 − f111 )))
+                          + (((f011 − f011 ) + (f011 − f011 )) + ((f101 − f101 ) + (f101 − f101 ))) + (f001 − f001 )]∕𝜌.    (B6)
+
+Optional body forces Fi are incorporated by shifting the frame of reference via ui = ui + Δt Fi ∕(2𝜌). This shift operation is
+implemented prior to the subsequent transformations from PDF → central moments → cumulants, in which the velocity
+components appear. Moreover, the shift affects the backward transformation from cumulants into the space of (relaxed)
+central moments wherein the first order central moments change sign.
+
+
+B.2 Collision in cumulant space
+Equations (B7) to (B32) depict the entire explicit implementation of the collision step for the underlying relaxation rate
+set with 𝜔2 = 1, {𝜔6 , ..., 𝜔10 } = 1 and 𝜔1|3|4|5 defined by Equations (13) and (14) through (16) respectively in the limiter
+version via (20) to (26), compare Section 2.2.
+    The presentation aims at showing the shortest version of the collision step by omitting the use of linear combinations
+within the expressions as compared to the fundamental work of Geier et al.16 and by neglecting intrinsic zero contributions
+attributed to the chosen relaxation rates. For the required transformations (PDF space → central moments → cumulants
+and respective back transformations) the reader is referred to the original paper,16 compare Section 3 therein.
+    The zeroth and first-order cumulants are directly linked to the macroscopic flow quantities that are conserved proper-
+                                                                        ∗
+ties during collision implying their relaxation is left out, whereby C000  = C000 and so forth holds. The only equilibria that
+                                          eq     eq    eq
+are nonzero are three second order (C200 , C020 , C002 ) and all fourth order cumulants. The modified equilibria are traced
+to repairing the anisotropy arising from the underlying discretization. Both the parameters A and B, compare Equations
+(17) and (18), and three derivatives,
+
+                       Dx u = 𝜔1 ∕(2 𝜌) (−2 C200 + C020 + C002 ) − 1∕(2 𝜌) (C200 + C020 + C002 − k000 ),                    (B7)
+
+                        Dy v = 𝜔1 ∕(2 𝜌) (C200 + 2 C020 + C002 ) − 1∕(2 𝜌) (C200 + C020 + C002 − k000 ),                    (B8)
+
+                       Dz w = 𝜔1 ∕(2 𝜌) (C200 + C020 + 2 C002 ) − 1∕(2 𝜌) (C200 + C020 + C002 − k000 ),                     (B9)
+
+occur in these expressions. k000 represents the zeroth order central moment. Hence, the collisional part explicitly reads:
+
+                                                          ∗
+                                                         C110 = (1 − 𝜔1 ) C110 ,                                           (B10)
+
+                                                          ∗
+                                                         C101 = (1 − 𝜔1 ) C101 ,                                           (B11)
+
+                                                          ∗
+                                                         C011 = (1 − 𝜔1 ) C011 ,                                           (B12)
+
+                             ∗
+                            C200 = [(1 − 𝜔1 ) (C200 − C020 ) − 3 𝜌 (1 − 𝜔1 ∕2) (u2 Dx u − v2 Dy v)
+                                     + (1 − 𝜔1 ) (C200 − C002 ) − 3 𝜌 (1 − 𝜔1 ∕2) (u2 Dx u − w2 Dz w)
+                                     + k000 − 3 𝜌 (1 − 1∕2) (u2 Dx u + v2 Dy v + w2 Dz w)]∕3,                              (B13)
+
+                            ∗
+                           C020 = [−2 (1 − 𝜔1 ) (C200 − C020 ) + 6 𝜌 (1 − 𝜔1 ∕2) (u2 Dx u − v2 Dy v)
+                                   + (1 − 𝜔1 ) (C200 − C002 ) − 3 𝜌 (1 − 𝜔1 ∕2) (u2 Dx u − w2 Dz w)
+                                   + k000 − 3 𝜌 (1 − 1∕2) (u2 Dx u + v2 Dy v + w2 Dz w)]∕3,                                (B14)
+                                                                                                     10970363, 2022, 8, Downloaded from https://onlinelibrary.wiley.com/doi/10.1002/fld.5085 by Readcube-Labtiva, Wiley Online Library on [28/01/2026]. See the Terms and Conditions (https://onlinelibrary.wiley.com/terms-and-conditions) on Wiley Online Library for rules of use; OA articles are governed by the applicable Creative Commons License
+1154                                                                               GEHRKE and RUNG
+
+
+        ∗
+       C002 = [(1 − 𝜔1 ) (C200 − C020 ) − 3 𝜌 (1 − 𝜔1 ∕2) (u2 Dx u − v2 Dy v)
+              − 2 (1 − 𝜔1 ) (C200 − C002 ) + 6 𝜌 (1 − 𝜔1 ∕2) (u2 Dx u − w2 Dz w)
+              + k000 − 3 𝜌 (1 − 1∕2) (u2 Dx u + v2 Dy v + w2 Dz w)]∕3,                      (B15)
+
+                           𝜆                            𝜆
+             ∗
+            C102 = [(1 − 𝜔3,1 ) (C120 + C102 ) − (1 − 𝜔4,2 ) (C120 − C102 )]∕2,             (B16)
+
+                           𝜆                            𝜆
+             ∗
+            C120 = [(1 − 𝜔3,1 ) (C120 + C102 ) + (1 − 𝜔4,1 ) (C120 − C102 )]∕2,             (B17)
+
+                           𝜆                            𝜆
+             ∗
+            C012 = [(1 − 𝜔3,2 ) (C210 + C012 ) − (1 − 𝜔4,2 ) (C210 − C012 )]∕2,             (B18)
+
+                           𝜆                            𝜆
+             ∗
+            C210 = [(1 − 𝜔3,2 ) (C210 + C012 ) + (1 − 𝜔4,2 ) (C210 − C012 )]∕2,             (B19)
+
+                           𝜆                            𝜆
+             ∗
+            C021 = [(1 − 𝜔3,3 ) (C201 + C021 ) − (1 − 𝜔4,3 ) (C201 − C021 )]∕2,             (B20)
+
+                           𝜆                            𝜆
+             ∗
+            C201 = [(1 − 𝜔3,3 ) (C201 + C021 ) + (1 − 𝜔4,3 ) (C201 − C021 )]∕2,             (B21)
+
+                                  ∗
+                                 C111 = (1 − 𝜔𝜆5 ) C111 ,                                   (B22)
+
+               ∗
+              C220 = [2∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u − 2 Dy v + Dz w)
+                     + 2∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u + Dy v − 2 Dz w)
+                     − 4∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u + Dy v + Dz w)]∕3,                        (B23)
+
+               ∗
+              C022 = [−2∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u + Dy v − 2 Dz w)
+                     − 4∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u + Dy v + Dz w)]∕3,                        (B24)
+
+               ∗
+              C202 = [−2∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u − 2 Dy v + Dz w)
+                     − 4∕3 (1∕𝜔1 − 1∕2) A 𝜌 (Dx u + Dy v + Dz w)]∕3,                        (B25)
+
+                                ∗
+                               C211 = (1 − 𝜔1 ∕2) B C011 ,                                  (B26)
+
+                                ∗
+                               C121 = (1 − 𝜔1 ∕2) B C101 ,                                  (B27)
+
+                                ∗
+                               C112 = (1 − 𝜔1 ∕2) B C110 ,                                  (B28)
+
+                                         ∗
+                                        C221 = 0,                                           (B29)
+
+                                         ∗
+                                        C212 = 0,                                           (B30)
+
+                                         ∗
+                                        C122 = 0,                                           (B31)
+
+                                         ∗
+                                        C222 = 0.                                           (B32)
+

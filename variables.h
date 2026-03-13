@@ -34,7 +34,7 @@
 #define     GRID_SIZE (NX6 * NYD6 * NZ6) // per-rank 總格點數
 
 // 非均勻網格
-#define     CFL                 0.56
+#define     CFL                 0.5
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
 #define     Uniform_In_Xdir     1   // 1=均勻, 0=非均勻
 #define     Uniform_In_Ydir     1
@@ -47,7 +47,7 @@
 // 4. 物理參數
 // ================================================================
 #define     Re      700         // Reynolds number (基於 H_HILL 和 Uref)
-#define     Uref    0.0503      // 參考速度 (bulk velocity)
+#define     Uref    0.0683      // 參考速度 (bulk velocity)
                                 // Re700:0.0583, Re1400/2800:0.0776
                                 // Re5600:0.0464, Re10595:0.0878
                                 // 限制: Uref ≤ cs = 0.1732 (Ma < 1)
@@ -91,9 +91,21 @@
 //     1e-2  → Gehrke 預設 (多數情況適用)
 //     1e-1  → Re≥10600 中等網格 (GR22 Table 7)
 // ================================================================
-#define     USE_WP_CUMULANT     0   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
+#define     USE_WP_CUMULANT     1   // TEST: AO first (stable), then switch to WP=1 after AO confirmed working
 #define     CUM_LAMBDA          1.0e-2
 //正則化參數引入
+
+// ── GILBM 安全: WP 三階鬆弛率下限 ──────────────────
+//   當 ω₁ > 14/9 ≈ 1.556 時，Eq.15 的 ω₄ → 0 (極點效應)
+//   導致反對稱三階 cumulant 幾乎不衰減 → GILBM 插值噪聲累積 → 發散
+//
+//   CUM_WP_OMEGA_MIN: ω₃/ω₄/ω₅ 的最小值
+//     0.5  → 至少 50% 衰減/步 (推薦: 穩定且保留部分 WP 優化)
+//     0.8  → 保守 (接近 AO, 80% 衰減)
+//     不定義 → 不限制 (原始 WP 行為, standard LBM 用)
+//
+//   目前 ω₁ = 1.80 → ω₄_raw = 0.067 → clamp 至 0.5
+#define     CUM_WP_OMEGA_MIN    0.5
 
 // ── Cumulant omega2 (bulk viscosity relaxation rate) ──────────────
 //   omega2 控制體積黏度 (bulk viscosity) 的鬆弛速率
@@ -119,9 +131,23 @@
 //   純 debug (無力):          SIGNFLIP=0, GUO_SRC=0, GALILEAN=0
 //
 //   ★ 請逐一切換測試，找出發散來源 ★
-#define     CUM_SIGNFLIP        0
-#define     CUM_GUO_SRC         1
-#define     CUM_GALILEAN        0
+#define     CUM_SIGNFLIP        1
+#define     CUM_GUO_SRC         0
+#define     CUM_GALILEAN        1
+
+// ── Odd-Even Filter (方案 C: 2Δx 振盪抑制) ──────────────────
+//   CUM_ODDEVEN_SIGMA: 展向 (x) 3-point Laplacian filter 強度
+//     0.0   → 關閉 (預設)
+//     0.01  → 微弱阻尼 (推薦起始值)
+//     0.05  → 中等阻尼
+//     0.10  → 強阻尼 (可能過度耗散)
+//
+//   機制: f_filtered = (1-σ)·f + σ/2·(f_{i-1} + f_{i+1})
+//   目的: 抑制 GILBM 插值 + Chimera 非線性 u-依賴 造成的 2Δx checkerboard
+//   僅作用於 x-方向 (spanwise, uniform), 不影響 y/z 方向
+//   ★ 此為診斷測試用，確認 2Δx 噪聲放大是否為根因 ★
+#define     CUM_ODDEVEN_SIGMA   0.01
+
 // ── 互斥檢查 ──
 #if USE_MRT && USE_CUMULANT
 #error "USE_MRT and USE_CUMULANT are mutually exclusive. Set only one to 1."

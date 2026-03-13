@@ -47,6 +47,60 @@ __global__ void periodicSW(
 }
 
 
+// ===== Odd-Even Filter Kernel (Option C: 2Δx damping in x-direction) =====
+// Post-collision filter: suppresses 2Δx checkerboard oscillation in spanwise (x) direction.
+// Uses shared memory for correct read-before-write within each (j,k) row.
+// Launched AFTER periodicSW so ghost cells are filled with periodic copies.
+//
+// Grid:  (NYD6-6, NZ6-6)   — one block per (j,k) interior row
+// Block: (NX6-6, 1, 1)     — one thread per interior x-point
+// Shared: (NX6-6) * sizeof(double) per q-direction
+#if USE_CUMULANT && defined(CUM_ODDEVEN_SIGMA)
+__global__ void OddEvenFilter_X_Kernel(double **f_ptrs)
+{
+    const int j = blockIdx.x + 3;          // interior j range: [3, NYD6-4]
+    const int k = blockIdx.y + 3;          // interior k range: [3, NZ6-4]
+    const int i = threadIdx.x + 3;         // interior i range: [3, NX6-4]
+
+    if (j >= NYD6 - 3 || k >= NZ6 - 3) return;
+
+    const int nx_interior = NX6 - 6;       // number of interior x-points
+    if (threadIdx.x >= nx_interior) return;
+
+    const int nface = NX6 * NZ6;
+    const int idx   = j * nface + k * NX6 + i;
+
+    const double sigma = CUM_ODDEVEN_SIGMA;
+
+    extern __shared__ double srow[];
+
+    for (int q = 0; q < NQ; q++) {
+        // Load this row's interior f-values into shared memory
+        srow[threadIdx.x] = f_ptrs[q][idx];
+        __syncthreads();
+
+        // Read neighbors (ghost cells for boundary threads)
+        double fc = srow[threadIdx.x];
+        double fl, fr;
+
+        if (threadIdx.x > 0)
+            fl = srow[threadIdx.x - 1];
+        else
+            fl = f_ptrs[q][idx - 1];   // ghost i=2 (periodic copy of interior right)
+
+        if (threadIdx.x < nx_interior - 1)
+            fr = srow[threadIdx.x + 1];
+        else
+            fr = f_ptrs[q][idx + 1];   // ghost i=NX6-3 (periodic copy of interior left)
+
+        // Apply 3-point Laplacian filter: f* = (1-σ)f + σ/2(f_L + f_R)
+        f_ptrs[q][idx] = (1.0 - sigma) * fc + 0.5 * sigma * (fl + fr);
+
+        __syncthreads();   // sync before next q overwrites srow
+    }
+}
+#endif // USE_CUMULANT && CUM_ODDEVEN_SIGMA
+
 // ===== GPU reduction kernel: sum rho_d over interior points =====
 // Maps 1D thread index to interior (i,j,k), writes partial block sums to partial_sums_d.
 // Host sums the partial results (typically 256-512 doubles = 2-4 KB) instead of
@@ -203,6 +257,28 @@ void Launch_CollisionStreaming(double *f_old[NQ], double *f_new[NQ]) {
         fd_ptrs_d,
         y_d, x_d, z_d, u, v, w, rho_d, feq_d
     );
+
+#if USE_CUMULANT && defined(CUM_ODDEVEN_SIGMA)
+    // ── Option C: Post-collision odd-even filter in x-direction ──
+    // Suppresses 2Δx checkerboard caused by Chimera + GILBM interpolation interaction.
+    // Runs after periodicSW so ghost cells are valid for boundary threads.
+    // To disable: comment out CUM_ODDEVEN_SIGMA in variables.h
+    {
+        const int nx_interior = NX6 - 6;  // interior x-points per row
+        dim3 grid_filter(NYD6 - 6, NZ6 - 6);
+        dim3 block_filter(nx_interior, 1, 1);
+        size_t smem = nx_interior * sizeof(double);
+
+        OddEvenFilter_X_Kernel<<<grid_filter, block_filter, smem, stream0>>>(fd_ptrs_d);
+        CHECK_CUDA( cudaStreamSynchronize(stream0) );
+
+        // Re-apply periodic BC in x after filter (ghost cells now stale)
+        periodicSW<<<griddimSW, blockdimSW, 0, stream0>>>(
+            fd_ptrs_d,
+            y_d, x_d, z_d, u, v, w, rho_d, feq_d
+        );
+    }
+#endif
 }
 /*
 void Launch_ModifyForcingTerm()

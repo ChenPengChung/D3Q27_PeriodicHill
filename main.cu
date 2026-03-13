@@ -321,22 +321,57 @@ int main(int argc, char *argv[])
 #endif
 
     // ── 預計算 Cumulant 平衡態分佈 (host-side, for Chapman-Enskog BC) ──
-    // Cumulant WP mode 的平衡態分佈因 4 階 A,B 係數而不同於標準 feq = W[q]*rho。
-    // 在 BC 中使用標準 feq 會在傾斜壁面造成質量源/匯 (每點 ~1.9e-02)，
-    // 導致密度波動 (checkrho ≠ 1.0000)。此修正消除了 650000 倍的誤差。
+    //
+    // ** WP模式重要修正 (2026-03) **
+    //
+    // 原始設計：用 S-乘積形式 (Eq.17-18) 迭代求解 WP 固定點 feq_cum ≠ W：
+    //   CUMcca_eq = (A+B)·Sxx·Syy/ρ  → 在 u=0 時非零 (≈0.249)
+    //   → feq_cum[0]=1.043, feq_cum[1]=-0.175 (極端偏離標準權重)
+    //
+    // 但 GPU 碰撞核心 (cumulant_collision.h L591-618) 使用速度導數形式 (Thesis Eq.3.83-3.85)：
+    //   eq4_trace = -4/3·(1/ω-0.5)·A·ρ·(∂_xu+∂_yv+∂_zw)
+    //   → 在 u=0 時速度導數=0 → 4階平衡態=0 → GPU固定點 IS W[q]！
+    //
+    // 結果：BC用 feq_cum≠W，但內部用 W (GPU固定點)，
+    //   壁面處 |feq_cum[0]-W[0]|=0.747 → 不連續 → Ma=0.367 at step 1 → 爆炸
+    //
+    // 修正：feq_cum = W（與 GPU 碰撞的實際固定點一致）
+    //   AO模式：feq_cum = W 本來就成立（4階eq=0）
+    //   WP模式：GPU的速度導數形式在 u=0 時也給出 W → 應使用 W
+    //
+    // 注意：WP的精度優勢來自流動時的速度依賴4階修正，
+    //   不需要靜止態的常數項 (A+B)/9。
     {
         double feq_cum_h[NQ];
-        ComputeCumulantEquilibrium_Host(omega_global, feq_cum_h);
-        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_feq_cum, feq_cum_h, NQ*sizeof(double)) );
+#if USE_WP_CUMULANT
+        // WP mode: GPU collision fixed point at u=0 IS standard weights W[q]
+        // (velocity-derivative form Eq.3.83-3.85 gives zero equilibrium at u=0)
+        // Using host-side S-product iteration would give WRONG fixed point → wall mismatch
+        const double W_vals[27] = {
+            8.0/27.0,
+            2.0/27.0, 2.0/27.0, 2.0/27.0,
+            2.0/27.0, 2.0/27.0, 2.0/27.0,
+            1.0/54.0, 1.0/54.0, 1.0/54.0, 1.0/54.0,
+            1.0/54.0, 1.0/54.0, 1.0/54.0, 1.0/54.0,
+            1.0/54.0, 1.0/54.0, 1.0/54.0, 1.0/54.0,
+            1.0/216.0, 1.0/216.0, 1.0/216.0, 1.0/216.0,
+            1.0/216.0, 1.0/216.0, 1.0/216.0, 1.0/216.0
+        };
+        for (int q = 0; q < NQ; q++) feq_cum_h[q] = W_vals[q];
         if (myid == 0) {
-            printf("  Cumulant equilibrium -> __constant__ GILBM_feq_cum[27]\n");
+            printf("  [WP FIX] feq_cum = W (GPU velocity-derivative form fixed point)\n");
+            printf("  [WP FIX] Skipping host S-product iteration (inconsistent with GPU)\n");
+        }
+#else
+        // AO mode: host iteration converges to W (since A=B=0), safe to compute
+        ComputeCumulantEquilibrium_Host(omega_global, feq_cum_h);
+        if (myid == 0) {
+            printf("  Cumulant equilibrium (AO) -> feq_cum ≈ W (verified)\n");
             printf("    feq_cum[0]  = %.12f (vs W[0]=%.12f, diff=%+.6e)\n",
                    feq_cum_h[0], 8.0/27.0, feq_cum_h[0] - 8.0/27.0);
-            printf("    feq_cum[1]  = %.12f (vs W[1]=%.12f, diff=%+.6e)\n",
-                   feq_cum_h[1], 2.0/27.0, feq_cum_h[1] - 2.0/27.0);
-            printf("    feq_cum[19] = %.12f (vs W[19]=%.12f, diff=%+.6e)\n",
-                   feq_cum_h[19], 1.0/216.0, feq_cum_h[19] - 1.0/216.0);
         }
+#endif
+        CHECK_CUDA( cudaMemcpyToSymbol(GILBM_feq_cum, feq_cum_h, NQ*sizeof(double)) );
     }
 #endif
 
