@@ -401,11 +401,11 @@ void Launch_ModifyForcingTerm()
     }
 
     // Ma 安全檢查 (使用 local Ma_max — LBM 穩定性取決於局部最大 Ma, 非 bulk 平均)
-    if (Ma_max > 0.35) {
+    if (Ma_max > 0.2) {
         Force_h[0] *= 0.05;
         if (myid == 0)
             printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 5%%: %.5E\n", Ma_max, Force_h[0]);
-    } else if (Ma_max > 0.3) {
+    } else if (Ma_max > 0.25) {
         Force_h[0] *= 0.5;
         if (myid == 0)
             printf("[WARNING] Ma_max=%.4f > 0.3, Force halved to %.5E\n", Ma_max, Force_h[0]);

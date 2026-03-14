@@ -1421,6 +1421,17 @@
                                            "focus":  true
                                        },
                       "problemMatcher":  []
+                  },
+                  {
+                      "label":  "Download Latest VTK (.87)",
+                      "type":  "shell",
+                      "command":  "$dest = 'D:\\${workspaceFolderBasename}\\result'; if (!(Test-Path $dest)) { New-Item -ItemType Directory -Path $dest -Force | Out-Null }; $f = & 'C:\\Program Files\\PuTTY\\plink.exe' -ssh -pw 1256 -batch chenpengchung@140.114.58.87 'ls -1t /home/chenpengchung/${workspaceFolderBasename}/result/*.vtk | head -1'; if ($f) { $f = $f.Trim(); Write-Host Downloading: $f; & 'C:\\Program Files\\PuTTY\\pscp.exe' -scp -pw 1256 -batch chenpengchung@140.114.58.87:$f $dest; Write-Host Done! Saved to $dest } else { Write-Host No VTK found. }",
+                      "presentation":  {
+                                           "reveal":  "always",
+                                           "panel":  "shared",
+                                           "focus":  true
+                                       },
+                      "problemMatcher":  []
                   }
               ],
     "inputs":  [

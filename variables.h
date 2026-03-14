@@ -46,7 +46,7 @@
 // 4. 物理參數
 // ================================================================
 #define     Re      700         // Reynolds number (基於 H_HILL 和 Uref)
-#define     Uref    0.0583      // 參考速度 (bulk velocity)
+#define     Uref    0.017      // 參考速度 (bulk velocity)
                                 // Re700:0.0583, Re1400/2800:0.0776
                                 // Re5600:0.0464, Re10595:0.0878
                                 // 限制: Uref ≤ cs = 0.1732 (Ma < 1)
@@ -88,19 +88,19 @@
 // ================================================================
 #define     loop        500000  // 最大時間步數
 #define     NDTMIT      50      // 每 N 步輸出 monitor 資料
-#define     NDTFRC      50     // 每 N 步更新外力項
+#define     NDTFRC      200     // 每 N 步更新外力項
 #define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
 // 外力控制器增益 (P controller, Phase 1: additive)
 // Re=100: alpha=10, Re=2800: alpha=3~14
 // 週期山丘需較高 gain 加速收斂
-#define     force_alpha 15
+#define     force_alpha 5
 
 // Gehrke & Rung (2022) 雙階段外力控制器
 // Phase 1 (P-additive): |Re%| > THRESHOLD → 原始 P 控制器 (冷啟動/遠離目標)
 // Phase 2 (Gehrke-mult): |Re%| ≤ THRESHOLD → 乘法微調 (接近目標)
-#define     FORCE_SWITCH_THRESHOLD  20.0    // Re% 切換門檻 (%)
+#define     FORCE_SWITCH_THRESHOLD  10.0    // Re% 切換門檻 (%)
 
 // ================================================================
 // 9. FTT 閾值與統計控制
