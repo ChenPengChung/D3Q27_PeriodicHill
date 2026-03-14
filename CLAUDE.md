@@ -77,6 +77,10 @@ double *Force_h, *Force_d;        // 驅動外力
 | `gilbm/precompute.h` | 513 | δη/δξ/δζ 預計算 + ComputeGlobalTimeStep |
 | `gilbm/metric_terms.h` | 419 | dk_dz, dk_dy 度量項計算 |
 | `gilbm/diagnostic_gilbm.h` | 510 | Phase 1.5 診斷測試 |
+| `gilbm/MRT_CM_ShiftOperator.h` | 314 | MRT-CM shift operator T(u), T⁻¹(u) |
+| `test_mrt_cm_comprehensive.py` | ~450 | Python MRT-CM 21 項單元測試 |
+| `test_mrt_cm_cuda.cu` | ~550 | CUDA MRT-CM 8 項 GPU 單元測試 |
+| `run_mrt_tests.sh` | 58 | MRT-CM/RM 編譯+測試腳本 |
 | `Claude_GILBM.md` | 399 | 完整理論推導文件 |
 
 ### Include 順序 (main.cu)
@@ -343,12 +347,83 @@ for step = 0..loop:
 | **Step 3: 碰撞 (Eq.3)** | ✅ | BGK with 1/omega_A → f_pc |
 | **Kernel 包裝函數** | ✅ | Full/Buffer/Init_FPC/Init_Feq/Init_OmegaDt |
 
-### 模擬狀態（2026-03-06 更新）
+### 模擬狀態（2026-03-14 更新）
 - 所有診斷測試通過 (Phase 0, 1.5, 2, 3, 4)
 - 已可完整運行，VTK 輸出正常
 - Force driving 已啟用，88b9ba7 穩定運行至 FTT 24.8+ (step 728001)
 - CE BC 張量係數已確認為 3（Imamura Eq. A.9 推導，係數 9 會導致發散）
 - **待查**：係數 3 下仍有發散案例，需排除 VTK restart / force controller / 其他因素
+
+### MRT-CM (Central Moment) 碰撞算子（2026-03-14 新增）
+
+#### 理論基礎
+- **MRT-CM**: f* = f - M⁻¹·T⁻¹(u)·S·T(u)·M·(f-feq)
+- **Shift operator T(u)**: 將 raw moments 轉為 central moments, T(ũ) = M(ũ)·M⁻¹(0)
+- **Galilean invariance**: MRT-CM 在中心動量空間鬆弛，消除速度依賴性
+- **Dubois Corollary 2.1**: 二階宏觀 PDE（黏度）MRT-CM = MRT-RM（相同物理黏度）
+- **d'Humières 基底結構性質**: 應力模態 (9,11,13,14,15) 只依賴守恆模態 (0,3,5,7)
+  → 應力 Galilean invariant for BOTH MRT-RM 和 MRT-CM
+  → CM 優勢在非應力模態 (能量、能量通量、ghost modes)
+
+#### 檔案清單
+
+| 檔案 | 說明 |
+|------|------|
+| `gilbm/MRT_CM_ShiftOperator.h` | `raw_to_central_dH()` + `central_to_raw_dH()` (314 行) |
+| `test_mrt_cm_comprehensive.py` | Python 21 項單元測試 (Dubois et al. 2015 驗證) |
+| `test_mrt_cm_cuda.cu` | CUDA 8 項 GPU 單元測試 (standalone, 無 MPI) |
+| `run_mrt_tests.sh` | 編譯+測試腳本 (MRT-CM/RM 雙模式) |
+
+#### Compile-time 切換開關 (variables.h)
+```c
+#define USE_MRT      1   // 0=BGK, 1=MRT
+#define USE_MRT_CM   1   // 0=MRT-RM (d'Humières), 1=MRT-CM (Central Moment)
+```
+- `USE_MRT=1 && USE_MRT_CM=0` → 標準 MRT-RM (raw moment 鬆弛)
+- `USE_MRT=1 && USE_MRT_CM=1` → MRT-CM (central moment 鬆弛)
+- `USE_MRT=0` → BGK/SRT
+
+#### 修正的兩個 Bug (2026-03-14)
+
+**Bug 1: gilbm_step23_point (correction kernel) 未使用 CM**
+- 位置: `gilbm/evolution_gilbm.h` ~line 673-701
+- 問題: 不論 `USE_MRT_CM` 設定，correction kernel 總是調用 `gilbm_mrt_collision` (MRT-RM)
+- 修正: 加入 `#if USE_MRT_CM` 分支:
+  - MRT-CM 始終計算 B 點宏觀量 (T(u) 需要速度)
+  - MRT-CM 始終自行計算 feq_B (不依賴 feq_d 快取)
+  - 碰撞分派到 `gilbm_mrt_cm_collision`
+
+**Bug 2: P6 GILBM_Step23_Full_Kernel 用 precomputed C_eff (僅限 MRT-RM)**
+- 位置: `gilbm/evolution_gilbm.h` ~line 1185-1256
+- 問題: P6 kernel 使用 `C_eff = C0 - s_visc × C1` 合併算子，這是 MRT-RM 特有優化
+  MRT-CM 的 T(u) 每格點速度不同，無法預計算合併算子
+- 修正: `#if USE_MRT && !USE_MRT_CM` 條件化:
+  - MRT-RM: 保留 shared memory C_eff + `gilbm_step23_combined`
+  - MRT-CM: 跳過 shared memory，改用 `gilbm_step23_point` (uncombined)
+
+#### Python 單元測試結果 (21/21 PASS)
+```
+Test 1: T(u) matches Dubois definition               ✓ (err=5.55e-16)
+Test 2: Morphism T(u+v)=T(u)·T(v), T(u)·T(-u)=I     ✓ (err=8.88e-16, 2.02e-16)
+Test 3: feq fixed point (RM + CM)                     ✓ (err=4.02e-16, 0.00)
+Test 4: Conservation (mass + 3×momentum, RM + CM)     ✓ (err<1.22e-15)
+Test 5: u=0 degeneracy (CM = RM)                      ✓ (err=5.13e-16)
+Test 6: Our CM = Dubois Eq.6                          ✓ (err=5.13e-16)
+Test 7: S_eff stress diagonal = s_visc                ✓ (err=0.00)
+Test 8: CM Galilean invariant, RM non-stress NOT      ✓ (RM diff=2.26e-03)
+```
+
+#### CUDA 單元測試 (待 GPU 伺服器執行)
+```bash
+# 編譯 MRT-CM 模式
+nvcc -O2 -arch=sm_80 test_mrt_cm_cuda.cu -o test_mrt_cm -DUSE_MRT=1 -DUSE_MRT_CM=1
+# 編譯 MRT-RM 模式
+nvcc -O2 -arch=sm_80 test_mrt_cm_cuda.cu -o test_mrt_rm -DUSE_MRT=1 -DUSE_MRT_CM=0
+# 或直接執行
+bash run_mrt_tests.sh
+```
+8 項測試: RM feq 固定點、RM 守恆、CM feq 固定點、CM 守恆、u=0 退化、
+shift round-trip、CM 穩定性 (100 iter Ma~0.3)、RM 穩定性 (100 iter Ma~0.3)
 
 ### MPI 同步修正（已完成）
 

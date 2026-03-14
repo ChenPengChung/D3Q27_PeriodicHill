@@ -47,6 +47,9 @@ __constant__ double GILBM_C1[19][19];
 // Include sub-modules (after __constant__ declarations they depend on)
 #include "interpolation_gilbm.h"
 #include "boundary_conditions.h"
+#if USE_MRT && USE_MRT_CM
+#include "MRT_CM_ShiftOperator.h"
+#endif
 
 #define STENCIL_SIZE 7
 #define STENCIL_VOL  343  // 7*7*7
@@ -159,6 +162,84 @@ __device__ void gilbm_mrt_collision(
         f_re[q] += GILBM_W[q] * 3.0 * GILBM_e[q][1] * Force0 * dt_A;
     }
 }
+
+#if USE_MRT_CM
+// ============================================================================
+// MRT-CM collision: Central Moment MRT for Galilean invariance
+//
+// Algorithm:
+//   1. m_neq = M·(f̃ - feq)            (raw non-equilibrium moments)
+//   2. k_neq = T(u) · m_neq            (shift to central moments)
+//   3. dk    = S · k_neq               (relax in central moment space)
+//   4. dm    = T⁻¹(u) · dk             (shift back to raw moments)
+//   5. f*    = f̃ - M⁻¹·dm + force     (apply collision + body force)
+//
+// When u=0, T(0)=I and this reduces exactly to standard MRT-RM.
+//
+// Reference: Chávez-Modena et al., J. Comput. Sci. (2018, 2020)
+// ============================================================================
+__device__ void gilbm_mrt_cm_collision(
+    double f_re[19],          // in/out: re-estimated distribution → post-collision
+    const double feq_B[19],   // input: equilibrium distribution at node B
+    double s_visc,            // 1/omega_A = 1/tau_A (local viscosity relaxation rate)
+    double dt_A,              // local time step at point A (for body force scaling)
+    double Force0,            // body force magnitude (y-direction streamwise)
+    double ux, double uy, double uz  // local macroscopic velocity at node B
+) {
+    // ---- Step 1: Compute non-equilibrium raw moments ----
+    double m_neq[19];
+    for (int i = 0; i < 19; i++) {
+        double sum = 0.0;
+        for (int q = 0; q < 19; q++)
+            sum += GILBM_M[i][q] * (f_re[q] - feq_B[q]);
+        m_neq[i] = sum;
+    }
+
+    // ---- Step 2: Forward shift – raw → central non-eq moments ----
+    double k_neq[19];
+    raw_to_central_dH(m_neq, ux, uy, uz, k_neq);
+
+    // ---- Step 3: Relax in central moment space ----
+    // Same relaxation rates as MRT-RM (from MRT_Matrix.h)
+    // Conserved moments (s=0): dk=0 for density & momenta
+    double dk[19];
+    dk[0]  = 0.0;                    // s0  = 0.0 (conserved: density)
+    dk[1]  = 1.19  * k_neq[1];      // s1  = 1.19 (energy)
+    dk[2]  = 1.4   * k_neq[2];      // s2  = 1.4  (energy square)
+    dk[3]  = 0.0;                    // s3  = 0.0 (conserved: momentum-x)
+    dk[4]  = 1.2   * k_neq[4];      // s4  = 1.2  (energy flux)
+    dk[5]  = 0.0;                    // s5  = 0.0 (conserved: momentum-y)
+    dk[6]  = 1.2   * k_neq[6];      // s6  = 1.2  (energy flux)
+    dk[7]  = 0.0;                    // s7  = 0.0 (conserved: momentum-z)
+    dk[8]  = 1.2   * k_neq[8];      // s8  = 1.2  (energy flux)
+    dk[9]  = s_visc * k_neq[9];     // s9  = 1/tau_A ★ LOCAL (stress)
+    dk[10] = 1.4   * k_neq[10];     // s10 = 1.4
+    dk[11] = s_visc * k_neq[11];    // s11 = 1/tau_A ★ LOCAL (stress)
+    dk[12] = 1.4   * k_neq[12];     // s12 = 1.4
+    dk[13] = s_visc * k_neq[13];    // s13 = 1/tau_A ★ LOCAL (stress)
+    dk[14] = s_visc * k_neq[14];    // s14 = 1/tau_A ★ LOCAL (stress)
+    dk[15] = s_visc * k_neq[15];    // s15 = 1/tau_A ★ LOCAL (stress)
+    dk[16] = 1.5   * k_neq[16];     // s16 = 1.5 (kinetic 3rd-order)
+    dk[17] = 1.5   * k_neq[17];     // s17 = 1.5
+    dk[18] = 1.5   * k_neq[18];     // s18 = 1.5
+
+    // ---- Step 4: Inverse shift – central → raw relaxed moments ----
+    double dm[19];
+    central_to_raw_dH(dk, ux, uy, uz, dm);
+
+    // ---- Step 5: Inverse transform + body force ----
+    // f*[q] = f̃[q] - Σ_i Mi[q][i] × dm[i] + force_source[q]
+    for (int q = 0; q < 19; q++) {
+        double correction = 0.0;
+        for (int i = 0; i < 19; i++)
+            correction += GILBM_Mi[q][i] * dm[i];
+        f_re[q] -= correction;
+        // Body force: w_q × 3 × e_y[q] × Force × dt_A
+        f_re[q] += GILBM_W[q] * 3.0 * GILBM_e[q][1] * Force0 * dt_A;
+    }
+}
+#endif // USE_MRT_CM
+
 #endif // USE_MRT
 
 // ============================================================================
@@ -441,20 +522,31 @@ __device__ void gilbm_compute_point(
 
                 // ---- Gather all 19 f_B and feq_B at stencil node B ----
                 double f_re_mrt[19], feq_B_arr[19];
-                //在stencil 內部的每點，先寫入19個編號的分布佈函數與平衡態分佈函數 
-                bool ghost_j = (gj < 3 || gj >= NYD6 - 3);
-                     
-                // Ghost zone: compute macroscopic once for all 19 feq
+                //在stencil 內部的每點，先寫入19個編號的分布佈函數與平衡態分佈函數
+
+                // Compute macroscopic at B (needed for feq in ghost zone,
+                // and for MRT-CM shift operator velocity)
                 double rho_B_g, u_B_g, v_B_g, w_B_g;
+#if USE_MRT_CM
+                // MRT-CM always needs velocity at B for shift operator T(u)
+                compute_macroscopic_at(f_new_ptrs, idx_B, rho_B_g, u_B_g, v_B_g, w_B_g);
+#else
                 //若為buffer layer,  則有一個 時序缺陷 | f_new 在 ghost zone 是舊值（MPI 還沒交換）→ feq 滯後一步 |
+                bool ghost_j = (gj < 3 || gj >= NYD6 - 3);
                 if (ghost_j)
                     compute_macroscopic_at(f_new_ptrs, idx_B, rho_B_g, u_B_g, v_B_g, w_B_g);
-                //如果是buffer layer 則重新計算，若為interrior ，則直接讀取 
+#endif
+                //如果是buffer layer 則重新計算，若為interrior ，則直接讀取
                 for (int q = 0; q < 19; q++) {
                     f_re_mrt[q] = f_new_ptrs[q][idx_B];
+#if USE_MRT_CM
+                    // MRT-CM: already computed macroscopic at B, reuse for feq
+                    feq_B_arr[q] = compute_feq_alpha(q, rho_B_g, u_B_g, v_B_g, w_B_g);
+#else
                     feq_B_arr[q] = ghost_j
                         ? compute_feq_alpha(q, rho_B_g, u_B_g, v_B_g, w_B_g)
                         : feq_d[q * GRID_SIZE + idx_B];
+#endif
                 }
                 //===========此區為逐點操作，但是是所有編號同時一起操作===========
                 // ---- Step 2: Re-estimation (distribution space, same as BGK) ----
@@ -464,7 +556,12 @@ __device__ void gilbm_compute_point(
                     f_re_mrt[q] = feq_B_arr[q] + (f_re_mrt[q] - feq_B_arr[q]) * R_AB;
 
                 // ---- Step 3: MRT collision ----
+#if USE_MRT_CM
+                gilbm_mrt_cm_collision(f_re_mrt, feq_B_arr, s_visc, dt_A, Force[0],
+                                       u_B_g, v_B_g, w_B_g);
+#else
                 gilbm_mrt_collision(f_re_mrt, feq_B_arr, s_visc, dt_A, Force[0]);
+#endif
                 //===========此區為逐點操作，但是是所有編號同時一起操作===========
                 // ---- Write back to A's PRIVATE f_pc (skip BC directions) ----
                 //同一個內插成員點要寫回19筆資料 
@@ -570,17 +667,26 @@ __device__ void gilbm_step23_point(
                 int flat  = si * 49 + sj * 7 + sk;
 
                 double f_re_mrt[19], feq_B_arr[19];
-                bool ghost_j = (gj < 3 || gj >= NYD6 - 3);
 
                 double rho_B_g, u_B_g, v_B_g, w_B_g;
+#if USE_MRT_CM
+                // MRT-CM always needs velocity at B for shift operator T(u)
+                compute_macroscopic_at(f_new_ptrs, idx_B, rho_B_g, u_B_g, v_B_g, w_B_g);
+#else
+                bool ghost_j = (gj < 3 || gj >= NYD6 - 3);
                 if (ghost_j)
                     compute_macroscopic_at(f_new_ptrs, idx_B, rho_B_g, u_B_g, v_B_g, w_B_g);
+#endif
 
                 for (int q = 0; q < 19; q++) {
                     f_re_mrt[q] = f_new_ptrs[q][idx_B];
+#if USE_MRT_CM
+                    feq_B_arr[q] = compute_feq_alpha(q, rho_B_g, u_B_g, v_B_g, w_B_g);
+#else
                     feq_B_arr[q] = ghost_j
                         ? compute_feq_alpha(q, rho_B_g, u_B_g, v_B_g, w_B_g)
                         : feq_d[q * GRID_SIZE + idx_B];
+#endif
                 }
 
                 double omegadt_B = omegadt_local_d[idx_B];
@@ -588,7 +694,12 @@ __device__ void gilbm_step23_point(
                 for (int q = 0; q < 19; q++)
                     f_re_mrt[q] = feq_B_arr[q] + (f_re_mrt[q] - feq_B_arr[q]) * R_AB;
 
+#if USE_MRT_CM
+                gilbm_mrt_cm_collision(f_re_mrt, feq_B_arr, s_visc, dt_A, Force0,
+                                       u_B_g, v_B_g, w_B_g);
+#else
                 gilbm_mrt_collision(f_re_mrt, feq_B_arr, s_visc, dt_A, Force0);
+#endif
 
                 for (int q = 0; q < 19; q++) {
                     if (!need_bc_arr[q])
@@ -1071,9 +1182,10 @@ __global__ void GILBM_Step23_Full_Kernel(
     const int j = blockIdx.y;   // blockDim.y = 1 → j = blockIdx.y
     const int k = blockIdx.z;   // blockDim.z = 1 → k = blockIdx.z
 
-#if USE_MRT
+#if USE_MRT && !USE_MRT_CM
     // ── Build C_eff in shared memory (ALL threads participate, before any return) ──
     // C_eff = C0 - s_visc × C1, same for all threads in block (same j,k → same s_visc)
+    // Only for MRT-RM: MRT-CM uses per-node T(u), cannot precompute combined operator.
     __shared__ double C_eff_shared[19 * 19];
     {
         double s_visc_val = 0.0;
@@ -1117,13 +1229,23 @@ __global__ void GILBM_Step23_Full_Kernel(
     double dk_dy_val = dk_dy_d[idx_jk];
     double dk_dz_val = dk_dz_d[idx_jk];
 
-#if USE_MRT
+#if USE_MRT && !USE_MRT_CM
+    // MRT-RM: use precomputed combined operator C_eff (P5 optimization)
     gilbm_step23_combined(index, nface, bi, bj, bk,
                           omegadt_A, dt_A,
                           dk_dy_val, dk_dz_val,
                           is_bottom, is_top,
                           f_new_ptrs, f_pc, feq_d, omegadt_local_d,
                           Force[0], C_eff_shared);
+#elif USE_MRT && USE_MRT_CM
+    // MRT-CM: combined operator not applicable (T(u) is per-node velocity-dependent)
+    // Fall back to uncombined step23 with CM collision
+    gilbm_step23_point(index, nface, bi, bj, bk,
+                       omega_A, omegadt_A, dt_A,
+                       dk_dy_val, dk_dz_val,
+                       is_bottom, is_top,
+                       f_new_ptrs, f_pc, feq_d, omegadt_local_d,
+                       Force[0]);
 #else
     gilbm_step23_point(index, nface, bi, bj, bk,
                        omega_A, omegadt_A, dt_A,

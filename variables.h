@@ -69,6 +69,11 @@
 // 0 = BGK/SRT (Single Relaxation Time)
 // 1 = MRT (Multi-Relaxation-Time)
 #define     USE_MRT             1
+// MRT collision variant:
+// 0 = MRT-RM (Raw Moment, standard d'Humières)
+// 1 = MRT-CM (Central Moment, Galilean invariant)
+// MRT-CM reduces to MRT-RM when local velocity u=0
+#define     USE_MRT_CM          1
 
 // ================================================================
 // 7. Kernel 策略
@@ -118,13 +123,13 @@
 //   1 = 從 per-rank binary 續跑 (legacy, 只有瞬時場)
 //   2 = 從 merged VTK 續跑 (f=feq 近似, 統計量無法還原)
 //   3 = 從 binary checkpoint 續跑 (精確: f + 統計量累積和)
-#define     INIT                (3)
+#define     INIT                (0)
 
 // INIT=2 用: merged VTK 檔案路徑
 #define     RESTART_VTK_FILE    "result/velocity_merged_1800001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_2050001"
+#define     RESTART_BIN_DIR     "checkpoint/step_2310001"
 
 // 統計量讀取 (僅 INIT=1 時生效)
 // 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat
@@ -135,7 +140,7 @@
 // 11. 初始擾動 (觸發 3D 湍流轉捩)
 // ================================================================
 // 湍流建立後設為 0
-#define     PERTURB_INIT        0       // 1=注入隨機擾動, 0=不擾動
+#define     PERTURB_INIT        1       // 1=注入隨機擾動, 0=不擾動
 #define     PERTURB_PERCENT     5       // 擾動振幅 (% of Uref), 典型 1-10%
 
 // ================================================================
