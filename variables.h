@@ -34,7 +34,7 @@
 #define     GRID_SIZE (NX6 * NYD6 * NZ6) // per-rank 總格點數
 
 // 非均勻網格
-#define     CFL                 0.3     // 降低 CFL 以增加 hill 底部過渡區的插值穩定性
+#define     CFL 0.5
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
 #define     Uniform_In_Xdir     1   // 1=均勻, 0=非均勻
 #define     Uniform_In_Ydir     1
@@ -135,22 +135,9 @@
 #define     CUM_GUO_SRC         0
 #define     CUM_GALILEAN        1
 
-// ── Odd-Even Filter (3-point Laplacian 擴散濾波器) ────────────
-//   f_filtered = (1-σ)·f + σ/2·(f_left + f_right)
-//   目的: 抑制 GILBM 框架 (Chimera+Lagrange插值) 在 hill 底部過渡區造成的不穩定
-//
-//   ★ 不穩定發生在 j-k 平面 (流向-法向), 不是 x 方向 (展向) ★
-//   AO 和 WP 模式產生幾乎相同的不穩定 (Ma_max ratio 1.07-1.11x)
-//   → 根因是 GILBM 框架, 不是碰撞模型
-//
-//   CUM_ODDEVEN_SIGMA: 統一濾波強度
-//   CUM_FILTER_X: 啟用展向 (x, η) 方向濾波    — 0=關, 1=開
-//   CUM_FILTER_K: 啟用法向 (k, ζ) 方向濾波    — 0=關, 1=開 (跳過壁面點)
-//   CUM_FILTER_J: 啟用流向 (j, ξ) 方向濾波    — 0=關, 1=開 (需額外 MPI exchange)
-#define     CUM_ODDEVEN_SIGMA   0.10
-#define     CUM_FILTER_X        0       // 展向: 已證明無效 (不穩定不在此方向)
-#define     CUM_FILTER_K        1       // 法向: 直接抑制壁面附近插值振盪
-#define     CUM_FILTER_J        1       // 流向: 抑制 dk_dy 突變處的流向不一致
+// ── Odd-Even Filter (已移除: 方案 C 因降低有效 Re 而放棄) ──
+// 改用方案 A: Matrix-based moment transform 取代 Chimera
+// #define     CUM_ODDEVEN_SIGMA   0.05
 
 // ── 互斥檢查 ──
 #if USE_MRT && USE_CUMULANT
@@ -171,7 +158,7 @@
 // loop 已移除：模擬以 FTT_STOP 為唯一終止條件
 #define     NDTMIT      50      // 每 N 步輸出 monitor 資料
 #define     NDTFRC      50     // 每 N 步更新外力項
-#define     NDTBIN      1000   // 每 N 步輸出 binary checkpoint
+#define     NDTBIN      100000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
 // ====== Dual-Stage Force Controller ======
@@ -241,7 +228,7 @@
 #define     RESTART_VTK_FILE    "result/velocity_merged_31001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_300001"
+#define     RESTART_BIN_DIR     "checkpoint/step_70001"
 
 // 統計量讀取 (僅 INIT=1 時生效)
 // 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat
