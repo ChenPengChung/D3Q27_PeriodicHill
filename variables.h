@@ -74,6 +74,12 @@
 // 1 = MRT-CM (Central Moment, Galilean invariant)
 // MRT-CM reduces to MRT-RM when local velocity u=0
 #define     USE_MRT_CM          1
+// MRT-CM shift operator polynomial extension:
+// 0 = Lattice-reduced (x⁴→x², exact group property T(u)·T(-u)=I)
+// 1 = Dubois continuous (x⁴≠x², approximate inverse, ghost mode difference)
+// Both give identical stress modes → same viscosity (Dubois Corollary 2.1)
+// Difference only in ghost/energy modes (rows 2,4,6,8,10,12)
+#define     USE_DUBOIS_CONTINUOUS   0
 
 // ================================================================
 // 7. Kernel 策略

@@ -197,7 +197,11 @@ __device__ void gilbm_mrt_cm_collision(
 
     // ---- Step 2: Forward shift – raw → central non-eq moments ----
     double k_neq[19];
+#if USE_DUBOIS_CONTINUOUS
+    raw_to_central_dH_dubois(m_neq, ux, uy, uz, k_neq);
+#else
     raw_to_central_dH(m_neq, ux, uy, uz, k_neq);
+#endif
 
     // ---- Step 3: Relax in central moment space ----
     // Same relaxation rates as MRT-RM (from MRT_Matrix.h)
@@ -225,7 +229,11 @@ __device__ void gilbm_mrt_cm_collision(
 
     // ---- Step 4: Inverse shift – central → raw relaxed moments ----
     double dm[19];
+#if USE_DUBOIS_CONTINUOUS
+    central_to_raw_dH_dubois(dk, ux, uy, uz, dm);
+#else
     central_to_raw_dH(dk, ux, uy, uz, dm);
+#endif
 
     // ---- Step 5: Inverse transform + body force ----
     // f*[q] = f̃[q] - Σ_i Mi[q][i] × dm[i] + force_source[q]

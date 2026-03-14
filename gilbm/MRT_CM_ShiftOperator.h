@@ -310,4 +310,184 @@ __device__ __forceinline__ void central_to_raw_dH(
            - 2.0*uy * k[14] + 2.0*ux * k[15] + k[18];
 }
 
+// ============================================================================
+// Dubois Continuous Polynomial Extension
+// ============================================================================
+// In the Dubois (2015) continuous polynomial version, x⁴ is NOT reduced to x²
+// on the D3Q19 lattice. This introduces "ghost degrees of freedom" that cause:
+//   - T_dubois(u)·T_dubois(-u) ≠ I  (approximate inverse, O(Ma²) error)
+//   - Non-stress modes (rows 2,4,6,8,10,12) differ from lattice-reduced version
+//   - Stress modes (rows 9,11,13,14,15) are IDENTICAL → same viscosity
+//
+// Implementation: T_dubois(u) = T_lattice(u) + ΔT(u)
+// where ΔT only has nonzero entries in rows {2,4,6,8,10,12}
+// and columns {0,1,3,5,7,9,11} (at most 7 moments per row).
+//
+// Correction polynomials: δ(x) = x²(x²-1), γ(x) = x(x²-1)
+// These vanish on the lattice (|e_i|∈{0,1}) but NOT at shifted points (e_i-u).
+// ============================================================================
+
+#if USE_DUBOIS_CONTINUOUS
+
+// ============================================================================
+// Forward shift (Dubois continuous): raw → central moments
+// κ = T_dubois(u) · m = T_lattice(u) · m + ΔT(u) · m
+// ============================================================================
+__device__ __forceinline__ void raw_to_central_dH_dubois(
+    const double m[19],
+    double ux, double uy, double uz,
+    double k[19]
+) {
+    // First: compute lattice-reduced version (all 19 rows)
+    raw_to_central_dH(m, ux, uy, uz, k);
+
+    // Then: add corrections to rows {2,4,6,8,10,12}
+    // These corrections come from ΔP = P_continuous - P_lattice
+    // where δ(x) = x²(x²-1), γ(x) = x(x²-1)
+
+    const double ux2 = ux * ux;
+    const double uy2 = uy * uy;
+    const double uz2 = uz * uz;
+    const double ux3 = ux2 * ux;
+    const double uy3 = uy2 * uy;
+    const double uz3 = uz2 * uz;
+    const double ux4 = ux2 * ux2;
+    const double uy4 = uy2 * uy2;
+    const double uz4 = uz2 * uz2;
+
+    // Row 2 (ε, higher-order energy):
+    // ΔT[2,0]*m0 + ΔT[2,1]*m1 + ΔT[2,3]*m3 + ΔT[2,5]*m5 + ΔT[2,7]*m7
+    //   + ΔT[2,9]*m9 + ΔT[2,11]*m11
+    k[2] += (10.5*ux4 + (861.0/38.0)*ux2 + 10.5*uy4 + (861.0/38.0)*uy2
+           + 10.5*uz4 + (861.0/38.0)*uz2) * m[0]
+          + (21.0/19.0) * (ux2 + uy2 + uz2) * m[1]
+          + (-42.0*ux3 - 21.0*ux) * m[3]
+          + (-42.0*uy3 - 21.0*uy) * m[5]
+          + (-42.0*uz3 - 21.0*uz) * m[7]
+          + (21.0*ux2 - 10.5*uy2 - 10.5*uz2) * m[9]
+          + (31.5*uy2 - 31.5*uz2) * m[11];
+
+    // Row 4 (qx, energy flux x):
+    // ΔT[4,0]*m0 + ΔT[4,1]*m1 + ΔT[4,3]*m3 + ΔT[4,9]*m9
+    k[4] += (-5.0*ux3 - (55.0/19.0)*ux) * m[0]
+          + (-5.0/19.0) * ux * m[1]
+          + 15.0*ux2 * m[3]
+          + (-5.0*ux) * m[9];
+
+    // Row 6 (qy, energy flux y):
+    // ΔT[6,0]*m0 + ΔT[6,1]*m1 + ΔT[6,5]*m5 + ΔT[6,9]*m9 + ΔT[6,11]*m11
+    k[6] += (-5.0*uy3 - (55.0/19.0)*uy) * m[0]
+          + (-5.0/19.0) * uy * m[1]
+          + 15.0*uy2 * m[5]
+          + 2.5*uy * m[9]
+          + (-7.5*uy) * m[11];
+
+    // Row 8 (qz, energy flux z):
+    // ΔT[8,0]*m0 + ΔT[8,1]*m1 + ΔT[8,7]*m7 + ΔT[8,9]*m9 + ΔT[8,11]*m11
+    k[8] += (-5.0*uz3 - (55.0/19.0)*uz) * m[0]
+          + (-5.0/19.0) * uz * m[1]
+          + 15.0*uz2 * m[7]
+          + 2.5*uz * m[9]
+          + 7.5*uz * m[11];
+
+    // Row 10 (3πxx, stress ghost diagonal):
+    // ΔT[10,0]*m0 + ΔT[10,1]*m1 + ΔT[10,3]*m3 + ΔT[10,5]*m5 + ΔT[10,7]*m7
+    //   + ΔT[10,9]*m9 + ΔT[10,11]*m11
+    k[10] += (6.0*ux4 + (246.0/19.0)*ux2 - 3.0*uy4 - (123.0/19.0)*uy2
+            - 3.0*uz4 - (123.0/19.0)*uz2) * m[0]
+           + (12.0*ux2 - 6.0*uy2 - 6.0*uz2) / 19.0 * m[1]
+           + (-24.0*ux3 - 12.0*ux) * m[3]
+           + (12.0*uy3 + 6.0*uy) * m[5]
+           + (12.0*uz3 + 6.0*uz) * m[7]
+           + (12.0*ux2 + 3.0*uy2 + 3.0*uz2) * m[9]
+           + (-9.0*uy2 + 9.0*uz2) * m[11];
+
+    // Row 12 (πww, stress ghost off-diagonal):
+    // ΔT[12,0]*m0 + ΔT[12,1]*m1 + ΔT[12,5]*m5 + ΔT[12,7]*m7
+    //   + ΔT[12,9]*m9 + ΔT[12,11]*m11
+    k[12] += (3.0*uy4 + (123.0/19.0)*uy2 - 3.0*uz4 - (123.0/19.0)*uz2) * m[0]
+           + (6.0*uy2 - 6.0*uz2) / 19.0 * m[1]
+           + (-12.0*uy3 - 6.0*uy) * m[5]
+           + (12.0*uz3 + 6.0*uz) * m[7]
+           + (-3.0*uy2 + 3.0*uz2) * m[9]
+           + (9.0*uy2 + 9.0*uz2) * m[11];
+}
+
+// ============================================================================
+// Inverse shift (Dubois continuous): central → raw moments
+// m = T_dubois(-u) · κ  (NOTE: T_dubois(-u) ≠ T_dubois⁻¹(u), O(Ma²) error)
+// Same correction structure with sign flip on odd-power terms
+// ============================================================================
+__device__ __forceinline__ void central_to_raw_dH_dubois(
+    const double k[19],
+    double ux, double uy, double uz,
+    double m[19]
+) {
+    // First: compute lattice-reduced inverse (all 19 rows)
+    central_to_raw_dH(k, ux, uy, uz, m);
+
+    // Then: add corrections for T(-u) on rows {2,4,6,8,10,12}
+    // For T(-u): even powers stay same, odd powers flip sign vs T(u)
+
+    const double ux2 = ux * ux;
+    const double uy2 = uy * uy;
+    const double uz2 = uz * uz;
+    const double ux3 = ux2 * ux;
+    const double uy3 = uy2 * uy;
+    const double uz3 = uz2 * uz;
+    const double ux4 = ux2 * ux2;
+    const double uy4 = uy2 * uy2;
+    const double uz4 = uz2 * uz2;
+
+    // Row 2: even terms same, odd terms flip sign
+    m[2] += (10.5*ux4 + (861.0/38.0)*ux2 + 10.5*uy4 + (861.0/38.0)*uy2
+           + 10.5*uz4 + (861.0/38.0)*uz2) * k[0]
+          + (21.0/19.0) * (ux2 + uy2 + uz2) * k[1]
+          + (42.0*ux3 + 21.0*ux) * k[3]   // sign flipped
+          + (42.0*uy3 + 21.0*uy) * k[5]   // sign flipped
+          + (42.0*uz3 + 21.0*uz) * k[7]   // sign flipped
+          + (21.0*ux2 - 10.5*uy2 - 10.5*uz2) * k[9]
+          + (31.5*uy2 - 31.5*uz2) * k[11];
+
+    // Row 4: odd overall in ux → all terms flip sign
+    m[4] += (5.0*ux3 + (55.0/19.0)*ux) * k[0]     // sign flipped
+          + (5.0/19.0) * ux * k[1]                   // sign flipped
+          + 15.0*ux2 * k[3]                           // even in ux → same
+          + 5.0*ux * k[9];                            // sign flipped
+
+    // Row 6: odd overall in uy → all terms flip sign
+    m[6] += (5.0*uy3 + (55.0/19.0)*uy) * k[0]
+          + (5.0/19.0) * uy * k[1]
+          + 15.0*uy2 * k[5]
+          + (-2.5*uy) * k[9]
+          + 7.5*uy * k[11];
+
+    // Row 8: odd overall in uz → all terms flip sign
+    m[8] += (5.0*uz3 + (55.0/19.0)*uz) * k[0]
+          + (5.0/19.0) * uz * k[1]
+          + 15.0*uz2 * k[7]
+          + (-2.5*uz) * k[9]
+          + (-7.5*uz) * k[11];
+
+    // Row 10: even overall → signs of odd-ux/uy/uz terms flip
+    m[10] += (6.0*ux4 + (246.0/19.0)*ux2 - 3.0*uy4 - (123.0/19.0)*uy2
+            - 3.0*uz4 - (123.0/19.0)*uz2) * k[0]
+           + (12.0*ux2 - 6.0*uy2 - 6.0*uz2) / 19.0 * k[1]
+           + (24.0*ux3 + 12.0*ux) * k[3]   // sign flipped
+           + (-12.0*uy3 - 6.0*uy) * k[5]   // sign flipped
+           + (-12.0*uz3 - 6.0*uz) * k[7]   // sign flipped
+           + (12.0*ux2 + 3.0*uy2 + 3.0*uz2) * k[9]
+           + (-9.0*uy2 + 9.0*uz2) * k[11];
+
+    // Row 12: even overall → signs of odd-uy/uz terms flip
+    m[12] += (3.0*uy4 + (123.0/19.0)*uy2 - 3.0*uz4 - (123.0/19.0)*uz2) * k[0]
+           + (6.0*uy2 - 6.0*uz2) / 19.0 * k[1]
+           + (12.0*uy3 + 6.0*uy) * k[5]    // sign flipped
+           + (-12.0*uz3 - 6.0*uz) * k[7]   // sign flipped
+           + (-3.0*uy2 + 3.0*uz2) * k[9]
+           + (9.0*uy2 + 9.0*uz2) * k[11];
+}
+
+#endif // USE_DUBOIS_CONTINUOUS
+
 #endif // MRT_CM_SHIFT_OPERATOR_H
