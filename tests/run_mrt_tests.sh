@@ -15,9 +15,13 @@
 #   - CUDA toolkit (nvcc) in PATH
 #   - GPU with compute capability >= sm_80 (A100/A30/etc.)
 #   - All project headers in place
+#   - Run from the tests/ directory: cd tests && bash run_mrt_tests.sh
 # ============================================================================
 
 set -e  # Exit on first error
+
+# Project root (one level up from tests/)
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -33,7 +37,7 @@ echo ""
 
 # ── Step 1: Compile MRT-CM unit test ──
 echo -e "${YELLOW}[Step 1/5]${NC} Compiling CUDA unit test (MRT-CM mode)..."
-nvcc -O2 -arch=${ARCH} test_mrt_cm_cuda.cu -o test_mrt_cm \
+nvcc -O2 -arch=${ARCH} test_mrt_cm_cuda.cu -o test_mrt_cm -I"${PROJECT_ROOT}" \
     -DUSE_MRT=1 -DUSE_MRT_CM=1 2>&1
 if [ $? -eq 0 ]; then
     echo -e "  ${GREEN}✓ MRT-CM compilation successful${NC}"
@@ -45,7 +49,7 @@ echo ""
 
 # ── Step 2: Compile MRT-RM unit test ──
 echo -e "${YELLOW}[Step 2/5]${NC} Compiling CUDA unit test (MRT-RM mode)..."
-nvcc -O2 -arch=${ARCH} test_mrt_cm_cuda.cu -o test_mrt_rm \
+nvcc -O2 -arch=${ARCH} test_mrt_cm_cuda.cu -o test_mrt_rm -I"${PROJECT_ROOT}" \
     -DUSE_MRT=1 -DUSE_MRT_CM=0 2>&1
 if [ $? -eq 0 ]; then
     echo -e "  ${GREEN}✓ MRT-RM compilation successful${NC}"
@@ -92,7 +96,7 @@ else
         XCOMP_FLAG="-Xcompiler ${MPI_XCOMPILER#,}"
     fi
 
-    nvcc -O2 -arch=${ARCH} main.cu -o main_cm \
+    nvcc -O2 -arch=${ARCH} "${PROJECT_ROOT}/main.cu" -o main_cm -I"${PROJECT_ROOT}" \
         -DUSE_MRT=1 -DUSE_MRT_CM=1 \
         ${MPI_INCLUDE} ${MPI_LIBS} ${XCOMP_FLAG} 2>&1
     if [ $? -eq 0 ]; then
@@ -104,7 +108,7 @@ else
 
     # Also verify MRT-RM still compiles
     echo "  Verifying main.cu with USE_MRT_CM=0 (MRT-RM)..."
-    nvcc -O2 -arch=${ARCH} main.cu -o main_rm \
+    nvcc -O2 -arch=${ARCH} "${PROJECT_ROOT}/main.cu" -o main_rm -I"${PROJECT_ROOT}" \
         -DUSE_MRT=1 -DUSE_MRT_CM=0 \
         ${MPI_INCLUDE} ${MPI_LIBS} ${XCOMP_FLAG} 2>&1
     if [ $? -eq 0 ]; then

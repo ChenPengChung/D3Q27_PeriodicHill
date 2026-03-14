@@ -308,16 +308,33 @@ Launch_CollisionStreaming(f_old[19], f_new[19]):
   8. periodicSW (x 方向週期邊界, 含 feq_d 19 planes)
 ```
 
-### Launch_ModifyForcingTerm() (每 NDTFRC=1000 步)
+### Launch_ModifyForcingTerm() (每 NDTFRC=200 步)
 ```
-1. cudaMemcpy(Ub_avg_d → Ub_avg_h)
-2. Host 端累加 Ub_avg (j=3 截面, k=3..NZ6-4, i=3..NX6-5)
-3. MPI_Bcast(&Ub_avg, root=0)  // ★ 只用 rank 0 的值 (山丘頂截面)
-4. Ub_avg_global = Ub_avg       // 存入全域變數 (供 monitor.h 使用)
-5. PI-like Force controller (asymmetric gain, Force≥0 clamp, Ma brake)
-6. ★ 所有 rank 使用相同 Ub_avg → 計算出相同 Force (天然同步)
-7. cudaMemcpy(Force_h → Force_d)
+1. cudaMemset(Ub_avg_d, 0) + AccumulateUbulk kernel (j=3 截面)
+2. cudaMemcpy(Ub_avg_d → Ub_avg_h)
+3. Host 端 bilinear cell-average 積分 Ub_avg
+4. MPI_Bcast(&Ub_avg, root=0)  // ★ 只用 rank 0 的值 (山丘頂截面)
+5. Ub_avg_global = Ub_avg       // 存入全域變數 (供 monitor.h 使用)
+6. PI Force Controller (2026-03-15 重寫，取代舊 P-additive + Gehrke):
+   - error = Uref - Ub_avg
+   - Force_integral += Ki * error * norm  (積分累加)
+   - Conditional decay: error<0 且 integral>0 → integral *= 0.8 (加速 drain)
+   - Anti-windup: integral ∈ [0, 20*norm]
+   - Force = Kp*error*norm + integral  (PI 合成)
+   - Back-calc clamp: Force<0 → Force=0, integral 回算
+   - Ma brake: Ma_max>0.30 → ×0.05, Ma_max>0.25 → ×0.5 (integral 同步縮減)
+   - 增益: Kp=2.0, Ki=0.3, norm=Uref²/LY
+7. ★ 所有 rank 使用相同 Ub_avg → 計算出相同 Force (天然同步)
+8. cudaMemcpy(Force_h → Force_d)
 ```
+
+#### PI 控制器設計理由 (2026-03-15)
+**舊控制器三個 Bug**:
+1. Mach brake 條件順序反了 (0.2 在 0.25 之前 → else if 永遠不執行)
+2. Gehrke 乘法係數 0.05 在 |Re%|=10% 邊界產生 correction=1.5 → 指數爆衝 (0.81→3.14 in 4 updates)
+3. P-additive 是純積分器無 anti-windup → Force 累積無法減速
+
+**新 PI 控制器**: Kp 項直接抑制偏差 (error→0 時自動消失), Ki 項消除穩態誤差, conditional decay 防止 overshoot 時積分殘留. 23 項 Python 單元測試全部通過 (test_force_controller.py).
 
 ### 時間迴圈 (main.cu)
 ```

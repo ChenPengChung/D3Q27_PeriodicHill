@@ -98,15 +98,15 @@
 #define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
-// 外力控制器增益 (P controller, Phase 1: additive)
-// Re=100: alpha=10, Re=2800: alpha=3~14
-// 週期山丘需較高 gain 加速收斂
+// ====== PI 外力控制器 ======
+// 取代舊的 P-additive + Gehrke 雙階段控制器
+// Kp, Ki 增益在 evolution.h 內定義 (hardcoded for now)
+// force_alpha 保留為 legacy 相容 (未使用)
 #define     force_alpha 5
 
-// Gehrke & Rung (2022) 雙階段外力控制器
-// Phase 1 (P-additive): |Re%| > THRESHOLD → 原始 P 控制器 (冷啟動/遠離目標)
-// Phase 2 (Gehrke-mult): |Re%| ≤ THRESHOLD → 乘法微調 (接近目標)
-#define     FORCE_SWITCH_THRESHOLD  10.0    // Re% 切換門檻 (%)
+// FORCE_SWITCH_THRESHOLD 已廢棄 (PI 控制器無需切換)
+// 保留定義避免編譯錯誤，但不再影響邏輯
+#define     FORCE_SWITCH_THRESHOLD  10.0    // [DEPRECATED]
 
 // ================================================================
 // 9. FTT 閾值與統計控制

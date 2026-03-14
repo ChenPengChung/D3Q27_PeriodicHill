@@ -354,61 +354,78 @@ void Launch_ModifyForcingTerm()
     double Ma_now = Ub_avg / (double)cs;
     double Ma_max = ComputeMaMax();  // all ranks participate (MPI_Allreduce)
 
-    // ====== 雙階段外力控制器 (P-additive + Gehrke multiplicative) ======
-    // Re% = (Ub - Uref) / Uref × 100
+    // ====== PI 外力控制器 + anti-windup ======
+    // error = Uref - Ub (正 = 需加速, 負 = 需減速)
+    double error = (double)Uref - Ub_avg;
     double Re_pct = (Ub_avg - (double)Uref) / (double)Uref * 100.0;
-    bool use_gehrke = (fabs(Re_pct) <= FORCE_SWITCH_THRESHOLD);
     const char *ctrl_mode;
 
-    // 首次切換到 Gehrke 時輸出通知
-    static bool gehrke_activated = false;
-    if (use_gehrke && !gehrke_activated) {
-        gehrke_activated = true;
-        if (myid == 0)
-            printf("=== [Step %d | FTT=%.2f] Gehrke controller ACTIVATED (Re%%=%.2f%%, threshold=%.1f%%) ===\n",
-                   step, step * dt_global / (double)flow_through_time, Re_pct, (double)FORCE_SWITCH_THRESHOLD);
-    } else if (!use_gehrke && gehrke_activated) {
-        gehrke_activated = false;
-        if (myid == 0)
-            printf("=== [Step %d | FTT=%.2f] Gehrke controller DEACTIVATED, back to P-additive (Re%%=%.2f%%) ===\n",
-                   step, step * dt_global / (double)flow_through_time, Re_pct);
+    // PI 增益參數
+    // Kp: 比例增益 (直接響應誤差)
+    // Ki: 積分增益 (消除穩態誤差) — 透過 Force 累加實現
+    // 兩者都歸一化為 Uref²/LY 量綱
+    static double Force_integral = 0.0;  // 積分項（持久狀態）
+    static bool controller_initialized = false;
+    if (!controller_initialized) {
+        Force_integral = 0.0;
+        controller_initialized = true;
     }
 
-    if (use_gehrke) {
-        // Phase 2: Gehrke multiplicative controller (接近目標)
-        // Dead zone: |Re%| < 1.5% → no adjustment
-        if (fabs(Re_pct) < 1.5) {
-            ctrl_mode = "Gehrke-HOLD";
-        } else {
-            // F *= (1 - 0.1 * Re%)
-            // Re% < 0 → Ub too low → increase Force
-            // Re% > 0 → Ub too high → decrease Force
-            double correction = 1.0 - 0.05 * Re_pct;
-            Force_h[0] *= correction;
-            ctrl_mode = "Gehrke-MULT";
-        }
+    double Kp = 2.0;    // 比例增益 (直接抑制偏差)
+    double Ki = 0.3;     // 積分增益 (消除穩態誤差, 較 Kp 弱以避免 windup)
+    double norm = (double)Uref * (double)Uref / (double)LY;  // 力量綱歸一化
+
+    // 積分項累加 (帶 conditional integration anti-windup)
+    Force_integral += Ki * error * norm;
+
+    // Conditional decay: 當 error 和 integral 方向衝突時（overshoot 但 integral 仍在推）
+    // 加速衰減 integral, 避免積分項主導而無法減速
+    if (error < 0.0 && Force_integral > 0.0) {
+        Force_integral *= 0.8;  // 每次更新衰減 20%, ~10 次 → 0.1× 原值
+    }
+
+    // Anti-windup: 限制積分項在合理範圍 [0, Force_max]
+    double Force_max = 20.0 * norm;  // 積分項上限
+    if (Force_integral > Force_max) Force_integral = Force_max;
+    if (Force_integral < 0.0) Force_integral = 0.0;
+
+    // PI 合成
+    double Force_new = Kp * error * norm + Force_integral;
+
+    // 判斷控制模式 (for logging)
+    if (fabs(Re_pct) < 1.5) {
+        ctrl_mode = "PI-steady";
+    } else if (error > 0) {
+        ctrl_mode = "PI-accel";
     } else {
-        // Phase 1: P-additive controller (冷啟動 / 遠離目標)
-        double beta  = max(0.001, force_alpha / (double)Re);
-        double error = (double)Uref - Ub_avg;
-        Force_h[0] += beta * error * (double)Uref / (double)LY;
-        ctrl_mode = "P-additive";
+        ctrl_mode = "PI-decel";
     }
 
-    // Force 非負 clamp
+    Force_h[0] = Force_new;
+
+    // Back-calculation anti-windup:
+    // 當 Force 被 clamp 到 0 時，回算積分項使 Force 恰好 = 0
+    // 這樣積分項不會殘留過高，overshoot 能快速恢復
     if (Force_h[0] < 0.0) {
         Force_h[0] = 0.0;
+        // 回算: Force = Kp*error*norm + integral = 0  →  integral = -Kp*error*norm
+        // 但 integral 不能為負, 取 max(0, ...)
+        double integral_target = fmax(0.0, -Kp * error * norm);
+        if (Force_integral > integral_target)
+            Force_integral = integral_target;
     }
 
-    // Ma 安全檢查 (使用 local Ma_max — LBM 穩定性取決於局部最大 Ma, 非 bulk 平均)
-    if (Ma_max > 0.2) {
+    // Ma 安全檢查 — 注意: 先檢查較高閾值！
+    if (Ma_max > 0.30) {
         Force_h[0] *= 0.05;
+        Force_integral *= 0.05;  // 同步縮減積分項
         if (myid == 0)
-            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 5%%: %.5E\n", Ma_max, Force_h[0]);
+            printf("[CRITICAL] Ma_max=%.4f > 0.30, Force reduced to 5%%: %.5E\n", Ma_max, Force_h[0]);
     } else if (Ma_max > 0.25) {
         Force_h[0] *= 0.5;
+        Force_integral *= 0.5;
         if (myid == 0)
-            printf("[WARNING] Ma_max=%.4f > 0.3, Force halved to %.5E\n", Ma_max, Force_h[0]);
+            printf("[WARNING] Ma_max=%.4f > 0.25, Force halved to %.5E\n", Ma_max, Force_h[0]);
     }
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
