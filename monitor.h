@@ -187,7 +187,7 @@ void Launch_Monitor(){
     // 格式: FTT  Ub/Uref  Force  Ma_max  accu_count  uu_RS_check  k_check
     if (myid == 0) {
         FILE *fhist = fopen("Ustar_Force_record.dat", "a");
-        fprintf(fhist, "%.6f\t%.10f\t%.10f\t%.6f\t%d\t%.6e\t%.6e\n",
+        fprintf(fhist, "%.6f\t%.10f\t%.10f\t%.6e\t%d\t%.6e\t%.6e\n",
                 FTT, Ub_inst/(double)Uref, F_star, Ma_max,
                 accu_count, uu_RS_check, k_check_val);
         fclose(fhist);
