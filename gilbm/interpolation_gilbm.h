@@ -91,61 +91,85 @@ static inline void idw_7point_coeffs_host(double t, double p, double a[7]) {
 
 // ============================================================================
 // True 3D IDW interpolation on 7×7×7 = 343 stencil points
+// with direct physical-space distance from coordinate arrays
 // ============================================================================
-// 直接在 343 個 stencil 點上用三維歐氏距離計算 IDW 權重:
-//   d_{ijk} = sqrt( (t_η - si)² + (t_ξ - sj)² + (t_ζ - sk)² )
-//   w_{ijk} = 1 / d_{ijk}^p
-//   Σ_{343} w = 1 (歸一化)
+//
+// 在曲線坐標系 (η,ξ,ζ) 中，計算空間的歐氏距離不等於物理空間距離。
+// 例如壁面附近 dz_physical << dx_physical，但計算空間中 Δk 與 Δi 量級相同。
+// 若用計算空間距離，x 方向的遠距鄰點被高估權重，稀釋壁面法向資訊。
+//
+// 方法: 直接查表 z_d[] 取得 stencil 節點的精確物理 z 座標
+//
+//   ds² = dx²·Δη² + dy²·Δξ² + (z_node - z_dep)²
+//
+// 其中:
+//   dx²·Δη²:  x 均勻 → 精確 (不需查表)
+//   dy²·Δξ²:  y 均勻 → 精確 (不需查表)
+//   z_node:   從 z_d[(bj+sj)*NZ6 + (bk+sk)] 直接讀取 → 精確
+//   z_dep:    departure point 的 z, 由 caller 雙線性插值 z_d 得到
+//
+// 對比度量張量方法:
+//   度量張量用中心點的 dk_dz 線性外推 z, 壁面 tanh stretching 下
+//   stencil 邊緣誤差可達 4.5% (權重誤差 21.5%)。
+//   直接查表消除此線性化誤差，只在 z_dep (CFL<1, 偏移<1格) 有微小近似。
 //
 // 性質:
 //   - 全部 343 個權重 ≥ 0 且 Σ = 1 → 結果 ∈ [min(f), max(f)] → monotone
-//   - 用真實 3D 距離，角落點自然獲得更小的權重 (比 separable 版更物理)
-//   - 不可分離 → 無法用三階段 reduction，必須 343 次乘加
+//   - ds² = |Δr|² 在歐氏空間中嚴格正定
 //   - 若 departure point 恰好在某 node 上，回傳該 node 值 (exact)
+//   - 均勻網格時退化為標準各向同性 IDW
 //
 // Parameters:
-//   f_ptr:   f[q] 的 device pointer (全域陣列)
-//   bi,bj,bk: stencil 起始索引 (global index)
+//   f_ptr:     f[q] 的 device pointer (全域陣列)
+//   bi,bj,bk:  stencil 起始索引 (global index)
 //   t_eta, t_xi, t_zeta: departure point 在 stencil 座標系中的位置 [0,6]
-//   p:       IDW 冪次
-//   nface:   NX6 * NZ6 (j-stride)
-//   NX6_val: NX6 (k-stride 的 i 維度)
+//   p:         IDW 冪次
+//   nface:     NX6 * NZ6 (j-stride)
+//   NX6_val:   NX6 (k-stride 的 i 維度)
+//   z_dep:     departure point 的物理 z 座標 (由 caller 計算)
+//   z_d:       z_d[j*NZ6+k] 物理 z 座標陣列 (device, 大小 NYD6×NZ6)
 __device__ __forceinline__ double idw_3d_interpolate(
     double *f_ptr,
     int bi, int bj, int bk,
     double t_eta, double t_xi, double t_zeta,
     double p,
-    int nface, int NX6_val
+    int nface, int NX6_val,
+    double z_dep, double *z_d
 ) {
-    const double eps = 1.0e-24;  // d² < eps → 在 node 上
+    const double eps = 1.0e-24;  // ds² < eps → 在 node 上
+    // x, y 方向均勻: 物理距離 = grid_spacing × index_offset
+    const double dx2 = (LX / (double)NX) * (LX / (double)NX);  // dx_phys²
+    const double dy2 = (LY / (double)NY) * (LY / (double)NY);  // dy_phys²
     double sum_w  = 0.0;
     double sum_wf = 0.0;
 
     for (int si = 0; si < 7; si++) {
-        double d_eta  = t_eta - (double)si;
-        double d_eta2 = d_eta * d_eta;
+        double d_eta = t_eta - (double)si;
+        double dx2_term = dx2 * d_eta * d_eta;  // Δx² (精確, x 均勻)
         int gi = bi + si;
 
         for (int sj = 0; sj < 7; sj++) {
-            double d_xi  = t_xi - (double)sj;
-            double d_xi2 = d_xi * d_xi;
+            double d_xi = t_xi - (double)sj;
+            double dy2_term = dy2 * d_xi * d_xi;  // Δy² (精確, y 均勻)
             int gj = bj + sj;
+            // z_d 的 j-stride 偏移 (同一 sj 的所有 sk 共用)
+            int z_base = gj * NZ6;
 
             for (int sk = 0; sk < 7; sk++) {
-                double d_zeta  = t_zeta - (double)sk;
-                double d2 = d_eta2 + d_xi2 + d_zeta * d_zeta;
+                int gk = bk + sk;
+                // z_node: 從 z_d 直接讀取 — 精確物理座標
+                double dz = z_d[z_base + gk] - z_dep;
 
-                int gk  = bk + sk;
+                // 物理空間距離平方: ds² = Δx² + Δy² + Δz²
+                double d2 = dx2_term + dy2_term + dz * dz;
+
                 int idx = gj * nface + gk * NX6_val + gi;
                 double f_val = f_ptr[idx];
 
                 // 距離 ≈ 0 → 恰好在此 node → 直接回傳
                 if (d2 < eps) return f_val;
 
-                // w = 1 / d^p = 1 / (d²)^(p/2)
-                // p=2 (常見): w = 1/d², 不需 sqrt
-                // p=4: w = 1/(d²)²
-                // 一般: w = 1/(d²)^(p/2)
+                // w = 1 / ds^p = 1 / (ds²)^(p/2)
                 double w;
                 if (p == 2.0) {
                     w = 1.0 / d2;

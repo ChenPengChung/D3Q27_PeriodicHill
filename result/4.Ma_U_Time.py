@@ -130,7 +130,7 @@ def convergence_analysis(ax, ftt, values, label_name):
 # ── Helper: draw FTT=20 dark vertical marker ─────────────
 def mark_ftt_start(ax, ftt_val=20.0):
     ax.axvline(ftt_val, color='black', ls='-', lw=1.2, alpha=0.8)
-    ax.text(ftt_val, 0.55, f' FTT={ftt_val:.0f}\n accumulate start',
+    ax.text(ftt_val, 0.92, f' FTT={ftt_val:.0f}\n accumulate start',
             fontsize=9, color='black', fontweight='bold', va='top', ha='left',
             transform=ax.get_xaxis_transform(),
             bbox=dict(facecolor='white', alpha=0.8, edgecolor='black', pad=2, boxstyle='round,pad=0.3'))
@@ -139,14 +139,15 @@ def mark_ftt_start(ax, ftt_val=20.0):
 ftt_stats_start = 20.0  # accumulation start
 
 n_rows = 2 if has_rs else 1
-fig, all_axes = plt.subplots(n_rows, 1, figsize=(10, 4.5 * n_rows), sharex=True)
+fig, all_axes = plt.subplots(n_rows, 1, figsize=(11, 4 * n_rows), sharex=True)
 if n_rows == 1:
     all_axes = [all_axes]
 
-# --- Top panel: Ub/Uref + Ma_max ---
+# --- Top panel: Ub/Uref + Ma_max + Force* ---
 ax1 = all_axes[0]
 color_ub = '#1F77B4'
 color_ma = '#D62728'
+color_fc = '#2CA02C'  # green for Force*
 
 ln1 = ax1.plot(FTT, Ub_Uref, color=color_ub, lw=1.0, label=r'$U_b / U_{ref}$')
 ax1.axhline(1.0, color=color_ub, ls='--', lw=0.8, alpha=0.5)
@@ -160,10 +161,20 @@ ax1b.axhline(0.3, color='gray', ls='--', lw=0.8, alpha=0.5)
 ax1b.set_ylabel(r"$Ma_{\max}$", color=color_ma)
 ax1b.tick_params(axis='y', labelcolor=color_ma)
 
+# Third y-axis: Force* = Force / (rho * Uref^2), rho ≈ 1
+Uref_val = 0.17320508075
+Force_star = Force / (Uref_val ** 2)
+ax1c = ax1.twinx()
+ax1c.spines['right'].set_position(('axes', 1.12))  # offset outward
+ln3f = ax1c.plot(FTT, Force_star, color=color_fc, lw=0.9, alpha=0.85,
+                 label=r'$F^{\!*} \equiv F\,/\,(\rho\, U_{ref}^{2})$')
+ax1c.set_ylabel(r"$F^{\!*}$", color=color_fc, fontsize=12)
+ax1c.tick_params(axis='y', labelcolor=color_fc)
+
 mark_ftt_start(ax1, ftt_stats_start)
-lns = ln1 + ln2
-ax1.legend(lns, [l.get_label() for l in lns], loc='upper left', fontsize=9)
-ax1.set_title("Bulk Velocity & Mach Number", fontsize=12, pad=10)
+lns = ln1 + ln2 + ln3f
+ax1.legend(lns, [l.get_label() for l in lns], loc='upper right', fontsize=9)
+ax1.set_title("Bulk Velocity, Mach Number & Driving Force", fontsize=12)
 
 # --- Bottom panel: RS + TKE (only if data exists) ---
 if has_rs:
@@ -196,12 +207,12 @@ if has_rs:
 
     mark_ftt_start(ax3, ftt_stats_start)
     lns2 = ln3 + ln4
-    ax3.legend(lns2, [l.get_label() for l in lns2], loc='upper left', fontsize=9)
-    ax3.set_title(r"RS & TKE Convergence at check point ($x/h\approx 2,\, y/h\approx 1$)", fontsize=12, pad=10)
+    ax3.legend(lns2, [l.get_label() for l in lns2], loc='upper right', fontsize=9)
+    ax3.set_title(r"RS & TKE Convergence at check point ($x/h\approx 2,\, y/h\approx 1$)", fontsize=12)
 
 all_axes[-1].set_xlabel(r"FTT (Flow-Through Time)")
-fig.suptitle(f"Periodic Hill Flow Monitor — Re = {Re}", fontsize=15, y=0.99)
-fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+fig.suptitle(f"Periodic Hill Flow Monitor — Re = {Re}", fontsize=15)
+fig.tight_layout()
 
 # ── Explanation note (2 lines) ────────────────
 note = (

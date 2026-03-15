@@ -212,7 +212,8 @@ __device__ void gilbm_compute_point_gts(
     int *bk_precomp_d,
     double *u_out, double *v_out, double *w_out, double *rho_out_arr,
     double *Force, double *rho_modify,
-    double omega_global
+    double omega_global,
+    double *z_d                // z_d[j*NZ6+k]: 物理 z 座標 (IDW 物理距離用)
 ) {
     const int nface = NX6 * NZ6;
     const int index = j * nface + k * NX6 + i;
@@ -252,6 +253,8 @@ __device__ void gilbm_compute_point_gts(
         rho_wall = rhom1;
     }
 
+    // (IDW 物理距離: 直接查 z_d[] 取精確座標, 不需度量張量線性近似)
+
     // ── STEP 1: Interpolation + Streaming (from f_old, no a_local scaling) ──
     double f_streamed_all[NQ];
     double rho_stream = 0.0, mx_stream = 0.0, my_stream = 0.0, mz_stream = 0.0;
@@ -284,11 +287,26 @@ __device__ void gilbm_compute_point_gts(
                 if (up_k > (double)(NZ6 - 4))  up_k = (double)(NZ6 - 4);
                 double t_zeta = up_k - (double)bk;
 #if GILBM_INTERP_IDW
-                // ── True 3D IDW: 343 點歐氏距離加權 ──
-                f_streamed = idw_3d_interpolate(
-                    f_old_ptrs[q], bi, bj, bk,
-                    t_eta, t_xi, t_zeta,
-                    GILBM_IDW_POWER, nface, NX6);
+                // ── True 3D IDW: 物理空間距離加權 (z 從 z_d 直接查表) ──
+                // Departure point z: 雙線性插值 z_d at (bj+t_xi, bk+t_zeta)
+                {
+                    int sj_lo = (int)t_xi;
+                    int sk_lo = (int)t_zeta;
+                    int sj_hi = sj_lo + 1;  if (sj_hi > 6) sj_hi = 6;
+                    int sk_hi = sk_lo + 1;  if (sk_hi > 6) sk_hi = 6;
+                    double fj = t_xi  - (double)sj_lo;
+                    double fk = t_zeta - (double)sk_lo;
+                    double z_dep = (1.0 - fj) * ((1.0 - fk) * z_d[(bj + sj_lo) * NZ6 + bk + sk_lo]
+                                                 +       fk  * z_d[(bj + sj_lo) * NZ6 + bk + sk_hi])
+                                 +        fj  * ((1.0 - fk) * z_d[(bj + sj_hi) * NZ6 + bk + sk_lo]
+                                                 +       fk  * z_d[(bj + sj_hi) * NZ6 + bk + sk_hi]);
+
+                    f_streamed = idw_3d_interpolate(
+                        f_old_ptrs[q], bi, bj, bk,
+                        t_eta, t_xi, t_zeta,
+                        GILBM_IDW_POWER, nface, NX6,
+                        z_dep, z_d);
+                }
 #else
                 // ── Separable 7-point Lagrange (原始方案) ──
                 double Lagrangarray_eta[7], Lagrangarray_xi[7], Lagrangarray_zeta[7];
@@ -1507,7 +1525,8 @@ __global__ void GILBM_GTS_Kernel(
     int *bk_precomp_d,
     double *u_out, double *v_out, double *w_out, double *rho_out,
     double *Force, double *rho_modify,
-    double omega_global
+    double omega_global,
+    double *z_d               // z_d[j*NZ6+k]: 物理 z 座標 (IDW 物理距離用)
 ) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -1530,7 +1549,8 @@ __global__ void GILBM_GTS_Kernel(
         delta_zeta_d, bk_precomp_d,
         u_out, v_out, w_out, rho_out,
         Force, rho_modify,
-        omega_global);
+        omega_global,
+        z_d);
 }
 
 

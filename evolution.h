@@ -184,7 +184,8 @@ void Launch_CollisionStreaming(double *f_old[NQ], double *f_new[NQ]) {
         delta_zeta_d, bk_precomp_d,
         u, v, w, rho_d,
         Force_d, rho_modify_d,
-        omega_global
+        omega_global,
+        z_d
     );
     CHECK_CUDA( cudaStreamSynchronize(stream0) );
 

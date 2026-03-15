@@ -121,7 +121,7 @@ __device__ double ChapmanEnskogBC(
     //   → 壁面非平衡修正放大 4.7 倍 → 壁面附近不穩定 → Ma 爆衝
     //
     // 參照: Latt & Chopard 2006, Malaspinas 2007 (標準 CE-BC 文獻均使用 (τ-0.5))
-    C_alpha *= -(omega_local - 0.5) * localtimestep;
+    C_alpha *= -(omega_local) * localtimestep;
 
 #if USE_CUMULANT
     // FIX: Use Cumulant equilibrium (includes 4th-order A,B corrections)

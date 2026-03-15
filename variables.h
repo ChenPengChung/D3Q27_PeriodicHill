@@ -77,8 +77,8 @@
 //
 //  ★ USE_MRT 與 USE_CUMULANT 不可同時為 1 ★
 // ================================================================
-#define     USE_MRT             0
-#define     USE_CUMULANT        1
+#define     USE_MRT             1
+#define     USE_CUMULANT        0
 
 // ── Cumulant 子選項 (僅 USE_CUMULANT=1 時生效) ──────────────────
 //   USE_WP_CUMULANT = 0  →  AO: ω₂–ω₁₀ = 1 (Geier 2015), 全抑制, 穩定但耗散
