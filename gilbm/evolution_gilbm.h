@@ -85,8 +85,14 @@ __device__ __forceinline__ void compute_stencil_base(
     if (bi + 6 >= NX6)    bi = NX6 - STENCIL_SIZE;
     if (bj < 0)           bj = 0;
     if (bj + 6 >= NYD6)   bj = NYD6 - STENCIL_SIZE;
-    if (bk < 3)           bk = 3;                    // Buffer=3: 壁面在 k=3
-    if (bk + 6 > NZ6 - 4) bk = NZ6 - 10;             // 確保 bk+6 ≤ NZ6-4 (頂壁)
+    // ── Wall-exclusion fix: 不把壁面 BC 數據納入 Lagrange 插值 stencil ──
+    // 壁面 (k=3, k=NZ6-4) 的 f 值來自 Chapman-Enskog BC，而內部點的 f
+    // 來自碰撞算子。兩者在 τ~O(1) 時不光滑（BC 是一階展開，碰撞是完整非線性）。
+    // 7-point Lagrange 通過不光滑數據會產生 Runge 型振盪 → 反饋放大 → 發散。
+    // 修正：stencil 最小起點 k=4（第一個流體格點），最大終點 k=NZ6-5。
+    // 壁面→內部的信息傳遞由 BC 處理（k=3 的 incoming 方向），不需要插值。
+    if (bk < 4)           bk = 4;                    // 排除底壁 k=3
+    if (bk + 6 > NZ6 - 5) bk = NZ6 - 11;             // 排除頂壁 k=NZ6-4
 }
 
 // ============================================================================
@@ -274,8 +280,8 @@ __device__ void gilbm_compute_point_gts(
                 if (t_xi  < 0.0) t_xi  = 0.0; if (t_xi  > 6.0) t_xi  = 6.0;
                 double delta_zeta = delta_zeta_d[q * NYD6 * NZ6 + idx_jk];
                 double up_k = (double)k - delta_zeta;
-                if (up_k < 3.0)                up_k = 3.0;
-                if (up_k > (double)(NZ6 - 4))  up_k = (double)(NZ6 - 4);
+                if (up_k < 4.0)                up_k = 4.0;    // 排除底壁 (與 bk_min=4 匹配)
+                if (up_k > (double)(NZ6 - 5))  up_k = (double)(NZ6 - 5);  // 排除頂壁
                 double t_zeta = up_k - (double)bk;
                 double Lagrangarray_eta[7], Lagrangarray_xi[7], Lagrangarray_zeta[7];
                 lagrange_7point_coeffs(t_eta,  Lagrangarray_eta);
@@ -448,7 +454,7 @@ __device__ void gilbm_compute_point_gts(
                 2.0 * ey * ez * Pyz
             );
 
-            f_streamed_all[q] = feq_bare + fneq_2nd;
+            f_streamed_all[q] = feq_bare + fneq_2nd; //重新組裝一般態分佈函數 
         }
         // Note: ρ, j, Π are mathematically preserved. No need to recompute moments.
     }
@@ -622,8 +628,8 @@ __device__ void gilbm_compute_point(
                 if (t_xi  < 0.0) t_xi  = 0.0; if (t_xi  > 6.0) t_xi  = 6.0;
                 double delta_zeta = delta_zeta_d[q * NYD6 * NZ6 + idx_jk];
                 double up_k = (double)k - delta_zeta;
-                if (up_k < 3.0)              up_k = 3.0;
-                if (up_k > (double)(NZ6 - 4)) up_k = (double)(NZ6 - 4);
+                if (up_k < 4.0)              up_k = 4.0;    // 排除底壁
+                if (up_k > (double)(NZ6 - 5)) up_k = (double)(NZ6 - 5);  // 排除頂壁
                 double t_zeta = up_k - (double)bk;
                 double Lagrangarray_eta[7], Lagrangarray_xi[7], Lagrangarray_zeta[7];
                 lagrange_7point_coeffs(t_eta,  Lagrangarray_eta);
@@ -1137,8 +1143,8 @@ __device__ void gilbm_step1_point(
                 if (t_xi  < 0.0) t_xi  = 0.0; if (t_xi  > 6.0) t_xi  = 6.0;
                 double delta_zeta = delta_zeta_d[q * NYD6 * NZ6 + idx_jk];
                 double up_k = (double)k - delta_zeta;
-                if (up_k < 3.0)              up_k = 3.0;
-                if (up_k > (double)(NZ6 - 4)) up_k = (double)(NZ6 - 4);
+                if (up_k < 4.0)              up_k = 4.0;    // 排除底壁
+                if (up_k > (double)(NZ6 - 5)) up_k = (double)(NZ6 - 5);  // 排除頂壁
                 double t_zeta = up_k - (double)bk;
                 double Lagrangarray_eta[7], Lagrangarray_xi[7], Lagrangarray_zeta[7];
                 lagrange_7point_coeffs(t_eta,  Lagrangarray_eta);

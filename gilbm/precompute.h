@@ -608,13 +608,13 @@ void PrecomputeGILBM_LagrangeWeights(
                 // Reproduce exact kernel logic: compute_stencil_base + departure clamp
                 double d_zeta = delta_zeta_h[q * sz + idx_jk];
                 double up_k = (double)k - d_zeta;
-                // Departure point clamping (same as kernel L298-299)
-                if (up_k < 3.0)                          up_k = 3.0;
-                if (up_k > (double)(NZ6_local - 4))      up_k = (double)(NZ6_local - 4);
-                // Stencil base clamping (same as compute_stencil_base L67,72-73)
+                // Departure point clamping (wall-exclusion fix)
+                if (up_k < 4.0)                          up_k = 4.0;    // 排除底壁
+                if (up_k > (double)(NZ6_local - 5))      up_k = (double)(NZ6_local - 5);  // 排除頂壁
+                // Stencil base clamping (wall-exclusion fix)
                 int bk = k - 3;
-                if (bk < 3)                    bk = 3;
-                if (bk + 6 > NZ6_local - 4)   bk = NZ6_local - 10;
+                if (bk < 4)                    bk = 4;             // 排除底壁 k=3
+                if (bk + 6 > NZ6_local - 5)   bk = NZ6_local - 11; // 排除頂壁
                 double t_zeta = up_k - (double)bk;
                 double a_zeta[7];
                 lagrange_7point_coeffs_host(t_zeta, a_zeta);
@@ -637,16 +637,17 @@ void PrecomputeGILBM_LagrangeWeights(
 // bk_h[0,1,2] and bk_h[NZ6-3..NZ6-1] are ghost/buffer — kernel guard skips them.
 // Reproduces compute_stencil_base() z-clamping logic:
 //   bk = k - 3
-//   if (bk < 3)           bk = 3            (bottom wall: stencil starts at k=3)
-//   if (bk + 6 > NZ6 - 4) bk = NZ6 - 10    (top wall: stencil ends at k=NZ6-4)
+//   Wall-exclusion fix: 排除壁面 BC 數據，避免 Runge 振盪
+//   if (bk < 4)           bk = 4            (排除底壁 k=3)
+//   if (bk + 6 > NZ6 - 5) bk = NZ6 - 11    (排除頂壁 k=NZ6-4)
 void PrecomputeGILBM_StencilBaseK(
     int *bk_h,          // output: [NZ6] (indexed directly by k)
     int NZ6_local
 ) {
     for (int k = 0; k < NZ6_local; k++) {
         int bk = k - 3;
-        if (bk < 3)                    bk = 3;
-        if (bk + 6 > NZ6_local - 4)   bk = NZ6_local - 10;
+        if (bk < 4)                    bk = 4;             // 排除底壁 k=3
+        if (bk + 6 > NZ6_local - 5)   bk = NZ6_local - 11; // 排除頂壁 k=NZ6-4
         bk_h[k] = bk;
     }
 }

@@ -100,6 +100,11 @@ __device__ double ChapmanEnskogBC(
         (3.0 * ez * ez - 1.0) * dw_dk * dk_dz_val   // ⑥ (3·c_z²−1) · (dw/dk)·(dk/dz)
     );
 
+    // ── 診斷模式: 純平衡態壁面 (關閉非平衡修正) ──
+#if WALL_EQ_ONLY
+    C_alpha = 0.0;  // 強制 f = f_eq at wall (用於隔離 CE 非平衡修正的影響)
+#endif
+
     // Chapman-Enskog non-equilibrium coefficient: -(τ-0.5)·Δt = -3ν
     //
     // [BUG FIX] 原始代碼使用 -τ·Δt (Imamura 2005 Eq.A.9 原始寫法),

@@ -47,7 +47,7 @@
 // 4. 物理參數
 // ================================================================
 #define     Re      700         // Reynolds number (基於 H_HILL 和 Uref)
-#define     Uref    0.037      // 參考速度 (bulk velocity)
+#define     Uref    0.057      // 參考速度 (bulk velocity)
                                 // Re700:0.0583, Re1400/2800:0.0776
                                 // Re5600:0.0464, Re10595:0.0878
                                 // 限制: Uref ≤ cs = 0.1732 (Ma < 1)
@@ -157,6 +157,24 @@
 //   1 = 啟用正則化 (推薦: GILBM 環境)
 //   0 = 不正則化 (僅標準 LBM 用)
 #define     CUM_REGULARIZE      1
+
+// ── Wall-Stencil Exclusion (排除壁面數據參與插值) ──
+//   壁面 (k=3, k=NZ6-4) 的 f 來自 Chapman-Enskog BC (一階 Kn 展開)，
+//   而內部點的 f 來自碰撞算子 (完整非線性)。τ~O(1) 時兩者不光滑。
+//   7-point Lagrange 通過不光滑數據 → Runge 型振盪 → 反饋放大 → 發散。
+//
+//   修正: 插值 stencil 不含壁面格點 (bk_min=4, up_k_min=4)
+//   壁面→內部的粒子傳遞由 BC (k=3 incoming 方向) 處理。
+//   k=4 的 outgoing 方向不再從壁面 BC 數據插值。
+//
+//   此修正已直接寫入 compute_stencil_base() 和 up_k clamping。
+//   如需回退，將 bk_min 改回 3、up_k_min 改回 3.0。
+
+// ── 診斷: 純平衡態壁面 BC (關閉 CE 非平衡修正) ──
+//   設為 1 時，ChapmanEnskogBC 只返回 f_eq (C_alpha=0)，
+//   用於測試壁面非平衡修正是否為不穩定性來源。
+//   正式計算請設為 0。
+#define     WALL_EQ_ONLY        0
 
 // ── Odd-Even Filter (已移除: 方案 C 因降低有效 Re 而放棄) ──
 // 改用方案 A: Matrix-based moment transform 取代 Chimera
