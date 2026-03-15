@@ -239,7 +239,7 @@
                                              // ★ 10% 時 correction=1.9 → 每步翻倍 → 發散!
 
 // Force magnitude cap (防止任何模式下 Force 失控)
-#define     FORCE_CAP_MULT          50.0    // Force 上限 = 50 × F_Poiseuille
+#define     FORCE_CAP_MULT          200.0   // Force 上限 = 200 × F_Poiseuille
 
 // Cold start ramp: 已關閉 (D3Q19 Edit3 無此功能，對齊後停用)
 // 設 RAMP_STEPS=0 即完全跳過 ramp 邏輯
