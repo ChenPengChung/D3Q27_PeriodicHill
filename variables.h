@@ -34,7 +34,7 @@
 #define     GRID_SIZE (NX6 * NYD6 * NZ6) // per-rank 總格點數
 
 // 非均勻網格
-#define     CFL 0.5
+#define     CFL 0.25    // 降低 CFL: 0.5→0.25 修正壁面插值振盪 & ω₁ 遠離 2.0 極限
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
 #define     Uniform_In_Xdir     1   // 1=均勻, 0=非均勻
 #define     Uniform_In_Ydir     1
@@ -47,7 +47,7 @@
 // 4. 物理參數
 // ================================================================
 #define     Re      700         // Reynolds number (基於 H_HILL 和 Uref)
-#define     Uref    0.0683      // 參考速度 (bulk velocity)
+#define     Uref    0.037      // 參考速度 (bulk velocity)
                                 // Re700:0.0583, Re1400/2800:0.0776
                                 // Re5600:0.0464, Re10595:0.0878
                                 // 限制: Uref ≤ cs = 0.1732 (Ma < 1)
@@ -126,14 +126,37 @@
 //   CUM_GUO_SRC:   1 = Guo explicit source (方案 B), 0 = 不加 source
 //   CUM_GALILEAN:  1 = Galilean correction (Eq.3.70-3.75), 0 = 不修正
 //
-//   方案 A (Gehrke thesis):  SIGNFLIP=1, GUO_SRC=0, GALILEAN=1
-//   方案 B (Guo explicit):   SIGNFLIP=0, GUO_SRC=1, GALILEAN=0
+//   方案 A (Gehrke thesis):  SIGNFLIP=1, GUO_SRC=0, GALILEAN=1  (標準 LBM 用)
+//   方案 B (Guo explicit):   SIGNFLIP=0, GUO_SRC=1, GALILEAN=0  (GILBM 推薦)
 //   純 debug (無力):          SIGNFLIP=0, GUO_SRC=0, GALILEAN=0
 //
-//   ★ 請逐一切換測試，找出發散來源 ★
-#define     CUM_SIGNFLIP        1
-#define     CUM_GUO_SRC         0
-#define     CUM_GALILEAN        1
+//   ★ GILBM 必須用方案 B ★
+//   方案 A 的 Strang sign-flip 假設 exact lattice-shift streaming，
+//   但 GILBM 用 7-point Lagrange interpolation streaming，
+//   sign-flip + Galilean correction 的 u² 項會放大插值噪聲 → 指數發散。
+//
+//   方案 B 的 Guo explicit source 不依賴 exact advection，
+//   且 (1-ω/2) prefactor 正確處理碰撞-遷移的時間偏移。
+#define     CUM_SIGNFLIP        0   // GILBM: 關閉 Strang sign-flip
+#define     CUM_GUO_SRC         1   // GILBM: 啟用 Guo explicit source
+#define     CUM_GALILEAN        0   // GILBM: 關閉 Galilean correction (u² 噪聲放大)
+
+// ── Pre-collision Regularization (穩定化 GILBM+Cumulant 的關鍵) ──
+//   Chimera 變換的基底依賴局部速度 u。GILBM 的 7-point Lagrange 插值
+//   在分佈函數中引入高階噪聲（3 階及以上），這些噪聲通過 Chimera 的
+//   速度依賴基底變換被放大 → 正反饋 → 指數發散。
+//
+//   正則化在碰撞前將 f 投影到物理子空間：
+//     f_reg = f^eq(ρ,u) + f^neq_2nd(Π^neq)
+//   保留: 密度(0階)、動量(1階)、應力張量(2階)
+//   移除: 3階及以上的插值噪聲
+//
+//   與 AO 模式完全相容（AO 碰撞也將 3+ 階歸零）
+//   理論依據: Latt & Chopard 2006, Malaspinas 2015
+//
+//   1 = 啟用正則化 (推薦: GILBM 環境)
+//   0 = 不正則化 (僅標準 LBM 用)
+#define     CUM_REGULARIZE      1
 
 // ── Odd-Even Filter (已移除: 方案 C 因降低有效 Re 而放棄) ──
 // 改用方案 A: Matrix-based moment transform 取代 Chimera
@@ -157,7 +180,7 @@
 // ================================================================
 // loop 已移除：模擬以 FTT_STOP 為唯一終止條件
 #define     NDTMIT      50      // 每 N 步輸出 monitor 資料
-#define     NDTFRC      50     // 每 N 步更新外力項
+#define     NDTFRC      20     // 每 N 步更新外力項 (CFL=0.25 下更頻繁檢查)
 #define     NDTBIN      100000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
@@ -194,8 +217,8 @@
 // Cold start ramp: 避免 cold start 時力無限累加導致局部 Ma 爆炸
 // 前 RAMP_STEPS 步，力的上限從 0 線性增加到 RAMP_CAP × F_Poiseuille
 // 之後解除限制，由 controller 自由控制
-#define     FORCE_RAMP_STEPS        5000   // 前 5000 步漸進加力 (≈ FTT 0.045)
-#define     FORCE_RAMP_CAP          30.0   // ramp 結束時上限 = 30× F_Poiseuille
+#define     FORCE_RAMP_STEPS        10000  // 前 10000 步漸進加力 (CFL=0.25 時 ≈ FTT 0.04)
+#define     FORCE_RAMP_CAP          15.0   // ramp 結束時上限 = 15× F_Poiseuille (保守啟動)
 
 // Legacy defines (kept for backward compatibility, unused by new controller)
 #define     FORCE_RE_DEADZONE       0.015   // (deprecated) was fractional dead zone

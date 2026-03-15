@@ -56,9 +56,9 @@
 #define CUM_LAMBDA 1.0e-2
 #endif
 
-// Forward declarations (Option A: Matrix-based moment transform)
-__device__ static void _cum_forward_matrix(double m[27], const double u[3]);
-__device__ static void _cum_backward_matrix(double m[27], const double u[3]);
+// Forward declarations (Chimera transform — restored from Option A revert)
+__device__ static void _cum_forward_chimera(double m[27], const double u[3]);
+__device__ static void _cum_backward_chimera(double m[27], const double u[3]);
 
 #if USE_WP_CUMULANT
 // ================================================================
@@ -273,13 +273,17 @@ __device__ void cumulant_collision_D3Q27(
     double drho = rho - 1.0;
 
     // ==============================================================
-    // STAGE 1: Forward Matrix Transform (z -> y -> x) — Option A
+    // STAGE 1: Forward Chimera Transform (z -> y -> x)
     //          f[27] -> kappa[27] (central moments)
-    //          Phase 1: fixed M_1d (raw moments, no u-dependence)
-    //          Phase 2: binomial shift S(u) on aggregated moments
-    //          Replaces recursive Chimera to suppress GILBM interpolation noise.
+    //          Combined raw moment + binomial shift per triplet.
+    //          [G15] Appendix J / Gehrke Thesis §3.1.3
+    //
+    //          NOTE: Option A (global M/S separation) was tested and proven
+    //          INCORRECT — the in-place array overwrites between directions
+    //          invalidate K constants, producing wrong central moments.
+    //          Reverted to original Chimera (2025-03-15).
     // ==============================================================
-    _cum_forward_matrix(m, u);
+    _cum_forward_chimera(m, u);
 
     // ==============================================================
     // STAGE 2: Central Moments -> Cumulants
@@ -503,15 +507,22 @@ __device__ void cumulant_collision_D3Q27(
     // Velocity derivatives from PRE-relaxation 2nd-order cumulants.
     // Using well-conditioned variables directly: the ±1/3 shifts cancel
     // in both ω₁ and ω₂ terms, so m[I_xxx] can be used as-is.
-    // Verification: well-conditioned trace - drho = (κ_trace-1)-(ρ-1) = κ_trace-ρ
-    //               = standard C_trace - C_000 (walberla convention) ✓
+    //
+    // ★ GILBM WARNING: Galilean correction contains u² terms. When u has
+    //   interpolation noise δu, the correction injects energy ~ u·δu into
+    //   2nd-order moments → positive feedback → exponential instability.
+    //   Controlled by CUM_GALILEAN in variables.h (0=disable for GILBM stability).
     //
     // Eq.3.73-3.75 (walberla CellwiseSweep.impl.h lines 270-272):
+    // Velocity derivatives needed by Galilean correction AND/OR WP 4th-order
+#if CUM_GALILEAN || USE_WP_CUMULANT
     double Dxux = -0.5*omega*inv_rho*(2.0*m[I_caa] - m[I_aca] - m[I_aac])
                  - 0.5*omega2*inv_rho*(mxxPyyPzz - drho);
     double Dyuy = Dxux + 1.5*omega*inv_rho*(m[I_caa] - m[I_aca]);
     double Dzuz = Dxux + 1.5*omega*inv_rho*(m[I_caa] - m[I_aac]);
+#endif
 
+#if CUM_GALILEAN
     // Eq.3.70-3.72: Galilean correction terms
     // (walberla CellwiseSweep.impl.h lines 274-276)
     double GalCorr_dev1  = -3.0*rho*(1.0-0.5*omega )*(Dxux*u[0]*u[0] - Dyuy*u[1]*u[1]);
@@ -522,6 +533,12 @@ __device__ void cumulant_collision_D3Q27(
     mxxMyy    = (1.0-omega)*mxxMyy + GalCorr_dev1;      // deviatoric 1 + Gal corr
     mxxMzz    = (1.0-omega)*mxxMzz + GalCorr_dev2;      // deviatoric 2 + Gal corr
     mxxPyyPzz = omega2*m[I_aaa] + (1.0-omega2)*mxxPyyPzz + GalCorr_trace;  // trace + Gal corr
+#else
+    // No Galilean correction: standard relaxation (safe for GILBM)
+    mxxMyy    = (1.0-omega)*mxxMyy;
+    mxxMzz    = (1.0-omega)*mxxMzz;
+    mxxPyyPzz = omega2*m[I_aaa] + (1.0-omega2)*mxxPyyPzz;
+#endif
 
     // Off-diagonal 2nd order with w1
 #if USE_WP_CUMULANT
@@ -749,20 +766,24 @@ __device__ void cumulant_collision_D3Q27(
     //   1) Forward Chimera uses ũ = u + F·Δt/(2ρ)   → done at Stage 0c
     //   2) After collision, flip κ*_100, κ*_010, κ*_001 before backward Chimera
     //
-    // 之前失敗原因: sign flip + Guo source 同時啟用 → 重複計算力 → 發散
-    // 現在移除 Guo source (Stage 6) 後，sign flip 單獨使用即正確實現 Strang splitting
+    // ★ GILBM WARNING: Sign flip assumes exact lattice-shift streaming.
+    //   GILBM interpolation streaming breaks this assumption. Use Guo explicit
+    //   source (CUM_GUO_SRC=1, CUM_SIGNFLIP=0) for GILBM compatibility.
     //
+    // Controlled by CUM_SIGNFLIP in variables.h
+#if CUM_SIGNFLIP
     m[I_baa] = -m[I_baa];  // κ*_100 (x-momentum)
     m[I_aba] = -m[I_aba];  // κ*_010 (y-momentum)
     m[I_aab] = -m[I_aab];  // κ*_001 (z-momentum)
+#endif
 
     // ==============================================================
-    // STAGE 5: Backward Matrix Transform (x -> y -> z) — Option A
-    //          Phase 1: inverse shift S⁻¹(u) on central moments
-    //          Phase 2: inverse M⁻¹_1d to recover distributions
-    //          Replaces recursive Chimera to suppress GILBM interpolation noise.
+    // STAGE 5: Backward Chimera Transform (x -> y -> z)
+    //          kappa[27] -> f[27] (distributions)
+    //          Combined inverse shift + inverse raw moment per triplet.
+    //          [G15] Appendix J / Gehrke Thesis §3.1.3
     // ==============================================================
-    _cum_backward_matrix(m, u);
+    _cum_backward_chimera(m, u);
 
     // Restore from well-conditioned: f* = f* + w
     for (int i = 0; i < 27; i++) {
@@ -784,7 +805,18 @@ __device__ void cumulant_collision_D3Q27(
     // Previously this block added explicit Guo source: f* += (1-ω/2)·S·Δt
     // which DOUBLE-COUNTED the force when combined with sign flip → divergence.
     // ==============================================================
-#if 0  // Guo source DISABLED — using sign-flip approach (Thesis §3.2.1)
+#if CUM_GUO_SRC
+    // ── Guo explicit source (compatible with GILBM interpolation streaming) ──
+    // Unlike sign-flip (Strang splitting), Guo source doesn't assume exact advection.
+    // The (1-ω/2) prefactor handles the temporal offset between collision and streaming.
+    //
+    // For GILBM: CUM_SIGNFLIP=0, CUM_GUO_SRC=1 is recommended.
+    // The half-force velocity ũ is still used in Stage 0c for the equilibrium,
+    // but the force is added EXPLICITLY here rather than implicitly via sign flip.
+    //
+    // Note: u[] here is the half-force velocity from Stage 0c. For Guo source,
+    // ideally we should use the bare momentum velocity u_bare = j/ρ. However,
+    // the difference is O(F²·dt²) which is negligible.
     {
         double ax = Fx * inv_rho;
         double ay = Fy * inv_rho;
@@ -810,68 +842,29 @@ __device__ void cumulant_collision_D3Q27(
 
 
 // ================================================================
-// Internal: Forward Matrix Transform (Stage 1) — Option A
-// Two-phase approach replacing the original Chimera recursive sweep.
+// Internal: Forward Chimera Transform (Stage 1)
+// Combined raw moment + binomial shift per triplet, swept z→y→x.
 //
-// MOTIVATION (why replace Chimera):
-//   The Chimera forward transform combines raw moment computation
-//   (fixed linear operation) and binomial shift (u-dependent) into
-//   a SINGLE recursive sweep. Each triplet's output depends on the
-//   just-computed m[a] (= raw m0), so velocity-dependent terms
-//   (m[b], m[c]) multiply noise-carrying individual f values by u.
-//   In GILBM, where 7-point Lagrange interpolation introduces
-//   oscillatory noise into f, this recursive coupling amplifies
-//   errors through velocity-dependent operations.
+// For each triplet {a, b, c} (= {minus, zero, plus} in sweep direction):
+//   sum  = f_a + f_c
+//   diff = f_c - f_a
+//   m[a] = f_a + f_b + f_c               (raw 0th moment = partial density)
+//   m[b] = diff - (m[a] + K) · u         (1st central moment)
+//   m[c] = sum - 2·diff·u + (m[a]+K)·u²  (2nd central moment)
 //
-// SOLUTION (Option A):
-//   Phase 1: Raw moment transform using fixed matrix M_1d.
-//     M_1d = [[1,1,1],[-1,0,1],[1,0,1]]  (det=2, well-conditioned)
-//     m0 = f_minus + f_zero + f_plus    (sum: averages noise)
-//     m1 = f_plus - f_minus             (difference: cancels symmetric noise)
-//     m2 = f_minus + f_plus             (partial sum)
-//     NO velocity dependence → noise gets averaged out by linear combination.
+// K[p] = well-conditioning constant calibrated for interleaved Chimera.
+// After all 27 passes (9 z + 9 y + 9 x), m[27] holds central moments.
 //
-//   Phase 2: Binomial shift S(u) acting on aggregated raw moments.
-//     S(u) = [[1,0,0],[-u,1,0],[u²,-2u,1]]
-//     κ0 = m0                           (unchanged)
-//     κ1 = m1 - (m0+K)·u               (central moment)
-//     κ2 = m2 - 2·m1·u + (m0+K)·u²     (central moment)
-//     K = well-conditioning constant (same as Chimera).
-//     u-dependent operations act on AGGREGATED moments, not individual f values.
+// Reference: [G15] Appendix J, Gehrke Thesis §3.1.3 Eq.3.23-3.29
 //
-// MATHEMATICAL EQUIVALENCE:
-//   Chimera = S(u) · M_1d applied recursively in one pass.
-//   Option A = M_1d (all triplets) THEN S(u) (all triplets).
-//   Since Phase 1 doesn't use u, the sweep order within Phase 1 is
-//   independent of Phase 2. The tensor product structure M = Mz⊗My⊗Mx
-//   guarantees that the separated two-phase result is identical to the
-//   combined Chimera result (both yield the same central moments).
-//
-// Sweep order: z(dir=2) -> y(dir=1) -> x(dir=0) in each phase.
+// NOTE: Option A (global M/S separation) was tested 2025-03-15 and proven
+// INCORRECT: global separation produces different central moments (O(1e-2))
+// because in-place array overwrites between directions invalidate K constants.
+// See testing/test_optionA_roundtrip.cpp for proof.
 // ================================================================
-__device__ static void _cum_forward_matrix(
+__device__ static void _cum_forward_chimera(
     double m[27], const double u[3])
 {
-    // ── Phase 1: Raw moment transform (fixed M_1d, NO u-dependence) ──
-    // M_1d · [f_minus, f_zero, f_plus]^T = [m0, m1, m2]^T
-    // where m0 = fa+fb+fc,  m1 = fc-fa,  m2 = fa+fc
-    for (int dir = 2; dir >= 0; dir--) {
-        int base = (2 - dir) * 9;
-        for (int j = 0; j < 9; j++) {
-            int p = base + j;
-            int a = CUM_IDX[p][0];  // f_minus (e_dir = -1)
-            int b = CUM_IDX[p][1];  // f_zero  (e_dir =  0)
-            int c = CUM_IDX[p][2];  // f_plus  (e_dir = +1)
-            double fa = m[a], fb = m[b], fc = m[c];
-            m[a] = fa + fb + fc;    // raw m0 (sum)
-            m[b] = fc - fa;         // raw m1 (antisymmetric)
-            m[c] = fa + fc;         // raw m2 (symmetric partial sum)
-        }
-    }
-
-    // ── Phase 2: Binomial shift S(u) (acts on aggregated raw moments) ──
-    // [κ0, κ1, κ2]^T = S(u) · [m0, m1, m2]^T
-    // κ0 = m0,  κ1 = m1 - (m0+K)·u,  κ2 = m2 - 2·m1·u + (m0+K)·u²
     for (int dir = 2; dir >= 0; dir--) {
         int base = (2 - dir) * 9;
         for (int j = 0; j < 9; j++) {
@@ -880,48 +873,31 @@ __device__ static void _cum_forward_matrix(
             int b = CUM_IDX[p][1];
             int c = CUM_IDX[p][2];
             double k = CUM_K[p];
-            double m0 = m[a], m1 = m[b], m2 = m[c];
-            // m[a] = m0 (unchanged)
-            m[b] = m1 - (m0 + k) * u[dir];
-            m[c] = m2 - 2.0 * m1 * u[dir]
-                   + (m0 + k) * u[dir] * u[dir];
+            double sum  = m[a] + m[c];
+            double diff = m[c] - m[a];
+            m[a] = m[a] + m[b] + m[c];                              // raw m0
+            m[b] = diff - (m[a] + k) * u[dir];                      // κ1
+            m[c] = sum - 2.0 * diff * u[dir]
+                   + (m[a] + k) * u[dir] * u[dir];                  // κ2
         }
     }
 }
 
 // ================================================================
-// Internal: Backward Matrix Transform (Stage 5) — Option A
-// Two-phase inverse of _cum_forward_matrix.
+// Internal: Backward Chimera Transform (Stage 5)
+// Combined inverse shift + inverse raw moment per triplet, swept x→y→z.
 //
-// Phase 1: Inverse binomial shift S⁻¹(u)
-//   S⁻¹(u) = [[1,0,0],[u,1,0],[u²,2u,1]]
-//   m0 = κ0,  m1 = κ1 + (κ0+K)·u,  m2 = κ2 + 2·κ1·u + (κ0+K)·u²
-//   Sweep order: x(dir=0) -> y(dir=1) -> z(dir=2)
+// For each triplet {a, b, c} in reverse order:
+//   fa = ((κ2 - κ1)/2 + κ1·u + (κ0+K)·(u²-u)/2)
+//   fb = κ0 - κ2 - 2·κ1·u - (κ0+K)·u²
+//   fc = ((κ2 + κ1)/2 + κ1·u + (κ0+K)·(u²+u)/2)
 //
-// Phase 2: Inverse raw moment transform M⁻¹_1d
-//   M⁻¹_1d = (1/2)·[[0,-1,1],[2,0,-2],[0,1,1]]
-//   f_minus = (-m1 + m2) / 2
-//   f_zero  = m0 - m2
-//   f_plus  = (m1 + m2) / 2
-//   Sweep order: x(dir=0) -> y(dir=1) -> z(dir=2)
-//
-// VERIFICATION: backward(forward(f)) = f
-//   Forward:  M_1d then S(u)
-//   Backward: S⁻¹(u) then M⁻¹_1d
-//   Compose:  M⁻¹_1d · S⁻¹(u) · S(u) · M_1d = M⁻¹_1d · I · M_1d = I  ✓
-//
-// This is mathematically identical to the original backward Chimera.
-// Proof: The Chimera backward formula combines S⁻¹ and M⁻¹ in one pass.
-//   Chimera ma = (-m1+m2)/2 where m1,m2 are after inverse shift
-//   = (-(κ1+(κ0+K)u) + (κ2+2κ1u+(κ0+K)u²)) / 2
-//   = ((κ2-κ1) + (2κ1-κ0-K)u + (κ0+K)u²) / 2
-//   Expanding the original Chimera formula gives the same expression.  ✓
+// This is S⁻¹(u)·M⁻¹_1d combined in a single pass.
+// Reference: [G15] Appendix J, Gehrke Thesis §3.1.3
 // ================================================================
-__device__ static void _cum_backward_matrix(
+__device__ static void _cum_backward_chimera(
     double m[27], const double u[3])
 {
-    // ── Phase 1: Inverse binomial shift S⁻¹(u) ──
-    // m0 = κ0,  m1 = κ1 + (κ0+K)·u,  m2 = κ2 + 2·κ1·u + (κ0+K)·u²
     for (int dir = 0; dir < 3; dir++) {
         int base = (2 - dir) * 9;
         for (int j = 0; j < 9; j++) {
@@ -930,29 +906,15 @@ __device__ static void _cum_backward_matrix(
             int b = CUM_IDX[p][1];
             int c = CUM_IDX[p][2];
             double k = CUM_K[p];
-            double k0 = m[a], k1 = m[b], k2 = m[c];
-            // m[a] = k0 (unchanged)
-            m[b] = k1 + (k0 + k) * u[dir];
-            m[c] = k2 + 2.0 * k1 * u[dir]
-                   + (k0 + k) * u[dir] * u[dir];
-        }
-    }
-
-    // ── Phase 2: Inverse raw moment transform M⁻¹_1d ──
-    // f_minus = (-m1 + m2) / 2
-    // f_zero  = m0 - m2
-    // f_plus  = (m1 + m2) / 2
-    for (int dir = 0; dir < 3; dir++) {
-        int base = (2 - dir) * 9;
-        for (int j = 0; j < 9; j++) {
-            int p = base + j;
-            int a = CUM_IDX[p][0];
-            int b = CUM_IDX[p][1];
-            int c = CUM_IDX[p][2];
-            double m0 = m[a], m1 = m[b], m2 = m[c];
-            m[a] = (-m1 + m2) * 0.5;   // f_minus
-            m[b] = m0 - m2;             // f_zero
-            m[c] = (m1 + m2) * 0.5;    // f_plus
+            double ma = ((m[c] - m[b]) * 0.5 + m[b] * u[dir]
+                        + (m[a] + k) * (u[dir]*u[dir] - u[dir]) * 0.5);
+            double mb = (m[a] - m[c]) - 2.0 * m[b] * u[dir]
+                        - (m[a] + k) * u[dir] * u[dir];
+            double mc = ((m[c] + m[b]) * 0.5 + m[b] * u[dir]
+                        + (m[a] + k) * (u[dir]*u[dir] + u[dir]) * 0.5);
+            m[a] = ma;
+            m[b] = mb;
+            m[c] = mc;
         }
     }
 }

@@ -364,7 +364,7 @@ void Launch_ModifyForcingTerm()
     double Re_now = Ub_avg / ((double)Uref / (double)Re);
 
     const char *status_tag = "";
-    if (Ma_max > 0.35)       status_tag = " [WARNING: Ma_max>0.35, reduce Uref]";
+    if (Ma_max > 0.30)       status_tag = " [WARNING: Ma_max>0.30, reduce Uref]";
     else if (U_star > 1.2)   status_tag = " [OVERSHOOT!]";
     else if (U_star > 1.05)  status_tag = " [OVERSHOOT]";
 
@@ -485,18 +485,21 @@ void Launch_ModifyForcingTerm()
         double beta = (double)FORCE_P_ALPHA / (double)Re;
         if (beta < 0.001) beta = 0.001;
         double error = (double)Uref - Ub_avg;
-        Force_h[0] += beta * error * (double)Uref / (double)LY;
+        Force_h[0] += beta * error * (double)Uref / (double)LY * dt_global;
+        // ↑ 乘以 dt_global：補償 GILBM 控制頻率 = 1/dt_global 倍於標準 LBM
+        // 離散積分控制器：ΔF = K_I × Ts × e(n)，Ts = NDTFRC × dt_global
+        // 不乘 dt_global → 等效增益放大 ~1/dt_global 倍 → 振盪發散
         ctrl_mode = "P-ADDITIVE";
     }
 
     // Force non-negative clamp
     if (Force_h[0] < 0.0) Force_h[0] = 0.0;
 
-    // Anti-windup cap: 200× Poiseuille (hill drag ≈ 5-50× Poiseuille)
-    double Force_cap = F_Poiseuille * 200.0;
+    // Anti-windup cap: 50× Poiseuille (hill drag ≈ 5-15× Poiseuille at Re700)
+    double Force_cap = F_Poiseuille * 50.0;
     if (Force_h[0] > Force_cap) {
         if (myid == 0)
-            printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (200x Poiseuille)\n",
+            printf("[ANTI-WINDUP] Force capped: %.5E -> %.5E (50x Poiseuille)\n",
                    Force_h[0], Force_cap);
         Force_h[0] = Force_cap;
     }
@@ -516,14 +519,15 @@ void Launch_ModifyForcingTerm()
     }
 
     // Ma safety check (local Ma_max — LBM stability depends on local max, not bulk average)
-    if (Ma_max > 0.35) {
-        Force_h[0] *= 0.05;
+    // CFL=0.25 時 ω₁ ≈ 1.24，Ma 容忍度較高，但仍需防止局部爆衝
+    if (Ma_max > 0.30) {
+        Force_h[0] *= 0.02;
         if (myid == 0)
-            printf("[CRITICAL] Ma_max=%.4f > 0.35, Force reduced to 5%%: %.5E\n", Ma_max, Force_h[0]);
-    } else if (Ma_max > 0.3) {
-        Force_h[0] *= 0.5;
+            printf("[CRITICAL] Ma_max=%.4f > 0.30, Force reduced to 2%%: %.5E\n", Ma_max, Force_h[0]);
+    } else if (Ma_max > 0.25) {
+        Force_h[0] *= 0.3;
         if (myid == 0)
-            printf("[WARNING] Ma_max=%.4f > 0.3, Force halved to %.5E\n", Ma_max, Force_h[0]);
+            printf("[WARNING] Ma_max=%.4f > 0.25, Force reduced to 30%%: %.5E\n", Ma_max, Force_h[0]);
     }
 
     // Broadcast updated Force to all ranks
@@ -534,7 +538,7 @@ void Launch_ModifyForcingTerm()
     double Re_now = Ub_avg / ((double)Uref / (double)Re);
 
     const char *status_tag = "";
-    if (Ma_max > 0.35)       status_tag = " [WARNING: Ma_max>0.35, reduce Uref]";
+    if (Ma_max > 0.30)       status_tag = " [WARNING: Ma_max>0.30, reduce Uref]";
     else if (U_star > 1.2)   status_tag = " [OVERSHOOT!]";
     else if (U_star > 1.05)  status_tag = " [OVERSHOOT]";
 

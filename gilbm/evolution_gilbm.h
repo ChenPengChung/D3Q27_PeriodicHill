@@ -327,10 +327,39 @@ __device__ void gilbm_compute_point_gts(
         }
 
         f_streamed_all[q] = f_streamed;
-        rho_stream += f_streamed;
-        mx_stream  += GILBM_e[q][0] * f_streamed;
-        my_stream  += GILBM_e[q][1] * f_streamed;
-        mz_stream  += GILBM_e[q][2] * f_streamed;
+    }
+
+    // ── STEP 1.25: Positivity enforcement (fix Lagrange interpolation oscillation) ──
+    // 7-point Lagrange near stencil edges can produce negative f values.
+    // Strategy: clamp f<0 to 0, redistribute deficit to f[0] (rest) to conserve mass.
+    {
+        double deficit = 0.0;
+        for (int q = 0; q < NQ; q++) {
+            if (f_streamed_all[q] < 0.0) {
+                deficit += f_streamed_all[q];  // negative
+                f_streamed_all[q] = 0.0;
+            }
+        }
+        // Redistribute deficit to rest direction (largest weight, most robust)
+        f_streamed_all[0] += deficit;
+        // Safety: if rest also went negative, spread to equilibrium proportions
+        if (f_streamed_all[0] < 0.0) {
+            double rho_temp = 0.0;
+            for (int q = 0; q < NQ; q++) rho_temp += f_streamed_all[q];
+            if (rho_temp > 0.0) {
+                for (int q = 0; q < NQ; q++)
+                    f_streamed_all[q] = GILBM_W[q] * rho_temp;
+            }
+        }
+    }
+
+    // Recompute moments from cleaned distributions
+    rho_stream = 0.0; mx_stream = 0.0; my_stream = 0.0; mz_stream = 0.0;
+    for (int q = 0; q < NQ; q++) {
+        rho_stream += f_streamed_all[q];
+        mx_stream  += GILBM_e[q][0] * f_streamed_all[q];
+        my_stream  += GILBM_e[q][1] * f_streamed_all[q];
+        mz_stream  += GILBM_e[q][2] * f_streamed_all[q];
     }
 
     // ── STEP 1.5: Macroscopic + feq ──
@@ -354,6 +383,76 @@ __device__ void gilbm_compute_point_gts(
     u_out[index] = u_A;
     v_out[index] = v_A;
     w_out[index] = w_A;
+
+    // ── STEP 1.75: Pre-collision Regularization (Cumulant + GILBM only) ──
+    // Remove interpolation noise from 3rd+ order moments before Chimera transform.
+    //
+    // WHY: Chimera transform uses velocity-dependent basis (unlike fixed MRT matrix).
+    //   GILBM interpolation injects noise at all moment orders. When this noise enters
+    //   the velocity-dependent Chimera, it creates O(ρ·u·δu) errors that feed back
+    //   through the streaming→interpolation→Chimera loop → exponential instability.
+    //   MRT does NOT have this problem because M is velocity-independent.
+    //
+    // WHAT: Reconstruct f as feq(ρ,u) + f^neq_2nd(Π), preserving ρ, j, Π exactly.
+    //   Only 3rd+ order content is replaced by equilibrium values (= 0 for 3rd order).
+    //   This is consistent with AO mode which damps all 3rd+ orders to zero anyway.
+    //
+    // REF: Latt & Chopard (2006), Malaspinas (2015), regularized LBM
+    // 註解: 重新建立一般態分佈函數 
+#if USE_CUMULANT && CUM_REGULARIZE
+    {
+        // Bare velocity (without half-force, matches streaming momentum)
+        double ub_x = mx_stream / rho_A;
+        double ub_y = my_stream / rho_A;
+        double ub_z = mz_stream / rho_A;
+
+        // Compute non-equilibrium stress tensor Π^neq_αβ
+        // Π_αβ = Σ f·eα·eβ - ρ·u_α·u_β - (ρ/3)·δ_αβ
+        double Pxx = 0.0, Pyy = 0.0, Pzz = 0.0;
+        double Pxy = 0.0, Pxz = 0.0, Pyz = 0.0;
+        for (int q = 0; q < NQ; q++) {
+            double ex = GILBM_e[q][0], ey = GILBM_e[q][1], ez = GILBM_e[q][2];
+            Pxx += f_streamed_all[q] * ex * ex;
+            Pyy += f_streamed_all[q] * ey * ey;
+            Pzz += f_streamed_all[q] * ez * ez;
+            Pxy += f_streamed_all[q] * ex * ey;
+            Pxz += f_streamed_all[q] * ex * ez;
+            Pyz += f_streamed_all[q] * ey * ez;
+        }
+        Pxx -= rho_A * ub_x * ub_x + rho_A / 3.0;
+        Pyy -= rho_A * ub_y * ub_y + rho_A / 3.0;
+        Pzz -= rho_A * ub_z * ub_z + rho_A / 3.0;
+        Pxy -= rho_A * ub_x * ub_y;
+        Pxz -= rho_A * ub_x * ub_z;
+        Pyz -= rho_A * ub_y * ub_z;
+
+        // Reconstruct regularized distributions:
+        //   f_reg = feq(ρ, u_bare) + w_i·(9/2)·Σ_αβ Q_iαβ·Π^neq_αβ
+        //   Q_iαβ = e_iα·e_iβ - (1/3)·δ_αβ
+        // Preserves: ρ (exact), j (exact), Π (exact). Only modifies 3rd+ order.
+        for (int q = 0; q < NQ; q++) {
+            double ex = GILBM_e[q][0], ey = GILBM_e[q][1], ez = GILBM_e[q][2];
+            double eu = ex * ub_x + ey * ub_y + ez * ub_z;
+            double usq = ub_x * ub_x + ub_y * ub_y + ub_z * ub_z;
+
+            // Standard D3Q27 equilibrium at bare velocity
+            double feq_bare = GILBM_W[q] * rho_A * (1.0 + 3.0*eu + 4.5*eu*eu - 1.5*usq);
+
+            // Non-equilibrium from 2nd-order stress only
+            double fneq_2nd = GILBM_W[q] * 4.5 * (
+                (ex*ex - 1.0/3.0) * Pxx +
+                (ey*ey - 1.0/3.0) * Pyy +
+                (ez*ez - 1.0/3.0) * Pzz +
+                2.0 * ex * ey * Pxy +
+                2.0 * ex * ez * Pxz +
+                2.0 * ey * ez * Pyz
+            );
+
+            f_streamed_all[q] = feq_bare + fneq_2nd;
+        }
+        // Note: ρ, j, Π are mathematically preserved. No need to recompute moments.
+    }
+#endif
 
     // ── STEP 2: Point-wise collision at A (no 343-loop, no Re-estimation) ──
     // 三種碰撞算子: Cumulant (AO/WP) > MRT > BGK
