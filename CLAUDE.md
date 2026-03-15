@@ -72,7 +72,7 @@ double *Force_h, *Force_d;        // 驅動外力
 | `statistics.h` | 251 | 時間平均統計 |
 | `model.h` | 75 | D3Q19 速度模型定義 |
 | `gilbm/evolution_gilbm.h` | 572 | **完整 4-step kernel** (已完成) |
-| `gilbm/interpolation_gilbm.h` | 48 | Intrpl7, lagrange_7point_coeffs, compute_feq_alpha |
+| `gilbm/interpolation_gilbm.h` | 273 | Intrpl7, lagrange/IDW coeffs, idw_3d_interpolate (物理距離), compute_feq_alpha |
 | `gilbm/boundary_conditions.h` | 99 | NeedsBoundaryCondition, ChapmanEnskogBC |
 | `gilbm/precompute.h` | 513 | δη/δξ/δζ 預計算 + ComputeGlobalTimeStep |
 | `gilbm/metric_terms.h` | 419 | dk_dz, dk_dy 度量項計算 |
@@ -235,6 +235,25 @@ for q = 0..18:
 // 計算 1D 7 點 Lagrange 插值係數，節點在整數位置 0..6，求值位置 t
 __device__ void lagrange_7point_coeffs(double t, double a[7]);
 
+// 1D IDW 7 點插值係數 (節點 0..6, 冪次 p)
+__device__ void idw_7point_coeffs(double t, double p, double a[7]);
+
+// 真 3D IDW 插值 (7×7×7=343 stencil, 物理空間距離)
+// ds² = dx²·Δη² + dy²·Δξ² + (z_node - z_dep)²
+// z_node 從 z_d[] 直接讀取 (精確), z_dep 由 caller 雙線性插值
+// 優於度量張量: 消除 dk_dz 線性外推誤差 (壁面 4.5% → 0%)
+__device__ double idw_3d_interpolate(
+    double *f_ptr, int bi, int bj, int bk,
+    double t_eta, double t_xi, double t_zeta,
+    double p, int nface, int NX6_val,
+    double z_dep, double *z_d);
+
+// f_pc SoA 版本 (計算空間距離, 用於 LTS 架構)
+__device__ double idw_3d_interpolate_fpc(
+    double *f_pc, int q, int index,
+    double t_eta, double t_xi, double t_zeta,
+    double p, int STENCIL_VOL_val, int GRID_SIZE_val);
+
 // D3Q19 平衡分佈函數 (物理直角坐標，不需 Jacobian)
 // feq = w_α · ρ · (1 + 3·(e·u) + 4.5·(e·u)² − 1.5·|u|²)
 __device__ double compute_feq_alpha(int alpha, double rho, double u, double v, double w);
@@ -388,6 +407,39 @@ for step = 0..loop:
 - Force driving 已啟用，88b9ba7 穩定運行至 FTT 24.8+ (step 728001)
 - CE BC 張量係數已確認為 3（Imamura Eq. A.9 推導，係數 9 會導致發散）
 - **待查**：係數 3 下仍有發散案例，需排除 VTK restart / force controller / 其他因素
+
+### IDW 物理空間距離插值（2026-03-16 新增）
+
+#### 問題背景
+計算空間 IDW 在壁面附近嚴重失真：dx/dz_min ≈ 17-35×，x 方向遠距鄰點被高估權重，
+稀釋壁面法向資訊，等效 Re_eff 從 700 降至 ~24。
+
+#### 設計演進
+1. **度量張量方案** (已棄用): 用 g_αβ = JᵀJ 計算距離，但 dk_dz 只在中心點取值，
+   tanh stretching 下 stencil 邊緣 z 位置誤差 4.5%，IDW 權重誤差 21.5%
+2. **直接 z_d 查表方案** (最終採用): stencil 節點 z 座標從 z_d[] 精確讀取，
+   只有 departure point z_dep 需雙線性插值 (CFL<1, 偏移<1 格, 誤差極小)
+
+#### 物理距離公式
+```
+ds² = dx²·Δη² + dy²·Δξ² + (z_node - z_dep)²
+```
+- dx²·Δη²: x 均勻 → 精確
+- dy²·Δξ²: y 均勻 → 精確
+- z_node = z_d[(bj+sj)*NZ6 + (bk+sk)]: 直接讀取 → 精確
+- z_dep: 雙線性插值 z_d 4 鄰點 → CFL<1 下極小誤差
+
+#### 修改檔案
+- `interpolation_gilbm.h`: 新增 idw_3d_interpolate() (參數: z_dep, z_d)
+- `evolution_gilbm.h`: gilbm_compute_point_gts() 加 z_d 參數, 呼叫處計算 bilinear z_dep
+- `evolution.h`: kernel launch 傳遞 z_d
+- `test_metric_idw.py`: 13 項單元測試 (全部通過)
+
+#### 編譯開關 (variables.h)
+```c
+#define GILBM_INTERP_IDW   1    // 0=Lagrange, 1=IDW
+#define GILBM_IDW_POWER    2.0  // IDW 冪次
+```
 
 ### MRT-CM (Central Moment) 碰撞算子（2026-03-14 新增）
 

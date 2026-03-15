@@ -139,14 +139,15 @@ def mark_ftt_start(ax, ftt_val=20.0):
 ftt_stats_start = 20.0  # accumulation start
 
 n_rows = 2 if has_rs else 1
-fig, all_axes = plt.subplots(n_rows, 1, figsize=(10, 4 * n_rows), sharex=True)
+fig, all_axes = plt.subplots(n_rows, 1, figsize=(11, 4 * n_rows), sharex=True)
 if n_rows == 1:
     all_axes = [all_axes]
 
-# --- Top panel: Ub/Uref + Ma_max ---
+# --- Top panel: Ub/Uref + Ma_max + Force* ---
 ax1 = all_axes[0]
 color_ub = '#1F77B4'
 color_ma = '#D62728'
+color_fc = '#2CA02C'  # green for Force*
 
 ln1 = ax1.plot(FTT, Ub_Uref, color=color_ub, lw=1.0, label=r'$U_b / U_{ref}$')
 ax1.axhline(1.0, color=color_ub, ls='--', lw=0.8, alpha=0.5)
@@ -160,10 +161,20 @@ ax1b.axhline(0.3, color='gray', ls='--', lw=0.8, alpha=0.5)
 ax1b.set_ylabel(r"$Ma_{\max}$", color=color_ma)
 ax1b.tick_params(axis='y', labelcolor=color_ma)
 
+# Third y-axis: Force* = Force / (rho * Uref^2), rho ≈ 1
+Uref_val = 0.17320508075
+Force_star = Force / (Uref_val ** 2)
+ax1c = ax1.twinx()
+ax1c.spines['right'].set_position(('axes', 1.12))  # offset outward
+ln3f = ax1c.plot(FTT, Force_star, color=color_fc, lw=0.9, alpha=0.85,
+                 label=r'$F^{\!*} \equiv F\,/\,(\rho\, U_{ref}^{2})$')
+ax1c.set_ylabel(r"$F^{\!*}$", color=color_fc, fontsize=12)
+ax1c.tick_params(axis='y', labelcolor=color_fc)
+
 mark_ftt_start(ax1, ftt_stats_start)
-lns = ln1 + ln2
+lns = ln1 + ln2 + ln3f
 ax1.legend(lns, [l.get_label() for l in lns], loc='upper right', fontsize=9)
-ax1.set_title("Bulk Velocity & Mach Number", fontsize=12)
+ax1.set_title("Bulk Velocity, Mach Number & Driving Force", fontsize=12)
 
 # --- Bottom panel: RS + TKE (only if data exists) ---
 if has_rs:
