@@ -40,11 +40,14 @@ FORCE_KD = 0.5
 # Gehrke
 FORCE_GEHRKE_GAIN = 0.1
 FORCE_GEHRKE_DEADZONE = 1.5   # %
-FORCE_GEHRKE_FLOOR = 0.0      # variables.h: 0.0 (no floor)
-FORCE_SWITCH_THRESHOLD = 10.0  # variables.h: 10.0%
+FORCE_GEHRKE_FLOOR = 0.1      # variables.h: 0.1 (10% Poiseuille floor)
+FORCE_SWITCH_THRESHOLD = 5.0   # variables.h: 5.0% (防止 Re%>5% 時指數增長)
+
+# Force magnitude cap
+FORCE_CAP_MULT = 50.0          # variables.h: 50× Poiseuille
 
 # Mach brake
-MA_BRAKE_MULT_THRESHOLD = 2.0  # variables.h: 2.0
+MA_BRAKE_MULT_THRESHOLD = 1.7  # variables.h: 1.7
 MA_BRAKE_MULT_CRITICAL = 2.1   # variables.h: 2.1
 MA_BRAKE_GROWTH_LIMIT = 0.30
 
@@ -53,6 +56,7 @@ NORM = UREF * UREF / LY
 H_EFF = LZ - H_HILL
 F_POISEUILLE = 8.0 * NIU * UREF / (H_EFF * H_EFF)
 F_FLOOR = FORCE_GEHRKE_FLOOR * F_POISEUILLE
+F_CAP = FORCE_CAP_MULT * F_POISEUILLE
 MA_BULK_REF = UREF / CS
 MA_THRESHOLD = MA_BRAKE_MULT_THRESHOLD * MA_BULK_REF
 MA_CRITICAL = MA_BRAKE_MULT_CRITICAL * MA_BULK_REF
@@ -107,7 +111,7 @@ def controller_update(state: ControllerState, Ub_avg: float, Ma_max: float) -> C
             state.mode = "GEHRKE-HOLD"
         else:
             correction = 1.0 - FORCE_GEHRKE_GAIN * Re_pct
-            correction = max(0.5, min(2.0, correction))
+            correction = max(0.5, min(1.5, correction))
             state.Force *= correction
             state.mode = "GEHRKE-DEC" if Re_pct > 0 else "GEHRKE-INC"
 
@@ -150,6 +154,11 @@ def controller_update(state: ControllerState, Ub_avg: float, Ma_max: float) -> C
             state.mode = "PID-accel"
         else:
             state.mode = "PID-decel"
+
+    # ── Force Magnitude Cap ──
+    if state.Force > F_CAP:
+        state.Force = F_CAP
+        state.Force_integral = min(state.Force_integral, F_CAP)
 
     # ── Continuous Mach Safety Brake ──
     Ma_growth_rate = 0.0
@@ -199,20 +208,20 @@ class TestParameterConsistency(unittest.TestCase):
         self.assertAlmostEqual(MA_BULK_REF, UREF / CS, places=10)
 
     def test_ma_thresholds(self):
-        """Ma_threshold ≈ 0.128, Ma_critical ≈ 0.135 (tight brake)"""
+        """Ma_threshold ≈ 0.109, Ma_critical ≈ 0.135 (tight brake)"""
         self.assertAlmostEqual(MA_THRESHOLD, MA_BRAKE_MULT_THRESHOLD * MA_BULK_REF, places=10)
         self.assertAlmostEqual(MA_CRITICAL, MA_BRAKE_MULT_CRITICAL * MA_BULK_REF, places=10)
-        self.assertTrue(0.12 < MA_THRESHOLD < 0.14)
+        self.assertTrue(0.10 < MA_THRESHOLD < 0.12)
         self.assertTrue(0.13 < MA_CRITICAL < 0.14)
 
     def test_gehrke_correction_range(self):
-        """在 SWITCH_THRESHOLD=10% 時, raw correction ∈ [0.0, 2.0], clamped to [0.5, 2.0]"""
-        # Re% = +10% (max overshoot in Gehrke zone)
-        corr_max_over = 1.0 - FORCE_GEHRKE_GAIN * 10.0
-        self.assertAlmostEqual(corr_max_over, 0.0)  # raw = 0.0, clamped to 0.5
-        # Re% = -10% (max undershoot in Gehrke zone)
-        corr_max_under = 1.0 - FORCE_GEHRKE_GAIN * (-10.0)
-        self.assertAlmostEqual(corr_max_under, 2.0)  # clamped to 2.0
+        """在 SWITCH_THRESHOLD=5% 時, correction ∈ [0.5, 1.5]"""
+        # Re% = +5% (max overshoot in Gehrke zone)
+        corr_max_over = 1.0 - FORCE_GEHRKE_GAIN * 5.0
+        self.assertAlmostEqual(corr_max_over, 0.5)   # exactly at lower clamp
+        # Re% = -5% (max undershoot in Gehrke zone)
+        corr_max_under = 1.0 - FORCE_GEHRKE_GAIN * (-5.0)
+        self.assertAlmostEqual(corr_max_under, 1.5)   # exactly at upper clamp
 
 
 class TestPIDBasic(unittest.TestCase):
@@ -327,25 +336,30 @@ class TestGehrkeBasic(unittest.TestCase):
         self.assertAlmostEqual(s.Force, F_init * expected_correction, places=10)
 
     def test_gehrke_correction_clamp(self):
-        """Correction 被 clamp 在 [0.5, 2.0]"""
-        # 極端 Re%=+8% → correction = 1-0.1*8 = 0.2, clamped to 0.5
-        Ub = UREF * 1.08
+        """Correction 被 clamp 在 [0.5, 1.5]"""
+        # Re%=-4.5% → correction = 1-0.1*(-4.5) = 1.45, within [0.5, 1.5]
+        Ub = UREF * 0.955
         F_init = 1e-4
         s = self._make_steady_state(Ub, F_init)
         s = controller_update(s, Ub_avg=Ub, Ma_max=0.06)
-        self.assertAlmostEqual(s.Force, F_init * 0.5, places=8)
+        self.assertAlmostEqual(s.Force, F_init * 1.45, places=8)
+
+        # Re%=+4.8% → correction = 1-0.1*4.8 = 0.52, within [0.5, 1.5]
+        Ub2 = UREF * 1.048
+        s2 = self._make_steady_state(Ub2, F_init)
+        s2 = controller_update(s2, Ub_avg=Ub2, Ma_max=0.06)
+        self.assertAlmostEqual(s2.Force, F_init * 0.52, places=8)
 
     def test_gehrke_floor(self):
-        """FLOOR=0.0 → Force 可以降到 0 (但 Gehrke 乘法不會到 0 除非 correction=0)"""
-        # With FORCE_GEHRKE_FLOOR=0.0, F_FLOOR=0.0
-        # Gehrke correction at Re%=4% → 0.6, so Force decreases but stays > 0
+        """FLOOR=0.1 → Force 不低於 10% Poiseuille"""
+        # Gehrke correction at Re%=4% → 0.6
+        # Start from very low Force → after correction, should be clamped to floor
         Ub = UREF * 1.04
-        F_init = 1e-6  # 極低值
+        F_init = F_FLOOR * 0.5  # 低於 floor
         s = self._make_steady_state(Ub, F_init)
         s = controller_update(s, Ub_avg=Ub, Ma_max=0.06)
-        # correction = 1 - 0.1*4 = 0.6, Force = 1e-6 * 0.6 = 6e-7 > 0
-        self.assertGreater(s.Force, 0.0)
-        self.assertAlmostEqual(s.Force, F_init * 0.6, places=12)
+        # F_init * 0.6 < F_FLOOR → clamped to F_FLOOR
+        self.assertGreaterEqual(s.Force, F_FLOOR - 1e-15)
 
     def test_gehrke_syncs_integral(self):
         """Gehrke 模式下 integral 追蹤 Force"""
@@ -453,13 +467,12 @@ class TestMachBrake(unittest.TestCase):
         s = ControllerState(Force=1e-4, initialized=True, gehrke_activated=True)
         s.Force_integral = 1e-4
         s.error_prev = UREF - UREF * 0.99
-        Ma_prev = 0.10
-        Ma_now = 0.10 * 1.35  # +35% 增長 (> 30% threshold)
+        Ma_prev = 0.09
+        Ma_now = 0.09 * 1.35  # +35% 增長 (> 30% threshold)
         s.Ma_max_prev = Ma_prev
 
-        # Ma_now = 0.135, at critical boundary (≈0.1346)
-        # Ma_now > threshold (0.128) → quadratic brake active
-        # 增長 35% > 30% 且 Ma > 1.5*Ma_bulk → rate brake
+        # Ma_now = 0.1215, > threshold (0.109) → quadratic brake active
+        # 增長 35% > 30% 且 Ma > 1.5*Ma_bulk (0.096) → rate brake
         s = controller_update(s, Ub_avg=UREF * 0.99, Ma_max=Ma_now)
 
         # 因為增長率 > 30%, 應有額外 ×0.3
@@ -509,21 +522,21 @@ class TestDivergenceScenarioReplay(unittest.TestCase):
             s = controller_update(s, Ub_avg=UREF * Ub_frac, Ma_max=0.05)
             Ub_frac = min(Ub_frac + 0.01, 0.95)  # 漸進加速
 
-        # 穩態: Ub ≈ 0.95*Uref, Re%=-5%, Gehrke zone
+        # 穩態: Ub ≈ 0.97*Uref, Re%=-3%, well within Gehrke zone (threshold=5%)
         for _ in range(200):
-            s = controller_update(s, Ub_avg=UREF * 0.95, Ma_max=0.10)
+            s = controller_update(s, Ub_avg=UREF * 0.97, Ma_max=0.08)
 
         F_steady = s.Force
         self.assertGreater(F_steady, 0.0, "Should have positive force in steady state")
-        self.assertIn("GEHRKE", s.mode, "Should be in Gehrke mode (Re%=-5%, threshold=10%)")
+        self.assertIn("GEHRKE", s.mode, "Should be in Gehrke mode (Re%=-3%, threshold=5%)")
 
         # ★ 發散序列: 模擬 FTT 1.14 ~ 1.28 的 Ma_max 暴衝
-        # Ma thresholds now: threshold ≈ 0.128, critical ≈ 0.135 (very tight)
+        # Ma thresholds now: threshold ≈ 0.109, critical ≈ 0.135
         divergence_sequence = [
-            (0.99, 0.100),   # FTT ~1.14: 正常, Ma < threshold
-            (1.01, 0.120),   # FTT ~1.15: 接近 threshold
-            (1.02, 0.130),   # FTT ~1.17: ★ 新 brake 介入 (>0.128)
-            (1.03, 0.135),   # FTT ~1.20: 接近 critical (0.135)
+            (0.99, 0.090),   # FTT ~1.14: 正常, Ma < threshold
+            (1.01, 0.105),   # FTT ~1.15: 接近 threshold (0.109)
+            (1.02, 0.115),   # FTT ~1.17: ★ 新 brake 介入 (>0.109)
+            (1.03, 0.130),   # FTT ~1.20: 接近 critical (0.135)
             (1.04, 0.140),   # FTT ~1.22: > critical → 歸零
             (1.05, 0.165),   # FTT ~1.24: 遠超 critical
             (1.06, 0.190),   # FTT ~1.25
@@ -549,10 +562,10 @@ class TestDivergenceScenarioReplay(unittest.TestCase):
                 force_ever_zero = True
 
         # ── 驗證 ──
-        # 1. 在 Ma_max > threshold (≈0.128) 時, brake 應啟動
-        #    序列第 3 項 (Ma=0.130) > threshold (0.128)
+        # 1. 在 Ma_max > threshold (≈0.109) 時, brake 應啟動
+        #    序列第 3 項 (Ma=0.115) > threshold (0.109)
         self.assertLess(ma_factors_during_crisis[2], 1.0,
-                        f"Brake should activate at Ma_max=0.130 > threshold={MA_THRESHOLD:.3f}")
+                        f"Brake should activate at Ma_max=0.115 > threshold={MA_THRESHOLD:.3f}")
 
         # 2. Force 在危機中應快速降到 0 (Ma_critical ≈ 0.135 時歸零)
         self.assertTrue(force_ever_zero,
@@ -566,15 +579,15 @@ class TestDivergenceScenarioReplay(unittest.TestCase):
                 break
 
     def test_brake_activates_before_old_threshold(self):
-        """新 brake 在 Ma≈0.128 介入, 遠早於舊閾值 0.25"""
+        """新 brake 在 Ma≈0.109 介入, 遠早於舊閾值 0.25"""
         s = ControllerState(Force=1e-4, initialized=True)
-        s.Ma_max_prev = 0.12
+        s.Ma_max_prev = 0.10
 
-        # Ma_max = 0.130 > threshold (≈0.128)
-        s = controller_update(s, Ub_avg=UREF * 0.99, Ma_max=0.130)
+        # Ma_max = 0.115 > threshold (≈0.109)
+        s = controller_update(s, Ub_avg=UREF * 0.99, Ma_max=0.115)
         self.assertLess(s.Ma_factor, 1.0,
-                        f"New brake should activate at 0.130 > threshold={MA_THRESHOLD:.3f}")
-        self.assertGreater(s.Ma_factor, 0.0, "Should not zero out at 0.130")
+                        f"New brake should activate at 0.115 > threshold={MA_THRESHOLD:.3f}")
+        self.assertGreater(s.Ma_factor, 0.0, "Should not zero out at 0.115")
 
         # 比較: Ma > critical (≈0.135) 時歸零
         s2 = ControllerState(Force=1e-4, initialized=True)
@@ -597,6 +610,65 @@ class TestDivergenceScenarioReplay(unittest.TestCase):
         # but rate brake alone: factor *= 0.3
         self.assertLess(s.Ma_factor, 0.5,
                         "Rate brake should trigger on 50% Ma growth")
+
+
+class TestForceCap(unittest.TestCase):
+    """Test 5b: Force magnitude cap (防止 Gehrke 指數增長)"""
+
+    def test_force_cap_limits_gehrke_blowup(self):
+        """★ 重現 FTT 0.49 發散: Gehrke 在 Re%=-9% 每步 ×1.9 → Force cap 攔截"""
+        s = ControllerState()
+        # Cold start with PID to build Force
+        for _ in range(50):
+            s = controller_update(s, Ub_avg=0.0, Ma_max=0.05)
+
+        # Now at Ub=0.91*Uref, Re%=-9% — with old threshold=10% this would be Gehrke
+        # With new threshold=5%, |Re%|=9% > 5% → PID mode (safe)
+        s_test = controller_update(s, Ub_avg=UREF * 0.91, Ma_max=0.09)
+        self.assertIn("PID", s_test.mode, "|Re%|=9% should be PID, not Gehrke")
+
+    def test_force_never_exceeds_cap(self):
+        """Force 永遠不超過 FORCE_CAP_MULT × F_Poiseuille"""
+        s = ControllerState()
+        # Aggressive PID with large error for many steps
+        for _ in range(500):
+            s = controller_update(s, Ub_avg=0.0, Ma_max=0.05)
+        self.assertLessEqual(s.Force, F_CAP + 1e-15,
+                             f"Force should be capped at {F_CAP:.2e}")
+
+    def test_gehrke_correction_max_15(self):
+        """Gehrke correction 上界 = 1.5 (不是 2.0), 防止指數暴衝"""
+        # Re% = -5% → correction = 1 - 0.1*(-5) = 1.5 (at clamp)
+        correction = 1.0 - FORCE_GEHRKE_GAIN * (-5.0)
+        clamped = max(0.5, min(1.5, correction))
+        self.assertAlmostEqual(clamped, 1.5)
+
+        # Re% = -10% (would be PID, but test clamp anyway)
+        correction2 = 1.0 - FORCE_GEHRKE_GAIN * (-10.0)
+        clamped2 = max(0.5, min(1.5, correction2))
+        self.assertAlmostEqual(clamped2, 1.5)  # clamped, not 2.0
+
+    def test_replay_ftt049_exponential_blowup(self):
+        """★ 重播 FTT 0.49 數據: Force 每步 ×1.88, 8 步後 ×100+"""
+        # 模擬: 以 PID 冷啟動到 Ub≈0.91*Uref
+        s = ControllerState()
+        for _ in range(100):
+            s = controller_update(s, Ub_avg=UREF * 0.5, Ma_max=0.05)
+        for _ in range(100):
+            s = controller_update(s, Ub_avg=UREF * 0.91, Ma_max=0.09)
+
+        F_initial = s.Force
+        # 模擬 8 步持續 Re%≈-9%
+        forces = [F_initial]
+        for _ in range(8):
+            s = controller_update(s, Ub_avg=UREF * 0.91, Ma_max=0.09)
+            forces.append(s.Force)
+
+        # 新控制器: |Re%|=9% > 5% → PID mode → Force 有界 (不翻倍)
+        # 驗證: Force 增長不超過 5×
+        ratio = forces[-1] / F_initial if F_initial > 1e-15 else 0
+        self.assertLess(ratio, 5.0,
+                        f"Force grew {ratio:.1f}x in 8 steps — should be bounded by PID")
 
 
 class TestGehrkeConvergence(unittest.TestCase):
@@ -663,7 +735,7 @@ class TestEdgeCases(unittest.TestCase):
         self.assertAlmostEqual(s.Ma_factor, 1.0)
 
     def test_force_floor_in_gehrke(self):
-        """Gehrke 模式下 Force 持續減力, FLOOR=0 時趨近 0 但 >0 (乘法)"""
+        """Gehrke 模式下 Force 持續減力, FLOOR=0.1 時不低於 10% Poiseuille"""
         s = ControllerState(Force=1e-4, initialized=True, gehrke_activated=True)
         s.Force_integral = 1e-4
         s.error_prev = UREF - UREF * 1.04
@@ -673,9 +745,8 @@ class TestEdgeCases(unittest.TestCase):
         for _ in range(100):
             s = controller_update(s, Ub_avg=UREF * 1.04, Ma_max=0.06)
 
-        # With FLOOR=0.0, Force approaches 0 via multiplication (0.6^100 ≈ 6.5e-23)
-        # Still positive due to multiplicative nature
-        self.assertGreaterEqual(s.Force, 0.0)
+        # With FLOOR=0.1, Force clamped to 10% Poiseuille
+        self.assertGreaterEqual(s.Force, F_FLOOR - 1e-15)
 
 
 class TestFullScenario(unittest.TestCase):
@@ -723,8 +794,9 @@ if __name__ == '__main__':
     print("=" * 72)
     print(f"  Uref = {UREF},  Re = {RE},  LY = {LY}")
     print(f"  Ma_bulk_ref = {MA_BULK_REF:.6f}")
-    print(f"  Ma_threshold = {MA_THRESHOLD:.6f}  (2.5 × Ma_bulk)")
-    print(f"  Ma_critical  = {MA_CRITICAL:.6f}  (4.0 × Ma_bulk)")
+    print(f"  Ma_threshold = {MA_THRESHOLD:.6f}  ({MA_BRAKE_MULT_THRESHOLD} × Ma_bulk)")
+    print(f"  Ma_critical  = {MA_CRITICAL:.6f}  ({MA_BRAKE_MULT_CRITICAL} × Ma_bulk)")
+    print(f"  F_cap = {F_CAP:.6e}  ({FORCE_CAP_MULT}× Poiseuille)")
     print(f"  norm = {NORM:.6e}")
     print(f"  F_Poiseuille = {F_POISEUILLE:.6e}")
     print(f"  F_floor = {F_FLOOR:.6e}")

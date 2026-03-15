@@ -385,10 +385,11 @@ void Launch_ModifyForcingTerm()
     double Kd = (double)FORCE_KD;
     double norm = (double)Uref * (double)Uref / (double)LY;
 
-    // Poiseuille force 估計 (Gehrke floor 用)
+    // Poiseuille force 估計 (Gehrke floor + Force cap 用)
     double h_eff = (double)LZ - (double)H_HILL;
     double F_Poiseuille = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff);
     double F_floor = (double)FORCE_GEHRKE_FLOOR * F_Poiseuille;
+    double F_cap  = (double)FORCE_CAP_MULT * F_Poiseuille;  // Force 上限
 
     // ── 模式選擇 ──
     bool use_gehrke = (fabs(Re_pct) <= (double)FORCE_SWITCH_THRESHOLD);
@@ -420,10 +421,11 @@ void Launch_ModifyForcingTerm()
             // 死區: 不調整, 維持現有 Force
         } else {
             double correction = 1.0 - (double)FORCE_GEHRKE_GAIN * Re_pct;
-            // 安全 clamp: 防止單步劇變 (在 SWITCH_THRESHOLD=5% 下,
-            // 理論極值 = 1 ± 0.1×5 = [0.5, 1.5], clamp 額外保護)
+            // 安全 clamp: SWITCH_THRESHOLD=5% 時理論極值 = [0.5, 1.5]
+            // ★ 上界 1.5 而非 2.0: 防止 Re%=-5% 時每步 ×1.5 造成指數增長
+            //   (舊 2.0 上界 + threshold 10% → correction=1.9 → 每步翻倍 → 發散!)
             if (correction < 0.5) correction = 0.5;
-            if (correction > 2.0) correction = 2.0;
+            if (correction > 1.5) correction = 1.5;
             Force_h[0] *= correction;
             ctrl_mode = (Re_pct > 0) ? "GEHRKE-DEC" : "GEHRKE-INC";
         }
@@ -477,6 +479,16 @@ void Launch_ModifyForcingTerm()
 
         ctrl_mode = (fabs(Re_pct) < 1.5) ? "PID-steady" :
                     (error > 0)           ? "PID-accel"  : "PID-decel";
+    }
+
+    // ====== Force Magnitude Cap (兩模式共用) ======
+    // 防止任何模式下 Force 失控 (e.g., Gehrke 指數增長, PID windup 殘留)
+    if (Force_h[0] > F_cap) {
+        if (myid == 0)
+            printf("[FORCE-CAP] Force=%.5E > cap=%.5E (%.0f×Poiseuille), clamped!\n",
+                   Force_h[0], F_cap, (double)FORCE_CAP_MULT);
+        Force_h[0] = F_cap;
+        Force_integral = fmin(Force_integral, F_cap);  // 同步 integral
     }
 
     // ====== Continuous Mach Safety Brake (兩模式共用) ======

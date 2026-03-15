@@ -117,12 +117,20 @@
 #define     FORCE_KD                0.5     // 微分增益
 
 // Gehrke multiplicative controller (Phase 2)
+// ★ gain 必須配合更新頻率! 論文: gain=0.1 @ 10 updates/FTT
+//   我們 NDTFRC=50 → ~2000 updates/FTT → gain_eff = 0.1 × 10/2000 = 0.0005
+//   或者直接降低 SWITCH_THRESHOLD 限制 Gehrke 只在小 Re% 工作
 #define     FORCE_GEHRKE_GAIN       0.1     // 論文原值: 0.1 (F *= 1 - gain × Re%)
 #define     FORCE_GEHRKE_DEADZONE   1.5     // 論文原值: 1.5% (|Re%| < 1.5% → hold)
-#define     FORCE_GEHRKE_FLOOR      0.0     // Force 下限 = floor × F_Poiseuille
+#define     FORCE_GEHRKE_FLOOR      0.1     // Force 下限 = 10% × F_Poiseuille (防 Force→0 陷阱)
 
 // Controller switching
-#define     FORCE_SWITCH_THRESHOLD  10.0     // |Re%| ≤ 10% → Gehrke; > 10% → PID
+#define     FORCE_SWITCH_THRESHOLD  5.0     // |Re%| ≤ 5% → Gehrke (論文適用範圍)
+                                             // correction 極值 = 1 ± 0.1×5 = [0.5, 1.5]
+                                             // ★ 10% 時 correction=1.9 → 每步翻倍 → 發散!
+
+// Force magnitude cap (防止任何模式下 Force 失控)
+#define     FORCE_CAP_MULT          50.0    // Force 上限 = 50 × F_Poiseuille
 
 // Mach safety brake (continuous, both phases)
 #define     MA_BRAKE_MULT_THRESHOLD 1.7     // Ma_max > 1.7×Ma_bulk → 開始二次衰減
