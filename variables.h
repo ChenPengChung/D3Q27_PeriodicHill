@@ -94,19 +94,40 @@
 // ================================================================
 #define     loop        500000  // 最大時間步數
 #define     NDTMIT      50      // 每 N 步輸出 monitor 資料
-#define     NDTFRC      200     // 每 N 步更新外力項
+#define     NDTFRC      50     // 每 N 步更新外力項
 #define     NDTBIN      10000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
-// ====== PI 外力控制器 ======
-// 取代舊的 P-additive + Gehrke 雙階段控制器
-// Kp, Ki 增益在 evolution.h 內定義 (hardcoded for now)
-// force_alpha 保留為 legacy 相容 (未使用)
-#define     force_alpha 5
+// ====== Hybrid Dual-Stage Force Controller ======
+// Phase 1: PID controller  (|Re%| > SWITCH_THRESHOLD, cold start / far from target)
+//   Force = Kp*error*norm + integral + Kd*d_error*norm
+//   norm = Uref²/LY
+// Phase 2: Gehrke multiplicative (|Re%| ≤ SWITCH_THRESHOLD, steady state fine-tuning)
+//   Reference: Gehrke & Rung (2020), Int J Numer Meth Fluids, Sec 3.1
+//   F *= (1 - GEHRKE_GAIN × Re%)    where Re% = (Ub - Uref)/Uref × 100
+//   Dead zone: |Re%| < GEHRKE_DEADZONE → no adjustment
+//   Floor: F ≥ GEHRKE_FLOOR × F_Poiseuille (prevents multiplicative trap → 0)
+//   Correction clamp: multiplier ∈ [0.5, 2.0] (prevents single-step catastrophe)
+// Mach brake: continuous quadratic decay, applied on top of both phases
+// ================================================================
 
-// FORCE_SWITCH_THRESHOLD 已廢棄 (PI 控制器無需切換)
-// 保留定義避免編譯錯誤，但不再影響邏輯
-#define     FORCE_SWITCH_THRESHOLD  10.0    // [DEPRECATED]
+// PID controller gains (Phase 1)
+#define     FORCE_KP                2.0     // 比例增益
+#define     FORCE_KI                0.3     // 積分增益
+#define     FORCE_KD                0.5     // 微分增益
+
+// Gehrke multiplicative controller (Phase 2)
+#define     FORCE_GEHRKE_GAIN       0.1     // 論文原值: 0.1 (F *= 1 - gain × Re%)
+#define     FORCE_GEHRKE_DEADZONE   1.5     // 論文原值: 1.5% (|Re%| < 1.5% → hold)
+#define     FORCE_GEHRKE_FLOOR      0.0     // Force 下限 = floor × F_Poiseuille
+
+// Controller switching
+#define     FORCE_SWITCH_THRESHOLD  10.0     // |Re%| ≤ 10% → Gehrke; > 10% → PID
+
+// Mach safety brake (continuous, both phases)
+#define     MA_BRAKE_MULT_THRESHOLD 1.7     // Ma_max > 1.7×Ma_bulk → 開始二次衰減
+#define     MA_BRAKE_MULT_CRITICAL  2.1     // Ma_max > 2.1×Ma_bulk → 緊急歸零
+#define     MA_BRAKE_GROWTH_LIMIT   0.30    // Ma_max 單步增長 >30% → 額外 ×0.3
 
 // ================================================================
 // 9. FTT 閾值與統計控制
@@ -129,13 +150,13 @@
 //   1 = 從 per-rank binary 續跑 (legacy, 只有瞬時場)
 //   2 = 從 merged VTK 續跑 (f=feq 近似, 統計量無法還原)
 //   3 = 從 binary checkpoint 續跑 (精確: f + 統計量累積和)
-#define     INIT                (0)
+#define     INIT                (3)
 
 // INIT=2 用: merged VTK 檔案路徑
 #define     RESTART_VTK_FILE    "result/velocity_merged_1800001.vtk"
 
 // INIT=3 用: binary checkpoint 目錄路徑
-#define     RESTART_BIN_DIR     "checkpoint/step_2310001"
+#define     RESTART_BIN_DIR     "checkpoint/step_50001"
 
 // 統計量讀取 (僅 INIT=1 時生效)
 // 1 = 從 statistics/*.bin 讀取上次累積的統計量 + accu.dat

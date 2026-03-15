@@ -315,26 +315,44 @@ Launch_CollisionStreaming(f_old[19], f_new[19]):
 3. Host 端 bilinear cell-average 積分 Ub_avg
 4. MPI_Bcast(&Ub_avg, root=0)  // ★ 只用 rank 0 的值 (山丘頂截面)
 5. Ub_avg_global = Ub_avg       // 存入全域變數 (供 monitor.h 使用)
-6. PI Force Controller (2026-03-15 重寫，取代舊 P-additive + Gehrke):
-   - error = Uref - Ub_avg
-   - Force_integral += Ki * error * norm  (積分累加)
-   - Conditional decay: error<0 且 integral>0 → integral *= 0.8 (加速 drain)
-   - Anti-windup: integral ∈ [0, 20*norm]
-   - Force = Kp*error*norm + integral  (PI 合成)
-   - Back-calc clamp: Force<0 → Force=0, integral 回算
-   - Ma brake: Ma_max>0.30 → ×0.05, Ma_max>0.25 → ×0.5 (integral 同步縮減)
-   - 增益: Kp=2.0, Ki=0.3, norm=Uref²/LY
+6. **Hybrid Dual-Stage Force Controller** (2026-03-15 v3, PID + Gehrke):
+   - **Phase 1 (PID)**: |Re%| > 5% — 冷啟動/遠離目標安全加速
+     - Force = Kp*error*norm + integral + Kd*d_error*norm
+     - Kp=2.0, Ki=0.3, Kd=0.5, norm=Uref²/LY
+     - Conditional decay: error<0 且 integral>0 → ×0.5
+     - Anti-windup: integral ∈ [0, 10×norm]
+     - Back-calc clamp: Force<0 → 0, integral 回算
+   - **Phase 2 (Gehrke)**: |Re%| ≤ 5% — 穩態乘法微調
+     - Gehrke & Rung (2020) Sec 3.1: `F *= (1 - 0.1 × Re%)`
+     - Dead zone: |Re%| < 1.5% → 不調整
+     - Correction clamp: [0.5, 2.0]
+     - Floor: 10% Poiseuille estimate (防 F→0 陷阱)
+     - 同步 PID integral = Force (平滑回切)
+   - **Phase transition**: Gehrke→PID 回切時 integral = Force_h[0] (無跳變)
+   - **連續 Mach brake** (兩模式共用):
+     - Ma_threshold = 2.5×Uref/cs (~0.160): 二次衰減
+     - Ma_critical = 4.0×Uref/cs (~0.256): 緊急歸零
+     - Ma 增長率 >30% → 額外 ×0.3
 7. ★ 所有 rank 使用相同 Ub_avg → 計算出相同 Force (天然同步)
 8. cudaMemcpy(Force_h → Force_d)
 ```
 
-#### PI 控制器設計理由 (2026-03-15)
-**舊控制器三個 Bug**:
-1. Mach brake 條件順序反了 (0.2 在 0.25 之前 → else if 永遠不執行)
-2. Gehrke 乘法係數 0.05 在 |Re%|=10% 邊界產生 correction=1.5 → 指數爆衝 (0.81→3.14 in 4 updates)
-3. P-additive 是純積分器無 anti-windup → Force 累積無法減速
+#### Hybrid 控制器設計理由 (2026-03-15 v3)
+**v2 PID-only 問題**: PID 在穩態微調時可能因 integral windup 或
+Kp 震盪而產生不必要的 Force 波動。Gehrke 乘法控制器天然適合
+穩態微調（論文驗證 Re 偏差 O(‰)），但不適合冷啟動（Force=0 時
+乘法無效）。
 
-**新 PI 控制器**: Kp 項直接抑制偏差 (error→0 時自動消失), Ki 項消除穩態誤差, conditional decay 防止 overshoot 時積分殘留. 23 項 Python 單元測試全部通過 (test_force_controller.py).
+**v3 Hybrid 設計**:
+- PID 負責 cold start + 大偏差恢復（|Re%| > 5%）
+- Gehrke 負責穩態微調（|Re%| ≤ 5%）— 論文原始參數 gain=0.1
+- 平滑切換: PID integral 追蹤 Gehrke Force，回切無跳變
+- 連續 Mach brake 統一保護（自動跟隨 Uref 縮放）
+
+**Gehrke 參數來源** (Gehrke & Rung 2020, Sec 3.1):
+- gain = 0.1: 論文原值，|Re%|=5% 時 correction = [0.5, 1.5]
+- deadzone = 1.5%: 論文原值，Re 偏差控制在 O(‰)
+- 更新頻率: 論文 10 次/FTT，我們 NDTFRC=200 步/次
 
 ### 時間迴圈 (main.cu)
 ```
@@ -584,9 +602,9 @@ nvcc -O2 -arch=sm_80 main.cu -lmpi -o main.exe
 
 | Imamura 符號 | 程式碼變數 | 說明 |
 |-------------|-----------|------|
-| ω (鬆弛頻率) | `omega_A`, `omega_local_d` | = 1/τ_local |
+| ω (鬆弛頻率) | `omega_A`, `omega_local_d` | = 1/τ_local | 
 | ω·Δt (教科書 τ) | `omegadt_A`, `omegadt_local_d` | = omega_local × dt_local |
-| Δt_local | `dt_A`, `dt_local_d` | 局部時間步長 |
+| Δt_local | `dt_A`, `dt_local_d` | 局部時間步長 ㄎ|
 | τ_local | (非直接儲存) | = 0.5 + 1/(3·Re·dt_local) |
 | a (LTS 加速因子) | `a_local` | = dt_A / GILBM_dt |
 

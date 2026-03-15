@@ -354,79 +354,176 @@ void Launch_ModifyForcingTerm()
     double Ma_now = Ub_avg / (double)cs;
     double Ma_max = ComputeMaMax();  // all ranks participate (MPI_Allreduce)
 
-    // ====== PI 外力控制器 + anti-windup ======
-    // error = Uref - Ub (正 = 需加速, 負 = 需減速)
-    double error = (double)Uref - Ub_avg;
+    // ====================================================================
+    // Hybrid Dual-Stage Force Controller (PID + Gehrke multiplicative)
+    // ====================================================================
+    // Phase 1 (PID):    |Re%| > SWITCH_THRESHOLD — 冷啟動/遠離目標安全加速
+    // Phase 2 (Gehrke): |Re%| ≤ SWITCH_THRESHOLD — 穩態乘法微調
+    // Gehrke ref: Gehrke & Rung (2020) Int J Numer Meth Fluids, Sec 3.1
+    //   原文: F *= (1 - 0.1 × Re%)  當 |Re%| > 1.5%, 每 FTT 更新 10 次
+    // 連續 Mach brake 在兩模式之上統一適用
+    // ====================================================================
+
+    double error = (double)Uref - Ub_avg;  // 正 = 需加速, 負 = 需減速
     double Re_pct = (Ub_avg - (double)Uref) / (double)Uref * 100.0;
     const char *ctrl_mode;
 
-    // PI 增益參數
-    // Kp: 比例增益 (直接響應誤差)
-    // Ki: 積分增益 (消除穩態誤差) — 透過 Force 累加實現
-    // 兩者都歸一化為 Uref²/LY 量綱
-    static double Force_integral = 0.0;  // 積分項（持久狀態）
-    static bool controller_initialized = false;
+    // ── 持久狀態 (跨 force update) ──
+    static double Force_integral = 0.0;      // PID 積分項
+    static double error_prev = 0.0;          // PID 微分項
+    static bool   controller_initialized = false;
+    static bool   gehrke_activated = false;   // Gehrke 模式旗標
     if (!controller_initialized) {
         Force_integral = 0.0;
+        error_prev = error;
         controller_initialized = true;
     }
 
-    double Kp = 2.0;    // 比例增益 (直接抑制偏差)
-    double Ki = 0.3;     // 積分增益 (消除穩態誤差, 較 Kp 弱以避免 windup)
-    double norm = (double)Uref * (double)Uref / (double)LY;  // 力量綱歸一化
+    // ── 控制器參數 (從 variables.h #define 讀取) ──
+    double Kp = (double)FORCE_KP;
+    double Ki = (double)FORCE_KI;
+    double Kd = (double)FORCE_KD;
+    double norm = (double)Uref * (double)Uref / (double)LY;
 
-    // 積分項累加 (帶 conditional integration anti-windup)
-    Force_integral += Ki * error * norm;
+    // Poiseuille force 估計 (Gehrke floor 用)
+    double h_eff = (double)LZ - (double)H_HILL;
+    double F_Poiseuille = 8.0 * (double)niu * (double)Uref / (h_eff * h_eff);
+    double F_floor = (double)FORCE_GEHRKE_FLOOR * F_Poiseuille;
 
-    // Conditional decay: 當 error 和 integral 方向衝突時（overshoot 但 integral 仍在推）
-    // 加速衰減 integral, 避免積分項主導而無法減速
-    if (error < 0.0 && Force_integral > 0.0) {
-        Force_integral *= 0.8;  // 每次更新衰減 20%, ~10 次 → 0.1× 原值
-    }
+    // ── 模式選擇 ──
+    bool use_gehrke = (fabs(Re_pct) <= (double)FORCE_SWITCH_THRESHOLD);
 
-    // Anti-windup: 限制積分項在合理範圍 [0, Force_max]
-    double Force_max = 20.0 * norm;  // 積分項上限
-    if (Force_integral > Force_max) Force_integral = Force_max;
-    if (Force_integral < 0.0) Force_integral = 0.0;
-
-    // PI 合成
-    double Force_new = Kp * error * norm + Force_integral;
-
-    // 判斷控制模式 (for logging)
-    if (fabs(Re_pct) < 1.5) {
-        ctrl_mode = "PI-steady";
-    } else if (error > 0) {
-        ctrl_mode = "PI-accel";
-    } else {
-        ctrl_mode = "PI-decel";
-    }
-
-    Force_h[0] = Force_new;
-
-    // Back-calculation anti-windup:
-    // 當 Force 被 clamp 到 0 時，回算積分項使 Force 恰好 = 0
-    // 這樣積分項不會殘留過高，overshoot 能快速恢復
-    if (Force_h[0] < 0.0) {
-        Force_h[0] = 0.0;
-        // 回算: Force = Kp*error*norm + integral = 0  →  integral = -Kp*error*norm
-        // 但 integral 不能為負, 取 max(0, ...)
-        double integral_target = fmax(0.0, -Kp * error * norm);
-        if (Force_integral > integral_target)
-            Force_integral = integral_target;
-    }
-
-    // Ma 安全檢查 — 注意: 先檢查較高閾值！
-    if (Ma_max > 0.30) {
-        Force_h[0] *= 0.05;
-        Force_integral *= 0.05;  // 同步縮減積分項
+    // Phase transition logging
+    if (use_gehrke && !gehrke_activated) {
+        gehrke_activated = true;
         if (myid == 0)
-            printf("[CRITICAL] Ma_max=%.4f > 0.30, Force reduced to 5%%: %.5E\n", Ma_max, Force_h[0]);
-    } else if (Ma_max > 0.25) {
-        Force_h[0] *= 0.5;
+            printf("\n=== [Step %d | FTT=%.2f] Gehrke ACTIVATED (Re%%=%.2f%%) ===\n\n",
+                   step, step * dt_global / (double)flow_through_time, Re_pct);
+    } else if (!use_gehrke && gehrke_activated) {
+        gehrke_activated = false;
+        // ★ Gehrke → PID 回切: 同步積分項 = 當前 Force, 避免跳變
+        Force_integral = fmax(0.0, Force_h[0]);
+        if (myid == 0)
+            printf("\n=== [Step %d | FTT=%.2f] Gehrke DEACTIVATED -> PID (Re%%=%.2f%%) ===\n\n",
+                   step, step * dt_global / (double)flow_through_time, Re_pct);
+    }
+
+    if (use_gehrke) {
+        // ============================================================
+        // Phase 2: Gehrke 乘法控制器
+        // F *= (1 - GEHRKE_GAIN × Re%)
+        // Re% > 0 → Ub 太高 → correction < 1 → 減力
+        // Re% < 0 → Ub 太低 → correction > 1 → 加力
+        // ============================================================
+        if (fabs(Re_pct) < (double)FORCE_GEHRKE_DEADZONE) {
+            ctrl_mode = "GEHRKE-HOLD";
+            // 死區: 不調整, 維持現有 Force
+        } else {
+            double correction = 1.0 - (double)FORCE_GEHRKE_GAIN * Re_pct;
+            // 安全 clamp: 防止單步劇變 (在 SWITCH_THRESHOLD=5% 下,
+            // 理論極值 = 1 ± 0.1×5 = [0.5, 1.5], clamp 額外保護)
+            if (correction < 0.5) correction = 0.5;
+            if (correction > 2.0) correction = 2.0;
+            Force_h[0] *= correction;
+            ctrl_mode = (Re_pct > 0) ? "GEHRKE-DEC" : "GEHRKE-INC";
+        }
+
+        // Gehrke floor: 防止 Force → 0 陷阱
+        if (Force_h[0] < F_floor) {
+            Force_h[0] = F_floor;
+            if (myid == 0)
+                printf("[GEHRKE-FLOOR] Force clamped to %.1f%% Poiseuille = %.5E\n",
+                       (double)FORCE_GEHRKE_FLOOR * 100.0, F_floor);
+        }
+
+        // ★ 同步 PID 積分項: 追蹤 Gehrke 的 Force 值
+        // 這樣如果切回 PID, 積分項 = Gehrke 最後設定的力, 無跳變
+        Force_integral = Force_h[0];
+        error_prev = error;  // 同步微分項基準
+
+    } else {
+        // ============================================================
+        // Phase 1: PID 控制器 (冷啟動 / 遠離目標)
+        // Force = Kp*error*norm + integral + Kd*d_error*norm
+        // ============================================================
+
+        // 微分項
+        double d_error = error - error_prev;
+        error_prev = error;
+
+        // 積分項累加
+        Force_integral += Ki * error * norm;
+
+        // Conditional decay: overshoot 時快速衰減
+        if (error < 0.0 && Force_integral > 0.0) {
+            Force_integral *= 0.5;
+        }
+
+        // Anti-windup: integral ∈ [0, 10×norm]
+        double Force_max = 10.0 * norm;
+        if (Force_integral > Force_max) Force_integral = Force_max;
+        if (Force_integral < 0.0) Force_integral = 0.0;
+
+        // PID 合成
+        Force_h[0] = Kp * error * norm + Force_integral + Kd * d_error * norm;
+
+        // Back-calculation anti-windup: Force < 0 → clamp + 回算 integral
+        if (Force_h[0] < 0.0) {
+            Force_h[0] = 0.0;
+            double integral_target = fmax(0.0, -Kp * error * norm);
+            if (Force_integral > integral_target)
+                Force_integral = integral_target;
+        }
+
+        ctrl_mode = (fabs(Re_pct) < 1.5) ? "PID-steady" :
+                    (error > 0)           ? "PID-accel"  : "PID-decel";
+    }
+
+    // ====== Continuous Mach Safety Brake (兩模式共用) ======
+    // 閾值自動跟隨 Uref 縮放
+    double Ma_bulk_ref  = (double)Uref / (double)cs;       // 目標 bulk Ma
+    double Ma_threshold = (double)MA_BRAKE_MULT_THRESHOLD * Ma_bulk_ref;  // 連續二次衰減開始
+    double Ma_critical  = (double)MA_BRAKE_MULT_CRITICAL  * Ma_bulk_ref;  // 緊急歸零
+
+    // Ma 增長率偵測
+    static double Ma_max_prev = 0.0;
+    double Ma_growth_rate = 0.0;
+    if (Ma_max_prev > 1e-10) {
+        Ma_growth_rate = (Ma_max - Ma_max_prev) / Ma_max_prev;
+    }
+    Ma_max_prev = Ma_max;
+
+    double Ma_factor = 1.0;
+
+    // 連續二次衰減
+    if (Ma_max > Ma_threshold && Ma_max <= Ma_critical) {
+        double excess = (Ma_max - Ma_threshold) / (Ma_critical - Ma_threshold);
+        Ma_factor = (1.0 - excess) * (1.0 - excess);
+        if (myid == 0)
+            printf("[Ma-BRAKE] Ma_max=%.4f > %.3f, factor=%.4f\n",
+                   Ma_max, Ma_threshold, Ma_factor);
+    }
+
+    // 緊急歸零 + integral reset
+    if (Ma_max > Ma_critical) {
+        Ma_factor = 0.0;
+        Force_integral = 0.0;
+        if (myid == 0)
+            printf("[CRITICAL] Ma_max=%.4f > %.3f, Force=0, integral reset!\n",
+                   Ma_max, Ma_critical);
+    }
+
+    // 急速增長率煞車
+    if (Ma_growth_rate > (double)MA_BRAKE_GROWTH_LIMIT && Ma_max > Ma_bulk_ref * 1.5) {
+        Ma_factor *= 0.3;
         Force_integral *= 0.5;
         if (myid == 0)
-            printf("[WARNING] Ma_max=%.4f > 0.25, Force halved to %.5E\n", Ma_max, Force_h[0]);
+            printf("[RATE-BRAKE] Ma growth=%.1f%%, extra brake applied\n",
+                   Ma_growth_rate * 100.0);
     }
+
+    Force_h[0] *= Ma_factor;
+    Force_integral *= Ma_factor;
 
     CHECK_MPI( MPI_Barrier(MPI_COMM_WORLD) );
 
