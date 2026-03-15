@@ -286,7 +286,28 @@ __device__ void gilbm_compute_point_gts(
                 if (up_k < 3.0)                up_k = 3.0;
                 if (up_k > (double)(NZ6 - 4))  up_k = (double)(NZ6 - 4);
                 double t_zeta = up_k - (double)bk;
-#if GILBM_INTERP_IDW
+#if GILBM_INTERP_MLS
+                // ── MLS: 物理空間距離 + 二次多項式 (C², 梯度精確) ──
+                {
+                    // Departure point z: 雙線性插值 z_d (同 IDW)
+                    int sj_lo = (int)t_xi;
+                    int sk_lo = (int)t_zeta;
+                    int sj_hi = sj_lo + 1;  if (sj_hi > 6) sj_hi = 6;
+                    int sk_hi = sk_lo + 1;  if (sk_hi > 6) sk_hi = 6;
+                    double fj = t_xi  - (double)sj_lo;
+                    double fk = t_zeta - (double)sk_lo;
+                    double z_dep = (1.0 - fj) * ((1.0 - fk) * z_d[(bj + sj_lo) * NZ6 + bk + sk_lo]
+                                                 +       fk  * z_d[(bj + sj_lo) * NZ6 + bk + sk_hi])
+                                 +        fj  * ((1.0 - fk) * z_d[(bj + sj_hi) * NZ6 + bk + sk_lo]
+                                                 +       fk  * z_d[(bj + sj_hi) * NZ6 + bk + sk_hi]);
+
+                    f_streamed = mls_3d_interpolate(
+                        f_old_ptrs[q], bi, bj, bk,
+                        t_eta, t_xi, t_zeta,
+                        nface, NX6,
+                        z_dep, z_d);
+                }
+#elif GILBM_INTERP_IDW
                 // ── True 3D IDW: 物理空間距離加權 (z 從 z_d 直接查表) ──
                 // Departure point z: 雙線性插值 z_d at (bj+t_xi, bk+t_zeta)
                 {
@@ -656,7 +677,13 @@ __device__ void gilbm_compute_point(
                 if (up_k > (double)(NZ6 - 4)) up_k = (double)(NZ6 - 4);
                 double t_zeta = up_k - (double)bk;
 
-#if GILBM_INTERP_IDW
+#if GILBM_INTERP_MLS
+                // ── MLS: 計算空間歸一化距離 + 二次多項式 (f_pc 版) ──
+                f_streamed = mls_3d_interpolate_fpc(
+                    f_pc, q, index,
+                    t_eta, t_xi, t_zeta,
+                    STENCIL_VOL, GRID_SIZE);
+#elif GILBM_INTERP_IDW
                 // ── True 3D IDW: 343 點歐氏距離加權 (f_pc 版) ──
                 f_streamed = idw_3d_interpolate_fpc(
                     f_pc, q, index,
@@ -1173,7 +1200,13 @@ __device__ void gilbm_step1_point(
                 if (up_k > (double)(NZ6 - 4)) up_k = (double)(NZ6 - 4);
                 double t_zeta = up_k - (double)bk;
 
-#if GILBM_INTERP_IDW
+#if GILBM_INTERP_MLS
+                // ── MLS: 計算空間歸一化距離 + 二次多項式 (f_pc 版) ──
+                f_streamed = mls_3d_interpolate_fpc(
+                    f_pc, q, index,
+                    t_eta, t_xi, t_zeta,
+                    STENCIL_VOL, GRID_SIZE);
+#elif GILBM_INTERP_IDW
                 // ── True 3D IDW: 343 點歐氏距離加權 (f_pc 版) ──
                 f_streamed = idw_3d_interpolate_fpc(
                     f_pc, q, index,

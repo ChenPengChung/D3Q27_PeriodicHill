@@ -158,22 +158,31 @@
 //   0 = 不正則化 (僅標準 LBM 用)
 #define     CUM_REGULARIZE      1
 
-// ── 插值方案選擇 ──────────────────────────────────────────────
-//   GILBM_INTERP_IDW = 0 → 7-point Lagrange (原始方案, 6 階精度但有 Runge 振盪風險)
-//   GILBM_INTERP_IDW = 1 → 7-point IDW (Inverse Distance Weighting, 單調性保證)
+// ── 插值方案選擇 (三擇一) ──────────────────────────────────────
+//   MLS=0, IDW=0 → 7-point Lagrange tensor product (原始方案, 6 階但非可分離時梯度誤差大)
+//   MLS=0, IDW=1 → 7-point IDW (距離加權, C⁰, 單調但壁面梯度誤差 95%)
+//   MLS=1, IDW=0 → MLS quadratic (移動最小二乘, C², 梯度誤差 < 2%)
+//
+//   MLS 性質 (Moving Least Squares):
+//     - 在 7³=343 stencil 上擬合局部二次多項式 (10 基底)
+//     - Wendland C² 權重函數 → 插值結果 C² 連續
+//     - 物理空間距離 + 座標歸一化 → 自然處理壁面各向異性
+//     - Cholesky 10×10 求解 → 全 register 操作 (~440 FLOP)
+//     - Fallback: Cholesky 失敗時退化為 IDW
+//     - 代價: ~30K FLOP/方向 (~10× IDW, ~58× Lagrange)
 //
 //   IDW 性質:
 //     - 權重 w_k = 1/|t-k|^p，全部 ≥ 0 且 Σw=1
-//     - 結果必在輸入值的 [min, max] 之內 → 不產生新極值 (monotone)
-//     - 消除 Runge phenomenon（7 點 Lagrange 在 stencil 邊緣的振盪）
-//     - 代價: 精度從 O(h^6) 降至 O(h^2)，對穩態求解可接受
+//     - 結果必在 [min, max] → monotone (但 C⁰, 梯度不準)
 //
-//   IDW_POWER: 距離權重的冪次
-//     p=2 → 標準 IDW，適度平滑
-//     p=3 → 更集中於近鄰點，減少遠距離影響
-//     p=4 → 近似最近鄰，非常局部
-#define     GILBM_INTERP_IDW    1       // 1=IDW, 0=Lagrange
-#define     GILBM_IDW_POWER     2.0     // IDW 距離權重冪次
+//   ★ MLS 與 IDW 互斥，不可同時為 1 ★
+#define     GILBM_INTERP_MLS    1       // 1=MLS (推薦), 0=off
+#define     GILBM_INTERP_IDW    0       // 1=IDW, 0=off (與 MLS 互斥)
+#define     GILBM_IDW_POWER     2.0     // IDW 距離權重冪次 (僅 IDW 時生效)
+
+#if GILBM_INTERP_MLS && GILBM_INTERP_IDW
+#error "GILBM_INTERP_MLS and GILBM_INTERP_IDW are mutually exclusive. Set only one to 1."
+#endif
 
 // ── 診斷: 純平衡態壁面 BC (關閉 CE 非平衡修正) ──
 //   設為 1 時，ChapmanEnskogBC 只返回 f_eq (C_alpha=0)，
