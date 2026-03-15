@@ -34,7 +34,7 @@
 #define     GRID_SIZE (NX6 * NYD6 * NZ6) // per-rank 總格點數
 
 // 非均勻網格
-#define     CFL 0.25    // 降低 CFL: 0.5→0.25 修正壁面插值振盪 & ω₁ 遠離 2.0 極限
+#define     CFL 0.5    // 降低 CFL: 0.5→0.25 修正壁面插值振盪 & ω₁ 遠離 2.0 極限
 #define     minSize             ((LZ-1.0)/(NZ6-6)*CFL)
 #define     Uniform_In_Xdir     1   // 1=均勻, 0=非均勻
 #define     Uniform_In_Ydir     1
@@ -207,45 +207,49 @@
 #define     NDTBIN      100000   // 每 N 步輸出 binary checkpoint
 #define     NDTVTK      1000    // 每 N 步輸出 VTK
 
-// ====== Dual-Stage Force Controller ======
-// Phase 1: P-additive (cold start / far from target, |Re%| > SWITCH_THRESHOLD)
-//   F += beta × (Uref - Ub) × Uref / LY
-//   beta = FORCE_P_ALPHA / Re
-//   Cold start seed: F_Poiseuille = 8×niu×Uref/h_eff²
-//
-// Phase 2: Gehrke multiplicative (near target, |Re%| ≤ SWITCH_THRESHOLD)
-//   Reference: Gehrke & Rung (2020), parameterized cumulant LBM
-//   F *= (1 - GEHRKE_GAIN × Re%)    where Re% = (Ub - Uref)/Uref × 100
-//   Dead zone: |Re%| < GEHRKE_DEADZONE → no adjustment
-//   Floor: F ≥ GEHRKE_FLOOR_FRAC × F_Poiseuille (prevents multiplicative trap → 0)
-//   Correction clamp: multiplier ∈ [0.5, 2.0] (prevents single-step catastrophe)
-//
-// Transition: automatic based on |Re%| vs SWITCH_THRESHOLD
-//   Hysteresis: switch to Gehrke at ≤ SWITCH_THRESHOLD
-//               back to P-additive at > SWITCH_THRESHOLD
+// ====================================================================
+// Hybrid Dual-Stage Force Controller (PID + Gehrke multiplicative)
+// ====================================================================
+// Phase 1 (PID):    |Re%| > SWITCH_THRESHOLD — 冷啟動/遠離目標安全加速
+//   Force = Kp*error*norm + integral + Kd*d_error*norm
+//   norm = Uref²/LY
+// Phase 2 (Gehrke): |Re%| ≤ SWITCH_THRESHOLD — 穩態乘法微調
+//   Gehrke ref: Gehrke & Rung (2020) Int J Numer Meth Fluids, Sec 3.1
+//   原文: F *= (1 - 0.1 × Re%)  當 |Re%| > 1.5%, 每 FTT 更新 10 次
+//   Correction clamp: multiplier ∈ [0.5, 1.5] (prevents single-step catastrophe)
+// 連續 Mach brake 在兩模式之上統一適用
 // ====================================================================
 
-// P-additive controller//P控制外力控制增益模式 
-#define     FORCE_P_ALPHA           2.0      // aggressiveness (beta = alpha/Re)
-                                             // dt_global 修正後不需要高增益
+// PID controller gains (Phase 1)
+#define     FORCE_KP                2.0     // 比例增益
+#define     FORCE_KI                0.3     // 積分增益
+#define     FORCE_KD                0.5     // 微分增益
 
-// Gehrke multiplicative controller
-#define     FORCE_GEHRKE_GAIN       0.05    // F *= (1 - gain × Re%)
-#define     FORCE_GEHRKE_DEADZONE   1.5     // |Re%| < 1.5% → hold (percentage, not fraction)
-#define     FORCE_GEHRKE_FLOOR      0.5     // minimum Force = floor x F_Poiseuille (>0 prevents multiplicative trap to 0)
+// Gehrke multiplicative controller (Phase 2)
+// ★ gain 必須配合更新頻率! 論文: gain=0.1 @ 10 updates/FTT
+//   我們 NDTFRC=20 → ~12000 updates/FTT → gain_eff = 0.1 × 10/12000 ≈ 8e-5
+//   或者直接降低 SWITCH_THRESHOLD 限制 Gehrke 只在小 Re% 工作
+#define     FORCE_GEHRKE_GAIN       0.1     // 論文原值: 0.1 (F *= 1 - gain × Re%)
+#define     FORCE_GEHRKE_DEADZONE   1.5     // 論文原值: 1.5% (|Re%| < 1.5% → hold)
+#define     FORCE_GEHRKE_FLOOR      0.1     // Force 下限 = 10% × F_Poiseuille (防 Force→0 陷阱)
 
 // Controller switching
-#define     FORCE_SWITCH_THRESHOLD   8     // |Re%| ≤ 8% → Gehrke; > 8% → P-additive 此數據為外力模式轉換條件
+#define     FORCE_SWITCH_THRESHOLD  5.0     // |Re%| ≤ 5% → Gehrke (論文適用範圍)
+                                             // correction 極值 = 1 ± 0.1×5 = [0.5, 1.5]
+                                             // ★ 10% 時 correction=1.9 → 每步翻倍 → 發散!
 
-// Cold start ramp: 避免 cold start 時力無限累加導致局部 Ma 爆炸
-// 前 RAMP_STEPS 步，力的上限從 0 線性增加到 RAMP_CAP × F_Poiseuille
-// 之後解除限制，由 controller 自由控制
-#define     FORCE_RAMP_STEPS        10000  // 前 10000 步漸進加力 (CFL=0.25 時 ≈ FTT 0.04)
-#define     FORCE_RAMP_CAP          15.0   // ramp 結束時上限 = 15× F_Poiseuille (保守啟動)
+// Force magnitude cap (防止任何模式下 Force 失控)
+#define     FORCE_CAP_MULT          50.0    // Force 上限 = 50 × F_Poiseuille
 
-// Legacy defines (kept for backward compatibility, unused by new controller)
-#define     FORCE_RE_DEADZONE       0.015   // (deprecated) was fractional dead zone
-#define     FORCE_RE_GAIN           0.1     // (deprecated) was multiplicative gain
+// Cold start ramp: 已關閉 (D3Q19 Edit3 無此功能，對齊後停用)
+// 設 RAMP_STEPS=0 即完全跳過 ramp 邏輯
+#define     FORCE_RAMP_STEPS        0       // 0=關閉 (對齊 D3Q19 Edit3)
+#define     FORCE_RAMP_CAP          15.0    // (ramp 關閉時此值無效)
+
+// Mach safety brake (continuous, both phases)
+#define     MA_BRAKE_MULT_THRESHOLD 1.7     // Ma_max > 1.7×Ma_bulk → 開始二次衰減
+#define     MA_BRAKE_MULT_CRITICAL  2.1     // Ma_max > 2.1×Ma_bulk → 緊急歸零
+#define     MA_BRAKE_GROWTH_LIMIT   0.30    // Ma_max 單步增長 >30% → 額外 ×0.3
 
 // ================================================================
 // 9. FTT 閾值與統計控制
