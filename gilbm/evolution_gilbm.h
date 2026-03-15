@@ -85,14 +85,8 @@ __device__ __forceinline__ void compute_stencil_base(
     if (bi + 6 >= NX6)    bi = NX6 - STENCIL_SIZE;
     if (bj < 0)           bj = 0;
     if (bj + 6 >= NYD6)   bj = NYD6 - STENCIL_SIZE;
-    // ── Wall-exclusion fix: 不把壁面 BC 數據納入 Lagrange 插值 stencil ──
-    // 壁面 (k=3, k=NZ6-4) 的 f 值來自 Chapman-Enskog BC，而內部點的 f
-    // 來自碰撞算子。兩者在 τ~O(1) 時不光滑（BC 是一階展開，碰撞是完整非線性）。
-    // 7-point Lagrange 通過不光滑數據會產生 Runge 型振盪 → 反饋放大 → 發散。
-    // 修正：stencil 最小起點 k=4（第一個流體格點），最大終點 k=NZ6-5。
-    // 壁面→內部的信息傳遞由 BC 處理（k=3 的 incoming 方向），不需要插值。
-    if (bk < 4)           bk = 4;                    // 排除底壁 k=3
-    if (bk + 6 > NZ6 - 5) bk = NZ6 - 11;             // 排除頂壁 k=NZ6-4
+    if (bk < 3)           bk = 3;                    // Buffer=3: 壁面在 k=3
+    if (bk + 6 > NZ6 - 4) bk = NZ6 - 10;             // 確保 bk+6 ≤ NZ6-4 (頂壁)
 }
 
 // ============================================================================
@@ -231,24 +225,30 @@ __device__ void gilbm_compute_point_gts(
     const int ci = i - bi;  // = 3 (always, for executed i ∈ [3, NX6-4])
     const int cj = j - bj;  // = 3 (always, for executed j ∈ [3, NYD6-4])
 
-    // ── Wall BC pre-computation ──
-    bool is_bottom = (k == 3);
-    bool is_top    = (k == NZ6 - 4);
+    // ── Wall BC pre-computation ──────────────────────────────────────
+    bool is_bottom = (k == 3);       // Buffer=3: 底壁在 k=3
+    bool is_top    = (k == NZ6 - 4); // Buffer=3: 頂壁在 k=NZ6-4
     double dk_dy_val = dk_dy_d[idx_jk];
     double dk_dz_val = dk_dz_d[idx_jk];
 
     double rho_wall = 0.0, du_dk = 0.0, dv_dk = 0.0, dw_dk = 0.0;
     if (is_bottom) {
+        // k=3 為底壁，用 k=4 一階差分 (先用一階)
         int idx3 = j * nface + 4 * NX6 + i;
         double rho3, u3, v3, w3;
         compute_macroscopic_at(f_old_ptrs, idx3, rho3, u3, v3, w3);
-        du_dk = u3;  dv_dk = v3;  dw_dk = w3;
+        du_dk = u3;   // 一階: du/dk ≈ u(k=4) - u_wall(=0) = u(k=4)
+        dv_dk = v3;
+        dw_dk = w3;
         rho_wall = rho3;
     } else if (is_top) {
+        // k=NZ6-4 為頂壁，用 k=NZ6-5 一階差分 (反向)
         int idxm1 = j * nface + (NZ6 - 5) * NX6 + i;
         double rhom1, um1, vm1, wm1;
         compute_macroscopic_at(f_old_ptrs, idxm1, rhom1, um1, vm1, wm1);
-        du_dk = -(um1);  dv_dk = -(vm1);  dw_dk = -(wm1);
+        du_dk = -um1;  // 一階: du/dk ≈ u_wall(=0) - u(k=NZ6-5) = -u(k=NZ6-5)
+        dv_dk = -vm1;
+        dw_dk = -wm1;
         rho_wall = rhom1;
     }
 
@@ -280,17 +280,23 @@ __device__ void gilbm_compute_point_gts(
                 if (t_xi  < 0.0) t_xi  = 0.0; if (t_xi  > 6.0) t_xi  = 6.0;
                 double delta_zeta = delta_zeta_d[q * NYD6 * NZ6 + idx_jk];
                 double up_k = (double)k - delta_zeta;
-                if (up_k < 4.0)                up_k = 4.0;    // 排除底壁 (與 bk_min=4 匹配)
-                if (up_k > (double)(NZ6 - 5))  up_k = (double)(NZ6 - 5);  // 排除頂壁
+                if (up_k < 3.0)                up_k = 3.0;
+                if (up_k > (double)(NZ6 - 4))  up_k = (double)(NZ6 - 4);
                 double t_zeta = up_k - (double)bk;
+#if GILBM_INTERP_IDW
+                // ── True 3D IDW: 343 點歐氏距離加權 ──
+                f_streamed = idw_3d_interpolate(
+                    f_old_ptrs[q], bi, bj, bk,
+                    t_eta, t_xi, t_zeta,
+                    GILBM_IDW_POWER, nface, NX6);
+#else
+                // ── Separable 7-point Lagrange (原始方案) ──
                 double Lagrangarray_eta[7], Lagrangarray_xi[7], Lagrangarray_zeta[7];
                 lagrange_7point_coeffs(t_eta,  Lagrangarray_eta);
                 lagrange_7point_coeffs(t_xi,   Lagrangarray_xi);
                 lagrange_7point_coeffs(t_zeta, Lagrangarray_zeta);
 
-                // ── Fused load + η-reduction from f_old (not f_pc!) ──
-                // For each (sj,sk), read si=0..6 from f_old_ptrs[q] directly
-                // x is contiguous in memory → coalesced reads
+                // Fused load + η-reduction from f_old
                 double interpolation1order[7][7];
                 for (int sj = 0; sj < 7; sj++) {
                     int gj = bj + sj;
@@ -329,6 +335,7 @@ __device__ void gilbm_compute_point_gts(
                     interpolation2order[4], Lagrangarray_zeta[4],
                     interpolation2order[5], Lagrangarray_zeta[5],
                     interpolation2order[6], Lagrangarray_zeta[6]);
+#endif
             }
         }
 
@@ -620,28 +627,30 @@ __device__ void gilbm_compute_point(
                     omega_A, dt_A //權重係數//localtimestep
                 );
             } else {
-                // ── Runtime departure point + Lagrange weight computation ──
-                // Computed BEFORE load to enable fused load+η-reduction
+                // ── Runtime departure point computation ──
                 double t_eta = (double)ci - a_local * GILBM_delta_eta[q];
                 if (t_eta < 0.0) t_eta = 0.0; if (t_eta > 6.0) t_eta = 6.0;
                 double t_xi  = (double)cj - a_local * GILBM_delta_xi[q];
                 if (t_xi  < 0.0) t_xi  = 0.0; if (t_xi  > 6.0) t_xi  = 6.0;
                 double delta_zeta = delta_zeta_d[q * NYD6 * NZ6 + idx_jk];
                 double up_k = (double)k - delta_zeta;
-                if (up_k < 4.0)              up_k = 4.0;    // 排除底壁
-                if (up_k > (double)(NZ6 - 5)) up_k = (double)(NZ6 - 5);  // 排除頂壁
+                if (up_k < 3.0)              up_k = 3.0;
+                if (up_k > (double)(NZ6 - 4)) up_k = (double)(NZ6 - 4);
                 double t_zeta = up_k - (double)bk;
+
+#if GILBM_INTERP_IDW
+                // ── True 3D IDW: 343 點歐氏距離加權 (f_pc 版) ──
+                f_streamed = idw_3d_interpolate_fpc(
+                    f_pc, q, index,
+                    t_eta, t_xi, t_zeta,
+                    GILBM_IDW_POWER, STENCIL_VOL, GRID_SIZE);
+#else
+                // ── Separable 7-point Lagrange (原始方案) ──
                 double Lagrangarray_eta[7], Lagrangarray_xi[7], Lagrangarray_zeta[7];
                 lagrange_7point_coeffs(t_eta,  Lagrangarray_eta);
                 lagrange_7point_coeffs(t_xi,   Lagrangarray_xi);
                 lagrange_7point_coeffs(t_zeta, Lagrangarray_zeta);
 
-                // ── Fused load + η-reduction (eliminates f_stencil[7][7][7]) ──
-                // Old: load 343 values → f_stencil[7][7][7] (2744 bytes → register spill)
-                //      then η-reduce from f_stencil → interpolation1order[7][7]
-                // New: for each (sj,sk), load si=0..6 directly from f_pc into Intrpl7
-                //      → interpolation1order[7][7] (392 bytes, fits in registers)
-                // Same 343 global reads, same FMA count, but 7× less local storage.
                 const int q_off = q * STENCIL_VOL;
                 double interpolation1order[7][7];
                 for (int sj = 0; sj < 7; sj++) {
@@ -658,7 +667,6 @@ __device__ void gilbm_compute_point(
                     }
                 }
 
-                // Step B: ξ (j) reduction -> interpolation2order[7]
                 double interpolation2order[7];
                 for (int sk = 0; sk < 7; sk++)
                     interpolation2order[sk] = Intrpl7(
@@ -670,7 +678,6 @@ __device__ void gilbm_compute_point(
                         interpolation1order[5][sk], Lagrangarray_xi[5],
                         interpolation1order[6][sk], Lagrangarray_xi[6]);
 
-                // Step C: ζ reduction -> scalar
                 f_streamed = Intrpl7(
                     interpolation2order[0], Lagrangarray_zeta[0],
                     interpolation2order[1], Lagrangarray_zeta[1],
@@ -679,6 +686,7 @@ __device__ void gilbm_compute_point(
                     interpolation2order[4], Lagrangarray_zeta[4],
                     interpolation2order[5], Lagrangarray_zeta[5],
                     interpolation2order[6], Lagrangarray_zeta[6]);
+#endif
             }
         }
 
@@ -1136,16 +1144,25 @@ __device__ void gilbm_step1_point(
                     dk_dy_val, dk_dz_val,
                     omega_A, dt_A);
             } else {
-                // ── Fused load + η-reduction ──
+                // ── Departure point computation ──
                 double t_eta = (double)ci - a_local * GILBM_delta_eta[q];
                 if (t_eta < 0.0) t_eta = 0.0; if (t_eta > 6.0) t_eta = 6.0;
                 double t_xi  = (double)cj - a_local * GILBM_delta_xi[q];
                 if (t_xi  < 0.0) t_xi  = 0.0; if (t_xi  > 6.0) t_xi  = 6.0;
                 double delta_zeta = delta_zeta_d[q * NYD6 * NZ6 + idx_jk];
                 double up_k = (double)k - delta_zeta;
-                if (up_k < 4.0)              up_k = 4.0;    // 排除底壁
-                if (up_k > (double)(NZ6 - 5)) up_k = (double)(NZ6 - 5);  // 排除頂壁
+                if (up_k < 3.0)              up_k = 3.0;
+                if (up_k > (double)(NZ6 - 4)) up_k = (double)(NZ6 - 4);
                 double t_zeta = up_k - (double)bk;
+
+#if GILBM_INTERP_IDW
+                // ── True 3D IDW: 343 點歐氏距離加權 (f_pc 版) ──
+                f_streamed = idw_3d_interpolate_fpc(
+                    f_pc, q, index,
+                    t_eta, t_xi, t_zeta,
+                    GILBM_IDW_POWER, STENCIL_VOL, GRID_SIZE);
+#else
+                // ── Separable 7-point Lagrange (原始方案) ──
                 double Lagrangarray_eta[7], Lagrangarray_xi[7], Lagrangarray_zeta[7];
                 lagrange_7point_coeffs(t_eta,  Lagrangarray_eta);
                 lagrange_7point_coeffs(t_xi,   Lagrangarray_xi);
@@ -1186,6 +1203,7 @@ __device__ void gilbm_step1_point(
                     interpolation2order[4], Lagrangarray_zeta[4],
                     interpolation2order[5], Lagrangarray_zeta[5],
                     interpolation2order[6], Lagrangarray_zeta[6]);
+#endif
             }
         }
 

@@ -158,17 +158,22 @@
 //   0 = 不正則化 (僅標準 LBM 用)
 #define     CUM_REGULARIZE      1
 
-// ── Wall-Stencil Exclusion (排除壁面數據參與插值) ──
-//   壁面 (k=3, k=NZ6-4) 的 f 來自 Chapman-Enskog BC (一階 Kn 展開)，
-//   而內部點的 f 來自碰撞算子 (完整非線性)。τ~O(1) 時兩者不光滑。
-//   7-point Lagrange 通過不光滑數據 → Runge 型振盪 → 反饋放大 → 發散。
+// ── 插值方案選擇 ──────────────────────────────────────────────
+//   GILBM_INTERP_IDW = 0 → 7-point Lagrange (原始方案, 6 階精度但有 Runge 振盪風險)
+//   GILBM_INTERP_IDW = 1 → 7-point IDW (Inverse Distance Weighting, 單調性保證)
 //
-//   修正: 插值 stencil 不含壁面格點 (bk_min=4, up_k_min=4)
-//   壁面→內部的粒子傳遞由 BC (k=3 incoming 方向) 處理。
-//   k=4 的 outgoing 方向不再從壁面 BC 數據插值。
+//   IDW 性質:
+//     - 權重 w_k = 1/|t-k|^p，全部 ≥ 0 且 Σw=1
+//     - 結果必在輸入值的 [min, max] 之內 → 不產生新極值 (monotone)
+//     - 消除 Runge phenomenon（7 點 Lagrange 在 stencil 邊緣的振盪）
+//     - 代價: 精度從 O(h^6) 降至 O(h^2)，對穩態求解可接受
 //
-//   此修正已直接寫入 compute_stencil_base() 和 up_k clamping。
-//   如需回退，將 bk_min 改回 3、up_k_min 改回 3.0。
+//   IDW_POWER: 距離權重的冪次
+//     p=2 → 標準 IDW，適度平滑
+//     p=3 → 更集中於近鄰點，減少遠距離影響
+//     p=4 → 近似最近鄰，非常局部
+#define     GILBM_INTERP_IDW    1       // 1=IDW, 0=Lagrange
+#define     GILBM_IDW_POWER     2.0     // IDW 距離權重冪次
 
 // ── 診斷: 純平衡態壁面 BC (關閉 CE 非平衡修正) ──
 //   設為 1 時，ChapmanEnskogBC 只返回 f_eq (C_alpha=0)，

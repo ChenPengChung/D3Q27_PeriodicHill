@@ -637,17 +637,16 @@ void PrecomputeGILBM_LagrangeWeights(
 // bk_h[0,1,2] and bk_h[NZ6-3..NZ6-1] are ghost/buffer — kernel guard skips them.
 // Reproduces compute_stencil_base() z-clamping logic:
 //   bk = k - 3
-//   Wall-exclusion fix: 排除壁面 BC 數據，避免 Runge 振盪
-//   if (bk < 4)           bk = 4            (排除底壁 k=3)
-//   if (bk + 6 > NZ6 - 5) bk = NZ6 - 11    (排除頂壁 k=NZ6-4)
+//   if (bk < 3)           bk = 3            (Buffer=3: 壁面在 k=3)
+//   if (bk + 6 > NZ6 - 4) bk = NZ6 - 10    (確保 bk+6 ≤ NZ6-4, 頂壁)
 void PrecomputeGILBM_StencilBaseK(
     int *bk_h,          // output: [NZ6] (indexed directly by k)
     int NZ6_local
 ) {
     for (int k = 0; k < NZ6_local; k++) {
         int bk = k - 3;
-        if (bk < 4)                    bk = 4;             // 排除底壁 k=3
-        if (bk + 6 > NZ6_local - 5)   bk = NZ6_local - 11; // 排除頂壁 k=NZ6-4
+        if (bk < 3)                    bk = 3;              // Buffer=3: 壁面在 k=3
+        if (bk + 6 > NZ6_local - 4)   bk = NZ6_local - 10; // 確保 bk+6 ≤ NZ6-4 (頂壁)
         bk_h[k] = bk;
     }
 }
